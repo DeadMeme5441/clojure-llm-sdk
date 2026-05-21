@@ -94,7 +94,9 @@
   "Dispatch to the correct normalizer based on provider keyword."
   [provider raw-usage]
   (case provider
-    (:openai :openrouter :deepseek) (normalize-openai-usage raw-usage)
+    (:openai :openrouter :deepseek :kimi
+     :mistral :groq :cerebras :together :xai)
+    (normalize-openai-usage raw-usage)
     :anthropic (normalize-anthropic-usage raw-usage)
     :gemini-native (normalize-gemini-usage raw-usage)
     :gemini-cloudcode (normalize-gemini-usage raw-usage)

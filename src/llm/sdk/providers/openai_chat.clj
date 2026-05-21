@@ -73,6 +73,23 @@
      ;; Any caller-supplied provider options under extra_body key
      (get-in request [:request/provider-options :extra_body]))))
 
+(defn- apply-drops
+  "Honour the :drops quirk by removing the named keys from the top-level
+   body and from :extra_body. Lets alias profiles strip request fields
+   the upstream provider 400s on (e.g. Mistral rejects
+   frequency_penalty / presence_penalty)."
+  [body drops]
+  (if (seq drops)
+    (let [drop-set (set drops)
+          body' (apply dissoc body drop-set)]
+      (if-let [extra (:extra_body body')]
+        (let [extra' (apply dissoc extra drop-set)]
+          (if (seq extra')
+            (assoc body' :extra_body extra')
+            (dissoc body' :extra_body)))
+        body'))
+    body))
+
 (defn build-request-openai
   [profile request]
   (let [model (:request/model request)
@@ -131,7 +148,8 @@
                      :json_object {:type "json_object"}
                      {:type "text"}))})
               (when (seq extra-body)
-                {:extra_body extra-body}))]
+                {:extra_body extra-body}))
+        body (apply-drops body (get-in profile [:profile/quirks :drops]))]
     {:method :post
      :url (str (:profile/base-url profile) "/chat/completions")
      :headers (provider/default-headers profile
@@ -275,10 +293,109 @@
 (defn make-transport []
   (->OpenAIChatTransport))
 
-;; Register transport constructors on profiles
-(require '[llm.sdk.provider :as provider])
+;; ---------------------------------------------------------------------------
+;; Alias mechanism — register OpenAI-compat providers from a spec map
+;; ---------------------------------------------------------------------------
 
-(doseq [pid [:openai :openrouter :deepseek]]
+(defn build-alias-profile
+  "Construct an OpenAI-compat provider profile from a spec map.
+
+   Spec keys:
+     :id                       required, e.g. :mistral
+     :base-url                 required, e.g. \"https://api.mistral.ai/v1\"
+     :env-var-names            vector of env-var name strings
+     :auth-strategy            defaults :bearer
+     :auth-header-name         only with :api-key-header
+     :default-headers          optional map
+     :capabilities             defaults #{:chat :streaming :tools}
+     :quirks                   optional map:
+                                 :drops #{:k1 :k2}   strip body keys
+                                 :thinking-explicit  send :thinking dict
+     :supports-model-listing?  defaults true
+     :supported-params         optional set (carried as
+                                 :profile/supported-params; T2-12
+                                 enforces drop+warn)"
+  [spec]
+  (cond-> {:profile/id (:id spec)
+           :profile/protocol-family :openai-chat
+           :profile/base-url (:base-url spec)
+           :profile/auth-strategy (:auth-strategy spec :bearer)
+           :profile/env-var-names (vec (:env-var-names spec []))
+           :profile/default-headers (:default-headers spec {})
+           :profile/capabilities (:capabilities spec #{:chat :streaming :tools})
+           :profile/quirks (:quirks spec {})
+           :profile/supports-model-listing (boolean (get spec :supports-model-listing? true))
+           :profile/transport-constructor make-transport}
+    (:auth-header-name spec)
+    (assoc :profile/auth-header-name (:auth-header-name spec))
+    (:supported-params spec)
+    (assoc :profile/supported-params (:supported-params spec))))
+
+(defn register-alias!
+  "Register an OpenAI-compat alias profile in one call."
+  [spec]
+  (provider/register-provider (build-alias-profile spec)))
+
+;; ---------------------------------------------------------------------------
+;; Built-in OpenAI-compat profiles
+;;
+;; :openai and :openrouter are already registered by
+;; llm.sdk.provider/register-built-in-providers with custom config
+;; (capabilities, default-headers). Attach the transport-constructor here
+;; without overwriting that config. The rest are pure-alias profiles
+;; with no native quirks beyond what this helper expresses.
+;; ---------------------------------------------------------------------------
+
+(doseq [pid [:openai :openrouter]]
   (when-let [p (provider/get-provider pid)]
     (provider/register-provider
      (assoc p :profile/transport-constructor make-transport))))
+
+(register-alias!
+ {:id :deepseek
+  :base-url "https://api.deepseek.com/v1"
+  :env-var-names ["DEEPSEEK_API_KEY"]
+  :capabilities #{:chat :streaming :tools :reasoning}
+  :quirks {:thinking-explicit true
+           :reasoning-content-echo true}})
+
+(register-alias!
+ {:id :kimi
+  :base-url "https://api.moonshot.cn/v1"
+  :env-var-names ["KIMI_API_KEY"]
+  :capabilities #{:chat :streaming :tools :reasoning}
+  :quirks {:thinking-explicit true}})
+
+(register-alias!
+ {:id :mistral
+  :base-url "https://api.mistral.ai/v1"
+  :env-var-names ["MISTRAL_API_KEY"]
+  :capabilities #{:chat :streaming :tools :json-schema}
+  ;; Mistral 400s on penalty fields; pass-through everything else.
+  :quirks {:drops #{:frequency_penalty :presence_penalty}}})
+
+(register-alias!
+ {:id :groq
+  :base-url "https://api.groq.com/openai/v1"
+  :env-var-names ["GROQ_API_KEY"]
+  :capabilities #{:chat :streaming :tools :json-schema :reasoning}
+  :quirks {:reasoning-format :raw}})
+
+(register-alias!
+ {:id :cerebras
+  :base-url "https://api.cerebras.ai/v1"
+  :env-var-names ["CEREBRAS_API_KEY"]
+  :capabilities #{:chat :streaming :tools :reasoning}
+  :quirks {:reasoning-effort true}})
+
+(register-alias!
+ {:id :together
+  :base-url "https://api.together.xyz/v1"
+  :env-var-names ["TOGETHER_API_KEY"]
+  :capabilities #{:chat :streaming :tools :json-schema}})
+
+(register-alias!
+ {:id :xai
+  :base-url "https://api.x.ai/v1"
+  :env-var-names ["XAI_API_KEY"]
+  :capabilities #{:chat :streaming :tools :json-schema :reasoning}})

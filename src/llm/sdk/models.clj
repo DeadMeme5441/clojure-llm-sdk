@@ -235,6 +235,11 @@
 (defmethod fetch-models :openai [_] (openai-style-fetch :openai))
 (defmethod fetch-models :deepseek [_] (openai-style-fetch :deepseek))
 (defmethod fetch-models :kimi [_] (openai-style-fetch :kimi))
+(defmethod fetch-models :mistral [_] (openai-style-fetch :mistral))
+(defmethod fetch-models :groq [_] (openai-style-fetch :groq))
+(defmethod fetch-models :cerebras [_] (openai-style-fetch :cerebras))
+(defmethod fetch-models :together [_] (openai-style-fetch :together))
+(defmethod fetch-models :xai [_] (openai-style-fetch :xai))
 
 (defmethod fetch-models :anthropic [_]
   (let [p (profile! :anthropic)
@@ -297,7 +302,8 @@
 (def supported-providers
   "Providers with a usable live /models endpoint."
   #{:openai :anthropic :gemini-native :vertex-gemini
-    :openrouter :deepseek :kimi})
+    :openrouter :deepseek :kimi
+    :mistral :groq :cerebras :together :xai})
 
 (defn supports-models-listing?
   "Does this provider expose a /models endpoint we can call?"
