@@ -47,3 +47,47 @@
                    :embed/dimensions 128})]
         (is (= 128 (:embed/dimensions resp)))
         (is (= 128 (count (first (:embed/vectors resp)))))))))
+
+;; ---------------------------------------------------------------------------
+;; T2-07 — Cohere/Voyage/Mistral/Together/Jina
+;; ---------------------------------------------------------------------------
+
+(defn- smoke-embed
+  [provider-id model & {:keys [extra-opts]}]
+  (let [resp (sdk/embed
+              provider-id
+              (merge {:embed/model model
+                      :embed/inputs ["clojure-llm-sdk live embed smoke"]}
+                     extra-opts))]
+    (is (= provider-id (:embed/provider resp)))
+    (is (= 1 (count (:embed/vectors resp))))
+    (is (pos? (:embed/dimensions resp)))
+    (is (every? number? (first (:embed/vectors resp))))
+    (is (schema/validate-embed-response resp))))
+
+(deftest ^:live live-cohere-embed
+  (when (has-creds? "COHERE_API_KEY")
+    (testing "Cohere embed-english-v3.0 live"
+      (smoke-embed :cohere "embed-english-v3.0"
+                   :extra-opts {:embed/provider-options
+                                {:input-type "search_document"}}))))
+
+(deftest ^:live live-voyage-embed
+  (when (has-creds? "VOYAGE_API_KEY")
+    (testing "Voyage voyage-3 live"
+      (smoke-embed :voyage "voyage-3"))))
+
+(deftest ^:live live-mistral-embed
+  (when (has-creds? "MISTRAL_API_KEY")
+    (testing "Mistral mistral-embed live"
+      (smoke-embed :mistral "mistral-embed"))))
+
+(deftest ^:live live-together-embed
+  (when (has-creds? "TOGETHER_API_KEY")
+    (testing "Together togethercomputer/m2-bert-80M-8k-retrieval live"
+      (smoke-embed :together "togethercomputer/m2-bert-80M-8k-retrieval"))))
+
+(deftest ^:live live-jina-embed
+  (when (has-creds? "JINA_API_KEY")
+    (testing "Jina jina-embeddings-v3 live"
+      (smoke-embed :jina "jina-embeddings-v3"))))

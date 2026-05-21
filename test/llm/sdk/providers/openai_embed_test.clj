@@ -132,3 +132,49 @@
              {:error {:message "Rate limit reached"}})]
     (is (= :rate-limit (:error/reason err)))
     (is (true? (:error/retryable err)))))
+
+;; ---------------------------------------------------------------------------
+;; T2-07: extra OpenAI-shape embed providers attached to the same transport
+;; ---------------------------------------------------------------------------
+
+(def ^:private openai-shape-embed-providers
+  [{:id :voyage    :base "https://api.voyageai.com/v1"   :env "VOYAGE_API_KEY"}
+   {:id :jina      :base "https://api.jina.ai/v1"        :env "JINA_API_KEY"}
+   {:id :mistral   :base "https://api.mistral.ai/v1"     :env "MISTRAL_API_KEY"}
+   {:id :together  :base "https://api.together.xyz/v1"   :env "TOGETHER_API_KEY"}])
+
+(deftest test-openai-shape-embed-providers-registered
+  (doseq [{:keys [id base env]} openai-shape-embed-providers]
+    (let [p (provider/get-provider id)]
+      (is (some? p) (str id " profile registered"))
+      (is (= base (:profile/base-url p)) (str id " base-url"))
+      (is (= [env] (:profile/env-var-names p)) (str id " env-var"))
+      (is (fn? (:profile/embed-transport-constructor p))
+          (str id " carries an embed-transport-constructor"))
+      (is (contains? (:profile/capabilities p) :embedding)
+          (str id " capabilities include :embedding")))))
+
+(deftest test-openai-shape-embed-providers-share-transport
+  (testing "all OpenAI-shape embed providers reuse OpenAIEmbedTransport"
+    (doseq [{:keys [id]} openai-shape-embed-providers]
+      (let [profile (provider/get-provider id)
+            transport ((:profile/embed-transport-constructor profile))]
+        (is (instance? llm.sdk.providers.openai_embed.OpenAIEmbedTransport
+                       transport)
+            (str id))))))
+
+(deftest test-voyage-build-request-includes-extra-body
+  (testing "Voyage-specific :input-type lands on the body via :extra_body"
+    (let [t (openai-embed/make-transport)
+          profile (provider/get-provider :voyage)
+          built (with-redefs [provider/resolve-auth-token
+                              (constantly "stub")]
+                  (et/build-embed-request
+                   t profile
+                   {:embed/model "voyage-3"
+                    :embed/inputs ["query phrase"]
+                    :embed/provider-options
+                    {:extra_body {:input_type "query"}}}))]
+      (is (= "https://api.voyageai.com/v1/embeddings" (:url built)))
+      (is (= "query phrase" (get-in built [:body :input])))
+      (is (= "query" (get-in built [:body :input_type]))))))
