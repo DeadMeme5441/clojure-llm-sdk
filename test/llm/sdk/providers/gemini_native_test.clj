@@ -50,3 +50,25 @@
         resp (transport/parse-response t {} raw)]
     (is (= 1 (count (:response/tool-calls resp))))
     (is (= "get_weather" (get-in resp [:response/tool-calls 0 :tool-call/name])))))
+
+;; ---------------------------------------------------------------------------
+;; Caching wiring (explicit cachedContent)
+;; ---------------------------------------------------------------------------
+
+(deftest test-cache-explicit-cached-content
+  (testing "Gemini receives cachedContent reference when :cached-content-id supplied"
+    (let [t (gemini/make-transport)
+          profile (provider/get-provider :gemini-native)
+          req {:request/model "gemini-2.5-pro"
+               :request/messages [{:message/role :user :message/content "Hi"}]
+               :request/cache {:cached-content-id "cachedContents/abc123"}}
+          built (transport/build-request t profile req)]
+      (is (= "cachedContents/abc123" (get-in built [:body :cachedContent]))))))
+
+(deftest test-cache-no-cachedContent-when-disabled
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        req {:request/model "gemini-2.5-pro"
+             :request/messages [{:message/role :user :message/content "Hi"}]}
+        built (transport/build-request t profile req)]
+    (is (nil? (get-in built [:body :cachedContent])))))

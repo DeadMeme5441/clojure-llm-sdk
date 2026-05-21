@@ -9,6 +9,7 @@
             [llm.sdk.usage :as usage]
             [llm.sdk.pricing :as pricing]
             [llm.sdk.catalog :as catalog]
+            [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]
             [llm.sdk.retry :as retry]
             ;; Ensure provider adapters are loaded so their transport
@@ -128,3 +129,20 @@
   "Return the default retry policy map."
   []
   (retry/default-policy))
+
+;; ---------------------------------------------------------------------------
+;; Cache strategy inspection
+;; ---------------------------------------------------------------------------
+
+(defn cache-strategy
+  "Inspect which cache strategy + layout the SDK will use for a given
+   provider, model, and (optional) :request/cache map. Useful for
+   debugging cache misses without sending a real request.
+
+   Returns {:strategy :system-and-3|:prompt-key|:explicit|:cache-point|:none
+            :layout   :native|:envelope|nil
+            :reason   string}"
+  ([provider-id model] (cache-strategy provider-id model nil))
+  ([provider-id model request-cache]
+   (when-let [profile (provider/get-provider provider-id)]
+     (cache/decide-strategy profile model request-cache))))

@@ -11,6 +11,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
+            [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors])
   (:import [java.security MessageDigest]
            [java.util Base64]))
@@ -219,11 +220,22 @@
   (let [base-url (str/lower-case (or (:profile/base-url profile) ""))]
     (str/includes? base-url "chatgpt.com")))
 
+(defn- xai-host? [profile]
+  (let [base-url (str/lower-case (or (:profile/base-url profile) ""))]
+    (str/includes? base-url "api.x.ai")))
+
+(defn- github-copilot? [profile]
+  (let [base-url (str/lower-case (or (:profile/base-url profile) ""))]
+    (or (str/includes? base-url "githubcopilot")
+        (str/includes? base-url "api.github.com/copilot"))))
+
 (defn build-request-codex
   [profile request]
   (let [model (:request/model request)
         messages (:request/messages request)
         backend? (codex-backend? profile)
+        xai? (xai-host? profile)
+        github? (github-copilot? profile)
         instructions (when (and (seq messages) (= (:message/role (first messages)) :system))
                        (t/content->string (:message/content (first messages))))
         ;; Codex backend requires instructions; fall back to a default
@@ -234,6 +246,25 @@
                 (mapv tool->codex (:request/tools request)))
         reasoning-config (:request/reasoning request)
         reasoning-enabled (if (nil? reasoning-config) false (:enabled reasoning-config true))
+        ;; Caching wiring:
+        ;;   * api.openai.com/v1/responses → top-level prompt_cache_key
+        ;;   * api.x.ai/v1/responses        → extra_body.prompt_cache_key
+        ;;                                    + x-grok-conv-id header
+        ;;   * chatgpt.com Codex backend    → top-level prompt_cache_key
+        ;;                                    + session_id / x-client-request-id
+        ;;                                    extra_headers
+        ;;   * GitHub Copilot Responses     → suppressed (opt-out)
+        cache-on? (cache/cache-enabled? request)
+        scope-id (when cache-on? (cache/scope-id request))
+        prompt-cache-key (when (and scope-id (not github?)) scope-id)
+        top-level-key (when (and prompt-cache-key (not xai?)) prompt-cache-key)
+        xai-extra-body (when (and prompt-cache-key xai?)
+                         {:prompt_cache_key prompt-cache-key})
+        codex-backend-headers (when (and prompt-cache-key backend?)
+                                {"session_id" prompt-cache-key
+                                 "x-client-request-id" prompt-cache-key})
+        xai-headers (when (and prompt-cache-key xai?)
+                      {"x-grok-conv-id" prompt-cache-key})
         body (merge
               {:model model
                :input input
@@ -254,14 +285,19 @@
               ;; Codex backend requires stream=true
               (when backend?
                 {:stream true})
+              (when top-level-key
+                {:prompt_cache_key top-level-key})
+              (when xai-extra-body
+                {:extra_body xai-extra-body})
               (when (:request/metadata request)
                 {:metadata (:request/metadata request)}))
         ;; Auth headers
-        headers (if backend?
-                  (merge (codex-backend-auth-headers)
-                         {"Accept" "text/event-stream"})
-                  (provider/default-headers profile
-                                            (provider/resolve-auth-token profile)))]
+        base-headers (if backend?
+                       (merge (codex-backend-auth-headers)
+                              {"Accept" "text/event-stream"})
+                       (provider/default-headers profile
+                                                 (provider/resolve-auth-token profile)))
+        headers (merge base-headers codex-backend-headers xai-headers)]
     {:method :post
      :url (str (:profile/base-url profile) "/responses")
      :headers headers

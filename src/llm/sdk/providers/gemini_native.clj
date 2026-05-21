@@ -8,6 +8,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
+            [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
@@ -151,12 +152,24 @@
         tools (when (seq (:request/tools request))
                 [{:functionDeclarations (mapv tool->gemini (:request/tools request))}])
         thinking (build-thinking-config model (:request/reasoning request))
+        ;; Gemini caching is "explicit only" from the SDK's
+        ;; perspective: the caller pre-creates a CachedContent
+        ;; resource (via cachedContents.create or the genai SDK) and
+        ;; passes the resource name (e.g. "cachedContents/abc123")
+        ;; here. The model + system prompt + tool definitions are
+        ;; sourced from the cached content; only the new turn flows
+        ;; through `contents`. Implicit prefix caching is automatic
+        ;; on Gemini 2.5 and not under our control.
+        cached-content (when (cache/cache-enabled? request)
+                         (cache/cached-content-id request))
         body (merge
               {:contents contents}
               (when system-inst
                 {:systemInstruction system-inst})
               (when tools
                 {:tools tools})
+              (when cached-content
+                {:cachedContent cached-content})
               (when (:request/tool-choice request)
                 {:toolConfig
                  (case (:request/tool-choice request)

@@ -8,6 +8,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
+            [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
@@ -230,6 +231,33 @@
                         system-blocks)
         tools (if oauth? (mcp-prefix-tools tools) tools)
         anthropic-messages (if oauth? (mcp-prefix-tool-names-in-messages anthropic-messages) anthropic-messages)
+        ;; Caching: native layout for Anthropic. Decide once, apply
+        ;; markers to (system, messages, tools). Caller can override
+        ;; via :request/cache; defaults to no-op when omitted.
+        cache-cfg (:request/cache request)
+        cache-on? (cache/cache-enabled? request)
+        cache-decision (when cache-on?
+                         (cache/decide-strategy profile model-norm cache-cfg))
+        total-bps (cache/breakpoints request)
+        apply-cache? (and cache-on? (= (:strategy cache-decision) :system-and-3))
+        ;; Native Anthropic: system lives in the top-level :system
+        ;; field, not messages[0]. Spend one breakpoint there if a
+        ;; system prompt is present, then split the rest across the
+        ;; tail of the messages list.
+        system-bps (if (and apply-cache? (seq system-blocks)) 1 0)
+        msg-bps (max 0 (- total-bps system-bps))
+        cache-opts {:ttl (cache/ttl request) :layout :native}
+        system-blocks (if apply-cache?
+                        (cache/apply-system-blocks-cache system-blocks cache-opts)
+                        system-blocks)
+        anthropic-messages (if apply-cache?
+                             (cache/apply-system-and-3
+                              anthropic-messages
+                              (assoc cache-opts :breakpoints msg-bps))
+                             anthropic-messages)
+        tools (if (and apply-cache? (cache/tools-cache? request))
+                (cache/apply-tools-cache tools cache-opts)
+                tools)
         ;; Build headers
         headers (if oauth?
                   (merge (:profile/default-headers profile {})
