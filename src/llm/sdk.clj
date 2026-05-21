@@ -1,7 +1,7 @@
 (ns llm.sdk
   "Public API for clojure-llm-sdk.
-   Complete, stream, list-models, capabilities, normalize-usage, estimate-cost,
-   provider registration."
+   Complete, embed, stream, list-models, capabilities, normalize-usage,
+   estimate-cost, provider registration."
   (:require [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
             [llm.sdk.http :as http]
@@ -14,9 +14,11 @@
             [llm.sdk.retry :as retry]
             [llm.sdk.registry :as registry]
             [llm.sdk.models :as models]
+            [llm.sdk.embed :as embed-driver]
             ;; Ensure provider adapters are loaded so their transport
             ;; constructors are registered
             [llm.sdk.providers.openai-chat]
+            [llm.sdk.providers.openai-embed]
             [llm.sdk.providers.anthropic]
             [llm.sdk.providers.gemini-native]
             [llm.sdk.providers.vertex-gemini]
@@ -128,6 +130,21 @@
                              :body body
                              :provider provider-id})))
           (transport/parse-response transport profile body))))))
+
+;; ---------------------------------------------------------------------------
+;; Embed
+;; ---------------------------------------------------------------------------
+
+(defn embed
+  "Send a canonical embed request and return a canonical EmbedResponse.
+   Provider must be a registered provider whose profile carries a
+   :profile/embed-transport-constructor (currently :openai under T2-01;
+   T2-07 extends this to Cohere/Voyage/Mistral/Together/Jina).
+   Request keys: :embed/model, :embed/inputs (vector of strings),
+   plus optional :embed/dimensions, :embed/encoding-format,
+   :embed/user, :embed/provider-options."
+  [provider-id request]
+  (embed-driver/embed provider-id request))
 
 ;; ---------------------------------------------------------------------------
 ;; Usage / pricing
