@@ -50,12 +50,20 @@ n                               :message/content "What's the weather in NYC?"}]
 ;; => :stream/content-delta
 ;; => :stream/end
 
-;; Cost estimation
+;; Cost estimation — works for any provider+model the registry knows
 (let [usage {:usage/input-tokens 1000
              :usage/output-tokens 500}
       cost (sdk/estimate-cost :openai "gpt-4o" usage)]
   (println (:cost/amount-usd cost)))
 ;; => 0.0075M
+
+;; Model metadata — also registry-backed
+(sdk/model-context-length :anthropic "claude-opus-4-7")  ;; => 200000
+(sdk/model-capabilities :openai "gpt-4o")                ;; => #{:chat :tools :vision ...}
+
+;; List models — sorted distinct ids across every provider, or filtered
+(count (sdk/list-models))                                ;; => 600+
+(count (sdk/list-models :anthropic))                     ;; => entries under :anthropic only
 
 ;; Context caching — opt in per request, the adapter handles the wire format
 (sdk/complete :anthropic
@@ -344,6 +352,73 @@ surface in `usageMetadata.cachedContentTokenCount`. Empirically:
   call. `:cached-content-id` is available if you want to pre-create a
   CachedContent resource and reference it explicitly.
 
+## Model Registry
+
+A layered registry powers every `list-models` / `model-capabilities` /
+`model-context-length` / `estimate-cost` call. The SDK never falls back
+to "we don't know" for any provider it ships an adapter for — even
+cold, before any network call.
+
+### Layers (highest precedence first)
+
+| Tier | Source | When it answers |
+|---|---|---|
+| Override | `sdk/register-model-info` (caller-injected) | Custom endpoints whose pricing/context the public registries don't know |
+| Live | per-provider `/v*/models` endpoint | Populated lazily by `sdk/refresh-models!`; authoritative for "what does this account currently see" |
+| models.dev | `https://models.dev/api.json` | 4000+ models across 132+ providers. Cached on disk at `~/.clojure-llm-sdk/models-dev-cache.json` (1h by mtime) |
+| Bundled snapshot | `resources/models-dev-snapshot.json` (ships in the JAR) | Last resort — offline use works without ever hitting the network |
+
+`sdk/model-info` returns the merged entry: higher tiers fill in
+provenance (`:model/source-url`, `:model/fetched-at`), lower tiers
+contribute static metadata (`:model/context-length`,
+`:model/cost`, `:model/capabilities`). The returned `:model/source`
+tag identifies the highest-precedence tier that contributed.
+
+### Examples
+
+```clojure
+;; First time: served from the bundled snapshot, no network call
+(sdk/model-info :openai "gpt-4o")
+;; => {:model/id "gpt-4o" :model/provider :openai
+;;     :model/context-length 128000 :model/max-output-tokens 16384
+;;     :model/cost {:input-per-million 2.5 :output-per-million 10.0
+;;                  :cache-read-per-million 1.25}
+;;     :model/source :models-dev ...}
+
+;; Refresh one provider — hits the live /models endpoint
+(sdk/refresh-models! :provider :openai)
+;; => {:openai {:count 73}}
+
+;; After refresh, live tier wins for source / source-url; pricing still
+;; comes up from models.dev (OpenAI's /models doesn't expose cost)
+(sdk/model-info :openai "gpt-4o")
+;; => {... :model/source :live-models-api
+;;     :model/source-url "https://api.openai.com/v1/models"
+;;     :model/cost {:input-per-million 2.5 ...}}
+
+;; Refresh every supported provider in one call
+(sdk/refresh-models!)
+;; => {:openai {:count 73} :anthropic {:count 12} :gemini-native {:count 60}
+;;     :openrouter {:count 312} :deepseek {:count 5} :kimi {:count 4}
+;;     :vertex-gemini {:error "GOOGLE_CLOUD_PROJECT required ..."}}
+
+;; Register custom data for a private endpoint
+(sdk/register-model-info :acme "magic-7"
+  {:model/context-length 32000
+   :model/capabilities #{:chat :tools}
+   :model/cost {:input-per-million 0.5 :output-per-million 2.0}})
+(sdk/estimate-cost :acme "magic-7" {:usage/input-tokens 1000
+                                     :usage/output-tokens 100})
+;; => {:cost/status :actual :cost/amount-usd 0.0007M ...}
+```
+
+### Cache invalidation
+
+Forced refresh is the caller's responsibility — no background timer.
+The 1h in-memory + disk TTL is per the models.dev request shape.
+Tests run with the cache dir bound to a sandbox so they never touch
+`~/.clojure-llm-sdk`.
+
 ## Testing
 
 ```bash
@@ -360,7 +435,7 @@ source .env && clj -M:test
 
 Live tests are gated by credential availability and skipped cleanly when missing. They make minimal API calls (single-token "pong" prompts) to keep costs negligible.
 
-**Current test status:** 124 tests, 331 assertions, all passing.
+**Current test status:** 200 tests, 579 assertions, all passing.
 
 ## Project Structure
 
@@ -372,12 +447,15 @@ src/llm/sdk/
   http.clj            # Thin HTTP layer (hato)
   stream.clj          # Streaming event taxonomy and reducer
   usage.clj           # Usage normalization across providers (incl. OpenRouter top-level fallback)
-  pricing.clj         # Cost estimation with hardcoded + live pricing
+  models.clj          # Per-provider /v*/models live fetchers + ModelEntry schema
+  models_dev.clj      # models.dev breadth registry loader (3-tier cache)
+  registry.clj        # Unified merged model+pricing registry (override > live > models.dev)
+  pricing.clj         # Cost estimation, registry-backed
+  catalog.clj         # Model catalog and capabilities, registry-backed
   cache.clj           # Provider-agnostic cache markers, layouts, and policy
   errors.clj          # Error classification and retry logic
   retry.clj           # Jittered backoff retry policy
   rate_limit.clj      # Rate limit tracking
-  catalog.clj         # Model catalog and capabilities
   core.clj            # Public API (complete, stream, etc.)
   providers/
     openai_chat.clj   # OpenAI Chat Completions

@@ -12,6 +12,8 @@
             [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]
             [llm.sdk.retry :as retry]
+            [llm.sdk.registry :as registry]
+            [llm.sdk.models :as models]
             ;; Ensure provider adapters are loaded so their transport
             ;; constructors are registered
             [llm.sdk.providers.openai-chat]
@@ -38,23 +40,56 @@
   (provider/get-provider provider-id))
 
 ;; ---------------------------------------------------------------------------
-;; Model catalog
+;; Model catalog — registry-backed lookups
 ;; ---------------------------------------------------------------------------
 
 (defn list-models
-  "List known model ids in the catalog."
-  []
-  (catalog/list-models))
+  "List known model ids. With no args, returns a sorted distinct seq
+   across every provider the registry knows. With a provider keyword,
+   returns the ModelEntry maps under that provider."
+  ([] (catalog/list-models))
+  ([provider-id] (catalog/models-by-provider provider-id)))
 
 (defn model-capabilities
-  "Return the capability set for a model id."
-  [model-id]
-  (:model/capabilities (catalog/get-model model-id)))
+  "Return the capability set for a model. Single-arg form scans across
+   providers (prefers native over alias); two-arg form is provider-aware."
+  ([model-id]
+   (:model/capabilities (catalog/get-model model-id)))
+  ([provider-id model-id]
+   (:model/capabilities (catalog/get-model provider-id model-id))))
 
 (defn model-context-length
-  "Return the context length for a model id, or nil if unknown."
-  [model-id]
-  (catalog/context-length model-id))
+  "Return the context length for a model in tokens, or nil if unknown."
+  ([model-id] (catalog/context-length model-id))
+  ([provider-id model-id] (catalog/context-length provider-id model-id)))
+
+(defn model-info
+  "Return the full registry ModelEntry for (provider, model), or just
+   (model) when the id is globally unique. Includes context-length,
+   max-output-tokens, capabilities, cost, source provenance."
+  ([model-id] (catalog/get-model model-id))
+  ([provider-id model-id] (catalog/get-model provider-id model-id)))
+
+(defn refresh-models!
+  "Hit each provider's live /models endpoint and merge results into the
+   registry's live tier. With no args, refreshes every provider that
+   supports live model listing (skipping :codex/:codex-backend/:bedrock).
+   With :provider <kw>, refreshes only that one. Returns a map of
+   provider → {:count n} or {:error msg :data data}."
+  [& {:keys [provider]}]
+  (if provider
+    {provider (try {:count (count (registry/refresh! provider))}
+                   (catch Exception e
+                     {:error (ex-message e) :data (ex-data e)}))}
+    (registry/refresh-all!)))
+
+(defn register-model-info
+  "Inject a caller-provided model entry into the registry override
+   tier. Useful when targeting custom endpoints models.dev doesn't
+   know about. Entry takes the canonical ModelEntry shape minus the
+   provider/id (those are passed explicitly)."
+  [provider-id model-id entry]
+  (registry/register-entry! provider-id model-id entry))
 
 ;; ---------------------------------------------------------------------------
 ;; Complete
