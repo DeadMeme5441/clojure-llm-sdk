@@ -24,6 +24,7 @@
             [llm.sdk.providers.vertex-gemini]
             [llm.sdk.providers.codex]
             [llm.sdk.providers.openrouter]
+            [llm.sdk.providers.perplexity]
             [llm.sdk.providers.bedrock]
             [llm.sdk.providers.fake]))
 
@@ -112,7 +113,17 @@
     (if stream?
       ;; Streaming path
       (let [events (http/sse-request req)
-            parsed-events (keep #(transport/parse-stream-event transport profile %) events)
+            ;; parse-stream-event may return nil, a single event map,
+            ;; or a vector of events — flatten so callers always see
+            ;; a flat sequence of canonical StreamEvent maps.
+            parsed-events (mapcat (fn [line]
+                                    (let [ev (transport/parse-stream-event
+                                              transport profile line)]
+                                      (cond
+                                        (nil? ev) nil
+                                        (sequential? ev) ev
+                                        :else [ev])))
+                                  events)
             parsed-events (concat [(stream/start-event)] parsed-events [(stream/end-event)])]
         (if on-event
           (do (doseq [ev parsed-events] (on-event ev))

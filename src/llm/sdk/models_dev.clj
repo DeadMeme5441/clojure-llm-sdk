@@ -39,6 +39,7 @@
    :cerebras "cerebras"
    :together "togetherai"
    :xai "xai"
+   :perplexity "perplexity"
    :codex "openai"
    :codex-backend "openai"
    :bedrock "amazon-bedrock"})
