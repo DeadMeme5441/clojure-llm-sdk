@@ -34,6 +34,11 @@
    :openrouter "openrouter"
    :deepseek "deepseek"
    :kimi "kimi-for-coding"
+   :mistral "mistral"
+   :groq "groq"
+   :cerebras "cerebras"
+   :together "togetherai"
+   :xai "xai"
    :codex "openai"
    :codex-backend "openai"
    :bedrock "amazon-bedrock"})
