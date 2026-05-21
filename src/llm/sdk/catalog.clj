@@ -26,6 +26,7 @@
    ambiguous ids resolve to the native provider first."
   [:openai :anthropic :gemini-native :openrouter :deepseek :kimi
    :mistral :groq :cerebras :together :xai :perplexity :huggingface
+   :cohere :voyage :jina
    :vertex-gemini :bedrock :codex :codex-backend :fake])
 
 (defn- find-by-id

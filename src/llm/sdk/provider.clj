@@ -166,7 +166,29 @@
   (register-provider
    (mk-provider :perplexity :perplexity-chat "https://api.perplexity.ai" :bearer
                 :profile/env-var-names ["PERPLEXITY_API_KEY"]
-                :profile/capabilities #{:chat :streaming :json-schema :web-search})))
+                :profile/capabilities #{:chat :streaming :json-schema :web-search}))
+  ;; --- Embedding-first providers (T2-07) ---
+  ;; Cohere has its own embed wire shape (texts, input_type,
+  ;; embedding_types) and its own embed transport — chat support
+  ;; lands separately under T2-02.
+  (register-provider
+   (mk-provider :cohere :cohere-chat "https://api.cohere.com/v1" :bearer
+                :profile/env-var-names ["COHERE_API_KEY"]
+                :profile/capabilities #{:embedding :rerank}
+                :profile/supports-model-listing false))
+  ;; Voyage AI — OpenAI-compat /embeddings shape with optional
+  ;; input_type ("query" / "document") via :embed/provider-options.
+  (register-provider
+   (mk-provider :voyage :openai-embed "https://api.voyageai.com/v1" :bearer
+                :profile/env-var-names ["VOYAGE_API_KEY"]
+                :profile/capabilities #{:embedding :rerank}
+                :profile/supports-model-listing false))
+  ;; Jina AI — OpenAI-compat /embeddings shape.
+  (register-provider
+   (mk-provider :jina :openai-embed "https://api.jina.ai/v1" :bearer
+                :profile/env-var-names ["JINA_API_KEY"]
+                :profile/capabilities #{:embedding :rerank}
+                :profile/supports-model-listing false)))
 
 ;; Auto-register on load
 (register-built-in-providers)

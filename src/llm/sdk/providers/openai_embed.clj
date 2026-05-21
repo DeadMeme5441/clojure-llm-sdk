@@ -92,15 +92,17 @@
 (defn make-transport [] (->OpenAIEmbedTransport))
 
 ;; ---------------------------------------------------------------------------
-;; Attach to providers that ship the OpenAI embed wire shape
+;; Attach to providers that ship the OpenAI /embeddings wire shape
 ;;
-;; T2-01 ships OpenAI only. T2-07 will extend this list with the other
-;; OpenAI-compat hosts that expose /embeddings (Together, NVIDIA NIM,
-;; DeepInfra, etc.) and add native adapters for Cohere / Voyage / Mistral
-;; whose shapes diverge.
+;; Mistral and Together register chat profiles too (under :openai-chat
+;; protocol family) — adding the embed transport is purely additive.
+;; Voyage and Jina are embedding-first; the protocol-family on their
+;; profile is :openai-embed.
+;;
+;; Cohere has its own embed shape and lives in providers/cohere-embed.
 ;; ---------------------------------------------------------------------------
 
-(doseq [pid [:openai]]
+(doseq [pid [:openai :mistral :together :voyage :jina]]
   (when-let [p (provider/get-provider pid)]
     (provider/register-provider
      (-> p

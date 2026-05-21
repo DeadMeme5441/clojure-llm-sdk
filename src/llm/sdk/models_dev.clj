@@ -41,6 +41,9 @@
    :xai "xai"
    :perplexity "perplexity"
    :huggingface "huggingface"
+   :cohere "cohere"
+   :voyage "voyage"
+   :jina "jina"
    :codex "openai"
    :codex-backend "openai"
    :bedrock "amazon-bedrock"})

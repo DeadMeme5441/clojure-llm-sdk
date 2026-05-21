@@ -1,0 +1,15 @@
+{
+  "id": "cohere-embed-12345",
+  "texts": ["hello world", "second input"],
+  "embeddings": {
+    "float": [
+      [0.0123, -0.0456, 0.0789, -0.0234, 0.0567, -0.0891, 0.0345, -0.0678],
+      [-0.0987, 0.0654, -0.0321, 0.0876, -0.0543, 0.0210, -0.0765, 0.0432]
+    ]
+  },
+  "meta": {
+    "api_version": {"version": "2"},
+    "billed_units": {"input_tokens": 5}
+  },
+  "response_type": "embeddings_floats"
+}

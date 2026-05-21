@@ -20,6 +20,7 @@
             ;; constructors are registered
             [llm.sdk.providers.openai-chat]
             [llm.sdk.providers.openai-embed]
+            [llm.sdk.providers.cohere-embed]
             [llm.sdk.providers.anthropic]
             [llm.sdk.providers.gemini-native]
             [llm.sdk.providers.vertex-gemini]
