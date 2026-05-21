@@ -254,15 +254,26 @@
 
 (defmethod fetch-models :vertex-gemini [_]
   (let [project (System/getenv "GOOGLE_CLOUD_PROJECT")
-        location (or (System/getenv "GOOGLE_CLOUD_LOCATION") "us-central1")]
+        raw-location (System/getenv "GOOGLE_CLOUD_LOCATION")
+        ;; The Vertex /publishers/google/models catalog endpoint does
+        ;; NOT serve location=global (returns 404). Fall back to a
+        ;; regional host for the catalog probe only — chat completion
+        ;; elsewhere keeps honouring whatever the user configured.
+        location (cond
+                   (nil? raw-location) "us-central1"
+                   (= raw-location "global") "us-central1"
+                   :else raw-location)]
     (when-not project
-      (throw (ex-info "GOOGLE_CLOUD_PROJECT required for Vertex /models"
+      (throw (ex-info "GOOGLE_CLOUD_PROJECT required for Vertex /models (quota project header)"
                       {:provider :vertex-gemini :error :missing-config})))
-    (let [url (str "https://" location "-aiplatform.googleapis.com/v1/projects/"
-                   project "/locations/" location
-                   "/publishers/google/models")
+    (let [;; The catalog is at /v1beta1/publishers/google/models on the
+          ;; regional aiplatform host. It's NOT project-scoped in the
+          ;; path — the project is supplied via the X-Goog-User-Project
+          ;; quota header instead.
+          url (str "https://" location "-aiplatform.googleapis.com/v1beta1/publishers/google/models")
           token (vertex-auth-token)
           headers {"Authorization" (str "Bearer " token)
+                   "X-Goog-User-Project" project
                    "Accept" "application/json"}]
       (parse-gemini-models (get-json url headers) :vertex-gemini url))))
 
