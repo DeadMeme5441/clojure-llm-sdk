@@ -70,6 +70,20 @@
      :usage/request-count 1
      :usage/provider-raw u}))
 
+(defn normalize-embedding-usage
+  "Normalize an embedding-endpoint usage map. Embedding responses lack
+   completion_tokens; OpenAI returns {prompt_tokens, total_tokens}, the
+   compatible providers do the same. Caches and reasoning aren't a thing
+   here."
+  [u]
+  (let [prompt (->int (:prompt_tokens u))
+        total (->int (:total_tokens u))]
+    {:usage/input-tokens prompt
+     :usage/output-tokens 0
+     :usage/total-tokens (if (pos? total) total prompt)
+     :usage/request-count 1
+     :usage/provider-raw u}))
+
 (defn normalize-codex-usage
   "Normalize OpenAI Responses/Codex usage shape."
   [u]

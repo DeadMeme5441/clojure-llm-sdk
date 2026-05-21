@@ -162,6 +162,30 @@
    [:usage/provider-raw {:optional true} map?]])
 
 ;; ---------------------------------------------------------------------------
+;; Embeddings request / response
+;; ---------------------------------------------------------------------------
+
+(def EmbedRequest
+  [:map
+   [:embed/model string?]
+   [:embed/inputs [:vector string?]]
+   [:embed/dimensions {:optional true} int?]
+   [:embed/encoding-format {:optional true} [:enum :float :base64]]
+   [:embed/user {:optional true} string?]
+   [:embed/provider-options {:optional true} map?]])
+
+(def EmbedResponse
+  [:map
+   [:embed/id {:optional true} string?]
+   [:embed/provider keyword?]
+   [:embed/model string?]
+   [:embed/vectors [:vector [:vector number?]]]
+   [:embed/dimensions {:optional true} int?]
+   [:response/usage {:optional true} Usage]
+   [:embed/provider-data {:optional true} map?]
+   [:embed/raw {:optional true} any?]])
+
+;; ---------------------------------------------------------------------------
 ;; Response
 ;; ---------------------------------------------------------------------------
 
@@ -230,6 +254,10 @@
 (def validate-message (m/validator Message))
 (def validate-stream-event (m/validator StreamEvent))
 (def validate-provider-profile (m/validator ProviderProfile))
+(def validate-embed-request (m/validator EmbedRequest))
+(def validate-embed-response (m/validator EmbedResponse))
 
 (defn explain-request [x] (m/explain Request x))
 (defn explain-response [x] (m/explain Response x))
+(defn explain-embed-request [x] (m/explain EmbedRequest x))
+(defn explain-embed-response [x] (m/explain EmbedResponse x))
