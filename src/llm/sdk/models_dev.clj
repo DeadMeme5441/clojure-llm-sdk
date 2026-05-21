@@ -40,6 +40,7 @@
    :together "togetherai"
    :xai "xai"
    :perplexity "perplexity"
+   :huggingface "huggingface"
    :codex "openai"
    :codex-backend "openai"
    :bedrock "amazon-bedrock"})
