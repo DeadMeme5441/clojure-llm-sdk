@@ -83,15 +83,17 @@
         (is (fn? (:profile/transport-constructor p)) (str id " has transport"))
         (is (contains? (:profile/capabilities p) :chat) (str id " can chat"))))))
 
-(deftest test-deepseek-kimi-still-registered
-  (testing "deepseek and kimi survive the move into the alias mechanism"
+(deftest test-deepseek-kimi-carry-transport-constructor
+  (testing "deepseek and kimi (and everything else under :openai-chat) get a constructor"
     (let [ds (provider/get-provider :deepseek)
           k (provider/get-provider :kimi)]
       (is (= "https://api.deepseek.com/v1" (:profile/base-url ds)))
       (is (fn? (:profile/transport-constructor ds)))
       (is (= "https://api.moonshot.cn/v1" (:profile/base-url k)))
-      ;; This was the latent bug — kimi had a profile but no transport
-      ;; constructor before T2-03.
+      ;; This was a latent bug pre-T2-03 — the doseq attaching
+      ;; constructors only covered [:openai :openrouter :deepseek] and
+      ;; silently skipped :kimi. T2-03's compat-provider-ids list
+      ;; closes that gap.
       (is (fn? (:profile/transport-constructor k))
           ":kimi finally carries a transport-constructor"))))
 
