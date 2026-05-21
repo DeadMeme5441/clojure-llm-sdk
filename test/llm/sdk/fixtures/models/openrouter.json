@@ -1,0 +1,43 @@
+{
+  "data": [
+    {
+      "id": "openai/gpt-4o",
+      "name": "OpenAI: GPT-4o",
+      "context_length": 128000,
+      "pricing": {
+        "prompt": "0.0000025",
+        "completion": "0.00001",
+        "request": "0",
+        "image": "0.003613"
+      },
+      "architecture": {"modality": "text+image->text", "tokenizer": "GPT"},
+      "top_provider": {"context_length": 128000, "max_completion_tokens": 16384, "is_moderated": true}
+    },
+    {
+      "id": "anthropic/claude-sonnet-4",
+      "name": "Anthropic: Claude Sonnet 4",
+      "context_length": 200000,
+      "pricing": {
+        "prompt": "0.000003",
+        "completion": "0.000015",
+        "cache_read": "0.0000003",
+        "cache_write": "0.00000375",
+        "request": "0"
+      },
+      "architecture": {"modality": "text->text", "tokenizer": "Claude"},
+      "top_provider": {"context_length": 200000, "max_completion_tokens": 8192, "is_moderated": true}
+    },
+    {
+      "id": "google/gemini-2.5-flash",
+      "name": "Google: Gemini 2.5 Flash",
+      "context_length": 1048576,
+      "pricing": {
+        "prompt": "0.00000015",
+        "completion": "0.0000006",
+        "request": "0"
+      },
+      "architecture": {"modality": "text+image->text", "tokenizer": "Gemini"},
+      "top_provider": {"context_length": 1048576, "max_completion_tokens": 65536, "is_moderated": false}
+    }
+  ]
+}
