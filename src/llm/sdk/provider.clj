@@ -97,18 +97,15 @@
                 :profile/env-var-names ["OPENROUTER_API_KEY"]
                 :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning :provider-routing}
                 :profile/quirks {:provider-preferences true
-                                 :pareto-router true}))
-  (register-provider
-   (mk-provider :deepseek :openai-chat "https://api.deepseek.com/v1" :bearer
-                :profile/env-var-names ["DEEPSEEK_API_KEY"]
-                :profile/capabilities #{:chat :streaming :tools :reasoning}
-                :profile/quirks {:thinking-explicit true
-                                 :reasoning-content-echo true}))
-  (register-provider
-   (mk-provider :kimi :openai-chat "https://api.moonshot.cn/v1" :bearer
-                :profile/env-var-names ["KIMI_API_KEY"]
-                :profile/capabilities #{:chat :streaming :tools :reasoning}
-                :profile/quirks {:thinking-explicit true})))
+                                 :pareto-router true})))
+
+;; :deepseek, :kimi, and the other OpenAI-compat aliases (:mistral :groq
+;; :cerebras :together :xai) are registered by
+;; llm.sdk.providers.openai-chat via register-alias!. Keeping them out of
+;; the built-in block here means one file owns OpenAI-compat profile
+;; data, and the transport-constructor wiring happens by construction
+;; (which fixed a latent bug where :kimi had a profile but no
+;; transport-constructor attached).
 
 ;; Auto-register on load
 (register-built-in-providers)

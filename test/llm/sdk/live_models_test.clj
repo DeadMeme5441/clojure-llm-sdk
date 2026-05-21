@@ -113,3 +113,32 @@
           (testing "context length + cost flow through from the rich response"
             (is (pos? (:model/context-length gpt4o)))
             (is (pos? (get-in gpt4o [:model/cost :input-per-million])))))))))
+
+;; ---------------------------------------------------------------------------
+;; T2-03 OpenAI-compat aliases — all five share OpenAI /v1/models shape
+;; ---------------------------------------------------------------------------
+
+(deftest ^:live live-mistral-models
+  (when (has-creds? "MISTRAL_API_KEY")
+    (testing "Mistral /v1/models live"
+      (smoke-fetch :mistral))))
+
+(deftest ^:live live-groq-models
+  (when (has-creds? "GROQ_API_KEY")
+    (testing "Groq /v1/models live"
+      (smoke-fetch :groq))))
+
+(deftest ^:live live-cerebras-models
+  (when (has-creds? "CEREBRAS_API_KEY")
+    (testing "Cerebras /v1/models live"
+      (smoke-fetch :cerebras))))
+
+(deftest ^:live live-together-models
+  (when (has-creds? "TOGETHER_API_KEY")
+    (testing "Together /v1/models live"
+      (smoke-fetch :together))))
+
+(deftest ^:live live-xai-models
+  (when (has-creds? "XAI_API_KEY")
+    (testing "xAI /v1/models live"
+      (smoke-fetch :xai))))
