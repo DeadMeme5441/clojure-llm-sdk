@@ -1,124 +1,127 @@
 (ns llm.sdk.catalog
-  "Model catalog and capabilities."
-  (:require [clojure.string :as str]))
+  "Model catalog — registry-backed lookups for model metadata.
+
+   Every fn here delegates to llm.sdk.registry; the hardcoded catalog
+   atom that previously lived here is gone (all former entries are
+   present in the bundled models.dev snapshot at
+   resources/models-dev-snapshot.json).
+
+   Single-arg lookups (get-model, context-length, model-capable?) scan
+   across providers and return the first match — stable for globally
+   unique model ids (gpt-4o, claude-opus-4-7), non-deterministic for
+   ambiguous ids that exist under multiple providers (e.g. a model
+   served by both :openrouter and :openai). Prefer the
+   provider-aware overloads when the id is ambiguous."
+  (:require [clojure.string :as str]
+            [llm.sdk.registry :as registry]))
 
 ;; ---------------------------------------------------------------------------
-;; Catalog entries
+;; Lookup — provider-aware preferred, single-arg falls back to scan
 ;; ---------------------------------------------------------------------------
 
-(def ^:private catalog
-  (atom
-   {"gpt-4o" {:model/id "gpt-4o"
-               :model/provider :openai
-               :model/context-length 128000
-               :model/capabilities #{:chat :streaming :tools :vision :json-schema :cache}}
-    "gpt-4o-mini" {:model/id "gpt-4o-mini"
-                   :model/provider :openai
-                   :model/context-length 128000
-                   :model/capabilities #{:chat :streaming :tools :vision :json-schema}}
-    "gpt-4.1" {:model/id "gpt-4.1"
-               :model/provider :openai
-               :model/context-length 1047576
-               :model/capabilities #{:chat :streaming :tools :vision :json-schema :cache}}
-    "o3" {:model/id "o3"
-          :model/provider :openai
-          :model/context-length 200000
-          :model/capabilities #{:chat :streaming :tools :reasoning :json-schema}}
-    "o3-mini" {:model/id "o3-mini"
-               :model/provider :openai
-               :model/context-length 200000
-               :model/capabilities #{:chat :streaming :tools :reasoning :json-schema}}
-    "claude-opus-4-7" {:model/id "claude-opus-4-7"
-                       :model/provider :anthropic
-                       :model/context-length 200000
-                       :model/capabilities #{:chat :streaming :tools :thinking-blocks :cache}}
-    "claude-sonnet-4-6" {:model/id "claude-sonnet-4-6"
-                         :model/provider :anthropic
-                         :model/context-length 200000
-                         :model/capabilities #{:chat :streaming :tools :thinking-blocks :cache}}
-    "claude-haiku-4-5" {:model/id "claude-haiku-4-5"
-                        :model/provider :anthropic
-                        :model/context-length 200000
-                        :model/capabilities #{:chat :streaming :tools :cache}}
-    "gemini-3.1-pro-preview" {:model/id "gemini-3.1-pro-preview"
-                              :model/provider :google
-                              :model/context-length 1048576
-                              :model/capabilities #{:chat :streaming :tools :vision :multimodal :reasoning :cache}}
-    "gemini-3.5-flash" {:model/id "gemini-3.5-flash"
-                        :model/provider :google
-                        :model/context-length 1048576
-                        :model/capabilities #{:chat :streaming :tools :vision :multimodal :reasoning :cache}}
-    "gemini-3.1-flash-lite-preview" {:model/id "gemini-3.1-flash-lite-preview"
-                                      :model/provider :google
-                                      :model/context-length 1048576
-                                      :model/capabilities #{:chat :streaming :tools :vision :multimodal :cache}}
-    "gemini-2.5-pro" {:model/id "gemini-2.5-pro"
-                      :model/provider :google
-                      :model/context-length 1048576
-                      :model/capabilities #{:chat :streaming :tools :vision :multimodal :reasoning}}
-    "gemini-2.5-flash" {:model/id "gemini-2.5-flash"
-                        :model/provider :google
-                        :model/context-length 1048576
-                        :model/capabilities #{:chat :streaming :tools :vision :multimodal :reasoning}}
-    "gemini-2.0-flash" {:model/id "gemini-2.0-flash"
-                        :model/provider :google
-                        :model/context-length 1048576
-                        :model/capabilities #{:chat :streaming :tools :vision :multimodal}}
-    "deepseek-chat" {:model/id "deepseek-chat"
-                     :model/provider :deepseek
-                     :model/context-length 64000
-                     :model/capabilities #{:chat :streaming :tools}}
-    "deepseek-reasoner" {:model/id "deepseek-reasoner"
-                         :model/provider :deepseek
-                         :model/context-length 64000
-                         :model/capabilities #{:chat :streaming :tools :reasoning}}}))
+(def ^:private provider-preference-order
+  "Native providers come before aliases (:codex/:codex-backend reuse the
+   OpenAI catalog; :vertex-gemini reuses Google's via models.dev's
+   `google-vertex` entry). Single-arg lookups walk this order so
+   ambiguous ids resolve to the native provider first."
+  [:openai :anthropic :gemini-native :openrouter :deepseek :kimi
+   :vertex-gemini :bedrock :codex :codex-backend :fake])
 
-;; ---------------------------------------------------------------------------
-;; API
-;; ---------------------------------------------------------------------------
-
-(defn register-model
-  "Register a model entry in the catalog."
-  [model-id entry]
-  (swap! catalog assoc model-id entry))
+(defn- find-by-id
+  "Scan provider-preference-order plus any other known provider for
+   the first entry whose :model/id matches. nil when no provider has it."
+  [model-id]
+  (let [known (registry/known-providers)
+        ordered (concat (filter known provider-preference-order)
+                        (sort (remove (set provider-preference-order) known)))]
+    (some #(registry/lookup % model-id) ordered)))
 
 (defn get-model
-  "Look up a model by exact id."
-  [model-id]
-  (get @catalog model-id))
+  "Look up a model entry by id. With one arg, scans across providers
+   (first match wins). With two args, queries the registry directly."
+  ([model-id]
+   (find-by-id model-id))
+  ([provider model-id]
+   (registry/lookup provider model-id)))
+
+(defn register-model
+  "Register a model entry. Pushes into the registry's override tier.
+   Accepts either a (model-id, entry) pair or a (provider, model-id,
+   entry) triple. With a single id, derives the provider from the
+   entry's :model/provider key."
+  ([model-id entry]
+   (let [provider (or (:model/provider entry)
+                      (throw (ex-info "register-model needs :model/provider on the entry"
+                                      {:model-id model-id :entry entry})))]
+     (register-model provider model-id entry)))
+  ([provider model-id entry]
+   (registry/register-entry! provider model-id entry)))
+
+;; ---------------------------------------------------------------------------
+;; Listing
+;; ---------------------------------------------------------------------------
 
 (defn list-models
-  "List all model ids in the catalog."
+  "Return a sorted seq of unique model ids the registry knows about."
   []
-  (keys @catalog))
+  (->> (registry/list-all)
+       (map :model/id)
+       distinct
+       sort))
 
 (defn models-by-provider
-  "Return all model entries for a given provider keyword."
+  "Return every model entry the registry has under the given SDK
+   provider keyword."
   [provider]
-  (->> @catalog
-       vals
-       (filter #(= (:model/provider %) provider))))
+  (registry/list-by-provider provider))
+
+;; ---------------------------------------------------------------------------
+;; Capability + context-length
+;; ---------------------------------------------------------------------------
 
 (defn model-capable?
-  "Check if a model supports a given capability keyword."
-  [model-id capability]
-  (when-let [m (get-model model-id)]
-    (contains? (:model/capabilities m) capability)))
+  "Check if a model supports a capability keyword (e.g. :tools,
+   :vision, :cache). Returns false when the model is unknown or has no
+   :model/capabilities set on its registry entry."
+  ([model-id capability]
+   (boolean (some-> (find-by-id model-id)
+                    :model/capabilities
+                    (contains? capability))))
+  ([provider model-id capability]
+   (boolean (some-> (registry/lookup provider model-id)
+                    :model/capabilities
+                    (contains? capability)))))
 
 (defn context-length
-  "Get context length for a model, or nil if unknown."
-  [model-id]
-  (:model/context-length (get-model model-id)))
+  "Return the context length for a model in tokens, or nil when
+   unknown."
+  ([model-id]
+   (:model/context-length (find-by-id model-id)))
+  ([provider model-id]
+   (:model/context-length (registry/lookup provider model-id))))
+
+(defn max-output-tokens
+  "Return the maximum output tokens for a model, or nil when unknown."
+  ([model-id]
+   (:model/max-output-tokens (find-by-id model-id)))
+  ([provider model-id]
+   (:model/max-output-tokens (registry/lookup provider model-id))))
+
+;; ---------------------------------------------------------------------------
+;; Fuzzy match
+;; ---------------------------------------------------------------------------
 
 (defn resolve-model
-  "Fuzzy-match a model name against the catalog.
-   Tries exact match, then provider-prefixed match, then substring."
+  "Fuzzy-match a model name against the registry. Tries: exact id,
+   provider-prefixed id (anthropic/claude → claude), then substring
+   over every known model id. Returns a registry entry or nil."
   [model-name]
-  (or (get-model model-name)
+  (or (find-by-id model-name)
       (let [without-prefix (second (re-find #"^[^/]+/(.+)$" model-name))]
-        (when without-prefix
-          (get-model without-prefix)))
-      (->> @catalog
-           vals
-           (filter #(str/includes? model-name (:model/id %)))
-           first)))
+        (when without-prefix (find-by-id without-prefix)))
+      (let [all (registry/list-all)]
+        (some (fn [e]
+                (when (and (:model/id e)
+                           (str/includes? model-name (:model/id e)))
+                  e))
+              all))))
