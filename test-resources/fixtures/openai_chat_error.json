@@ -1,0 +1,9 @@
+{
+  "status": 401,
+  "body": {
+    "error": {
+      "message": "Incorrect API key provided",
+      "type": "invalid_request_error"
+    }
+  }
+}

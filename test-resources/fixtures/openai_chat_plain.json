@@ -1,0 +1,21 @@
+{
+  "request": {
+    "model": "gpt-4o",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Say hello."}
+    ],
+    "temperature": 0.7
+  },
+  "response": {
+    "id": "chatcmpl-test-plain",
+    "model": "gpt-4o",
+    "choices": [
+      {
+        "message": {"content": "Hello! How can I help you today?"},
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+  }
+}
