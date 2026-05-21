@@ -25,7 +25,7 @@
    `google-vertex` entry). Single-arg lookups walk this order so
    ambiguous ids resolve to the native provider first."
   [:openai :anthropic :gemini-native :openrouter :deepseek :kimi
-   :mistral :groq :cerebras :together :xai
+   :mistral :groq :cerebras :together :xai :perplexity
    :vertex-gemini :bedrock :codex :codex-backend :fake])
 
 (defn- find-by-id
