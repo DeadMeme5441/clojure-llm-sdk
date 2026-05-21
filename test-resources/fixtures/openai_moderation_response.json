@@ -1,0 +1,44 @@
+{
+  "id": "modr-XXXXX",
+  "model": "omni-moderation-latest",
+  "results": [
+    {
+      "flagged": true,
+      "categories": {
+        "sexual": false,
+        "hate": false,
+        "harassment": false,
+        "self-harm": false,
+        "sexual/minors": false,
+        "hate/threatening": false,
+        "violence/graphic": false,
+        "self-harm/intent": false,
+        "self-harm/instructions": false,
+        "harassment/threatening": false,
+        "violence": true,
+        "illicit": false,
+        "illicit/violent": false
+      },
+      "category_scores": {
+        "sexual": 0.00012,
+        "hate": 0.00043,
+        "harassment": 0.00067,
+        "self-harm": 0.00002,
+        "sexual/minors": 0.00001,
+        "hate/threatening": 0.00012,
+        "violence/graphic": 0.04321,
+        "self-harm/intent": 0.00001,
+        "self-harm/instructions": 0.00003,
+        "harassment/threatening": 0.00098,
+        "violence": 0.87654,
+        "illicit": 0.00234,
+        "illicit/violent": 0.00187
+      },
+      "category_applied_input_types": {
+        "sexual": ["text"],
+        "violence": ["text", "image"],
+        "violence/graphic": ["text", "image"]
+      }
+    }
+  ]
+}

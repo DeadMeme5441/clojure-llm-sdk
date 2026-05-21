@@ -15,12 +15,14 @@
             [llm.sdk.registry :as registry]
             [llm.sdk.models :as models]
             [llm.sdk.embed :as embed-driver]
+            [llm.sdk.moderate :as moderate-driver]
             [llm.sdk.fallbacks :as fallbacks]
             [llm.sdk.request :as request]
             ;; Ensure provider adapters are loaded so their transport
             ;; constructors are registered
             [llm.sdk.providers.openai-chat]
             [llm.sdk.providers.openai-embed]
+            [llm.sdk.providers.openai-moderation]
             [llm.sdk.providers.cohere-embed]
             [llm.sdk.providers.anthropic]
             [llm.sdk.providers.gemini-native]
@@ -162,6 +164,22 @@
    :embed/user, :embed/provider-options."
   [provider-id request]
   (embed-driver/embed provider-id request))
+
+;; ---------------------------------------------------------------------------
+;; Moderate
+;; ---------------------------------------------------------------------------
+
+(defn moderate
+  "Send a canonical moderation request and return a ModerationResponse.
+   Provider must carry :profile/moderation-transport-constructor
+   (currently :openai under T2-13).
+
+   :moderation/inputs is a vector of either strings or maps shaped
+   {:type :text :text \"...\"} / {:type :image_url :image_url \"https://...\"}.
+   omni-moderation models accept the multi-modal shape; text-moderation
+   models are text-only."
+  [provider-id request]
+  (moderate-driver/moderate provider-id request))
 
 ;; ---------------------------------------------------------------------------
 ;; Fallbacks
