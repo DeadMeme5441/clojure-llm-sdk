@@ -17,6 +17,7 @@
             [llm.sdk.embed :as embed-driver]
             [llm.sdk.moderate :as moderate-driver]
             [llm.sdk.rerank :as rerank-driver]
+            [llm.sdk.image :as image-driver]
             [llm.sdk.fallbacks :as fallbacks]
             [llm.sdk.request :as request]
             ;; Ensure provider adapters are loaded so their transport
@@ -24,6 +25,7 @@
             [llm.sdk.providers.openai-chat]
             [llm.sdk.providers.openai-embed]
             [llm.sdk.providers.openai-moderation]
+            [llm.sdk.providers.openai-image]
             [llm.sdk.providers.cohere-embed]
             [llm.sdk.providers.cohere-rerank]
             [llm.sdk.providers.voyage-rerank]
@@ -198,6 +200,21 @@
    :rerank/return-documents, :rerank/provider-options."
   [provider-id request]
   (rerank-driver/rerank provider-id request))
+
+;; ---------------------------------------------------------------------------
+;; Image generation
+;; ---------------------------------------------------------------------------
+
+(defn generate-image
+  "Send a canonical image generation request and return an ImageGenResponse.
+   Provider must carry :profile/image-transport-constructor
+   (currently :openai under T2-10).
+
+   Required: :image/prompt. Optional: :image/model, :image/n,
+   :image/size, :image/quality, :image/style,
+   :image/response-format, :image/user, :image/provider-options."
+  [provider-id request]
+  (image-driver/generate-image provider-id request))
 
 ;; ---------------------------------------------------------------------------
 ;; Fallbacks
