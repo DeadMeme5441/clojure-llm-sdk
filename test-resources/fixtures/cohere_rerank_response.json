@@ -1,0 +1,24 @@
+{
+  "id": "rerank-12345",
+  "results": [
+    {
+      "index": 2,
+      "relevance_score": 0.9523,
+      "document": {"text": "Clojure is a Lisp dialect for the JVM."}
+    },
+    {
+      "index": 0,
+      "relevance_score": 0.7841,
+      "document": {"text": "Python is a general-purpose programming language."}
+    },
+    {
+      "index": 1,
+      "relevance_score": 0.1283,
+      "document": {"text": "JavaScript runs in browsers."}
+    }
+  ],
+  "meta": {
+    "api_version": {"version": "2"},
+    "billed_units": {"search_units": 1}
+  }
+}

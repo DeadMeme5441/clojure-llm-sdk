@@ -1,0 +1,19 @@
+{
+  "object": "list",
+  "model": "rerank-2",
+  "data": [
+    {
+      "index": 1,
+      "relevance_score": 0.91,
+      "document": "Document B mentions the target concept directly."
+    },
+    {
+      "index": 0,
+      "relevance_score": 0.42,
+      "document": "Document A is loosely related."
+    }
+  ],
+  "usage": {
+    "total_tokens": 38
+  }
+}

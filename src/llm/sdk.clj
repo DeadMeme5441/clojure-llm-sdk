@@ -16,6 +16,7 @@
             [llm.sdk.models :as models]
             [llm.sdk.embed :as embed-driver]
             [llm.sdk.moderate :as moderate-driver]
+            [llm.sdk.rerank :as rerank-driver]
             [llm.sdk.fallbacks :as fallbacks]
             [llm.sdk.request :as request]
             ;; Ensure provider adapters are loaded so their transport
@@ -24,6 +25,8 @@
             [llm.sdk.providers.openai-embed]
             [llm.sdk.providers.openai-moderation]
             [llm.sdk.providers.cohere-embed]
+            [llm.sdk.providers.cohere-rerank]
+            [llm.sdk.providers.voyage-rerank]
             [llm.sdk.providers.anthropic]
             [llm.sdk.providers.gemini-native]
             [llm.sdk.providers.vertex-gemini]
@@ -180,6 +183,21 @@
    models are text-only."
   [provider-id request]
   (moderate-driver/moderate provider-id request))
+
+;; ---------------------------------------------------------------------------
+;; Rerank
+;; ---------------------------------------------------------------------------
+
+(defn rerank
+  "Send a canonical rerank request and return a RerankResponse.
+   Providers carrying :profile/rerank-transport-constructor (currently
+   :cohere, :jina, :voyage under T2-16).
+
+   Required keys: :rerank/model, :rerank/query, :rerank/documents
+   (vector of strings). Optional: :rerank/top-n,
+   :rerank/return-documents, :rerank/provider-options."
+  [provider-id request]
+  (rerank-driver/rerank provider-id request))
 
 ;; ---------------------------------------------------------------------------
 ;; Fallbacks
