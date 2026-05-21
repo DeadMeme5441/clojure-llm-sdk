@@ -12,15 +12,21 @@
                                             :timeout 120000})))
 
 (defn request
-  "Make an HTTP request. Returns a map with :status, :body, :headers.
-   Body is parsed as JSON if Content-Type is application/json."
+  "Make an HTTP request. Returns a map with :status, :body, :headers
+   for every status code (including 4xx/5xx) — callers branch on
+   :status. Body is parsed as JSON if Content-Type is application/json."
   [{:keys [method url headers body query-params]}]
   (let [opts {:method method
               :url url
               :headers (merge {"Content-Type" "application/json"
                                "Accept" "application/json"}
                               headers)
-              :http-client (client)}
+              :http-client (client)
+              ;; Always return a response map — callers (sdk/complete,
+              ;; llm.sdk.models/get-json) branch on :status >= 400
+              ;; themselves and throw ex-info with provider-specific
+              ;; context.
+              :throw-exceptions? false}
         opts (if body
                (assoc opts :body (json/generate-string body))
                opts)
