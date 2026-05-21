@@ -7,6 +7,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
+            [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
@@ -82,10 +83,35 @@
         tools (when (seq (:request/tools request))
                 (mapv tool->openai (:request/tools request)))
         extra-body (build-extra-body profile request)
+        ;; Caching:
+        ;;   :system-and-3 envelope  → mark messages in place
+        ;;     (OpenRouter Claude/Qwen and other OpenAI-wire proxies
+        ;;      that honour Anthropic-style cache_control)
+        ;;   :prompt-key             → set body.prompt_cache_key
+        ;;     (OpenAI, DeepSeek, Kimi all accept the field; DeepSeek
+        ;;      and Kimi rely on server-side implicit cache and ignore
+        ;;      the key, so it's a safe pass-through)
+        ;;
+        ;; The OpenRouter adapter delegates here for the base body
+        ;; then layers its own routing/plugins; the cache decision
+        ;; runs in both so the body coming out of here is already
+        ;; cache-aware for either path.
+        cache-on? (cache/cache-enabled? request)
+        cache-decision (when cache-on? (cache/decide-strategy profile model (:request/cache request)))
+        cache-opts {:ttl (cache/ttl request) :layout :envelope
+                    :breakpoints (cache/breakpoints request)}
+        messages (if (and cache-on? (= (:strategy cache-decision) :system-and-3))
+                   (cache/apply-system-and-3 messages cache-opts)
+                   messages)
+        prompt-cache-key (when (and cache-on?
+                                    (= (:strategy cache-decision) :prompt-key)
+                                    (cache/scope-id request))
+                           (cache/scope-id request))
         body (merge
               {:model model
                :messages messages}
               (when tools {:tools tools})
+              (when prompt-cache-key {:prompt_cache_key prompt-cache-key})
               (when (:request/tool-choice request)
                 {:tool_choice (tool-choice->openai (:request/tool-choice request))})
               (when (:request/temperature request)

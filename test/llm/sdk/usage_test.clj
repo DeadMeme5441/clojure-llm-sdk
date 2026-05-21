@@ -40,3 +40,26 @@
   (is (= 10 (:usage/input-tokens (usage/normalize-usage :openai {:prompt_tokens 10}))))
   (is (= 10 (:usage/input-tokens (usage/normalize-usage :anthropic {:input_tokens 10}))))
   (is (= 10 (:usage/input-tokens (usage/normalize-usage :deepseek {:prompt_tokens 10})))))
+
+(deftest test-normalize-openai-usage-openrouter-toplevel-cache-fallback
+  (testing "OpenRouter Claude proxies surface Anthropic cache fields at top level (cline/cline#10266)"
+    (let [u (usage/normalize-openai-usage
+             {:prompt_tokens 2500
+              :completion_tokens 800
+              :total_tokens 3300
+              :cache_read_input_tokens 1500
+              :cache_creation_input_tokens 200
+              :prompt_tokens_details {}})]
+      (is (= 800 (:usage/input-tokens u)))
+      (is (= 800 (:usage/output-tokens u)))
+      (is (= 1500 (:usage/cached-input-tokens u)))
+      (is (= 200 (:usage/cache-write-tokens u))))))
+
+(deftest test-normalize-openai-usage-details-wins-over-toplevel
+  (testing "prompt_tokens_details takes precedence when present"
+    (let [u (usage/normalize-openai-usage
+             {:prompt_tokens 1000
+              :completion_tokens 400
+              :prompt_tokens_details {:cached_tokens 300 :cache_write_tokens 50}
+              :cache_read_input_tokens 9999})]  ; should be ignored
+      (is (= 300 (:usage/cached-input-tokens u))))))

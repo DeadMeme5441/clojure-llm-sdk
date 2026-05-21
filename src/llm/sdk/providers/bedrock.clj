@@ -8,6 +8,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
+            [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
@@ -91,6 +92,30 @@
 ;; Request building
 ;; ---------------------------------------------------------------------------
 
+(defn- cache-point-block []
+  {:cachePoint {:type "default"}})
+
+(defn- append-cache-point
+  "Append a cachePoint sentinel to the end of an array (system or message
+   content list). Bedrock Converse interprets a cachePoint block as
+   'cache everything up to and including the previous block'."
+  [items]
+  (when (sequential? items)
+    (conj (vec items) (cache-point-block))))
+
+(defn- mark-last-message-cachable
+  "Append a cachePoint block to the last message's content array.
+   Used to pin a breakpoint at the end of the message history so all
+   prior turns (and any prior breakpoints) become cache-resumable."
+  [messages]
+  (if (and (sequential? messages) (seq messages))
+    (let [messages (vec messages)
+          last-idx (dec (count messages))
+          last-msg (nth messages last-idx)]
+      (assoc messages last-idx
+             (update last-msg :content append-cache-point)))
+    messages))
+
 (defn build-request-bedrock
   [profile request]
   (let [model (:request/model request)
@@ -99,11 +124,26 @@
         system-texts (keep #(when (= (:message/role %) :system)
                               (t/content->string (:message/content %)))
                            (:request/messages request))
+        ;; Caching: Bedrock Converse supports up to 4 cachePoint
+        ;; sentinels per request. Strategy: a sentinel after the
+        ;; system content array (caches the system prompt) and one
+        ;; after the final user message (caches the running history).
+        ;; Caller can disable via :request/cache {:strategy :none}.
+        cache-on? (and (cache/cache-enabled? request)
+                       (not= :none (get-in request [:request/cache :strategy])))
+        system-content (when (seq system-texts) (mapv #(hash-map :text %) system-texts))
+        system-content (if (and cache-on? system-content)
+                         (append-cache-point system-content)
+                         system-content)
+        native-messages (build-messages messages)
+        native-messages (if cache-on?
+                          (mark-last-message-cachable native-messages)
+                          native-messages)
         body (merge
               {:modelId model
-               :messages (build-messages messages)}
-              (when (seq system-texts)
-                {:system (mapv #(hash-map :text %) system-texts)})
+               :messages native-messages}
+              (when (seq system-content)
+                {:system system-content})
               (when (seq (:request/tools request))
                 {:toolConfig
                  {:tools (mapv tool->bedrock (:request/tools request))}})

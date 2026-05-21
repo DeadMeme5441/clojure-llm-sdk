@@ -15,23 +15,62 @@
 ;; Auth: Authorization: Bearer {oauth_token}
 ;; ---------------------------------------------------------------------------
 
+(defn- vertex-project
+  "Resolve the GCP project id. Caller > profile quirks > env."
+  [profile request]
+  (or (get-in request [:request/provider-options :vertex :project])
+      (get-in profile [:profile/quirks :vertex-project])
+      (System/getenv "GOOGLE_CLOUD_PROJECT")
+      ""))
+
+(defn- vertex-location
+  "Resolve the GCP location. Caller > profile quirks > env > default."
+  [profile request]
+  (or (get-in request [:request/provider-options :vertex :location])
+      (get-in profile [:profile/quirks :vertex-location])
+      (System/getenv "GOOGLE_CLOUD_LOCATION")
+      "us-central1"))
+
+(defn- vertex-base-url
+  "Choose the Vertex AI host for a given location. `global` uses the
+   region-less endpoint; everything else uses the regional host that
+   matches the location."
+  [location]
+  (if (= "global" (str location))
+    "https://aiplatform.googleapis.com"
+    (str "https://" location "-aiplatform.googleapis.com")))
+
+(defn- vertex-access-token
+  "Resolve a GCP OAuth2 access token.
+   Order: request provider-options > GOOGLE_OAUTH_ACCESS_TOKEN env var.
+   Note: GOOGLE_APPLICATION_CREDENTIALS is a file *path* (a service-
+   account JSON), not an access token — exchanging it for an access
+   token requires a JWT signer, which is out of scope for this SDK.
+   Callers must materialize a token themselves (e.g. via
+   `gcloud auth print-access-token`)."
+  [request]
+  (or (get-in request [:request/provider-options :vertex :access-token])
+      (System/getenv "GOOGLE_OAUTH_ACCESS_TOKEN")))
+
 (defn build-request-vertex
   [profile request]
   (let [base-req (gemini/build-request-gemini profile request)
-        project (or (System/getenv "GOOGLE_CLOUD_PROJECT") "")
-        location (or (System/getenv "GOOGLE_CLOUD_LOCATION") "us-central1")
+        project (vertex-project profile request)
+        location (vertex-location profile request)
+        host (vertex-base-url location)
         model (:request/model request)
-        model-norm (if (str/starts-with? (str/lower-case model) "models/")
-                     (subs model 7)
-                     model)]
+        model-norm (cond-> model
+                     (str/starts-with? (str/lower-case model) "models/")
+                     (subs 7))
+        token (vertex-access-token request)]
     (assoc base-req
-           :url (str (:profile/base-url profile)
+           :url (str host
                      "/v1/projects/" project
                      "/locations/" location
                      "/publishers/google/models/" model-norm
                      ":generateContent")
            :headers (merge (:headers base-req)
-                           {"Authorization" (str "Bearer " (provider/resolve-auth-token profile))}))))
+                           (when token {"Authorization" (str "Bearer " token)})))))
 
 (defn parse-response-vertex
   [profile raw]

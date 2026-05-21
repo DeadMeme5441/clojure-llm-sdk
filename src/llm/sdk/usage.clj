@@ -10,13 +10,25 @@
     :else 0))
 
 (defn normalize-openai-usage
-  "Normalize OpenAI Chat Completions usage shape."
+  "Normalize OpenAI Chat Completions usage shape.
+
+   Falls back to Anthropic-style top-level cache fields when an
+   OpenAI-compatible proxy (OpenRouter, Vercel AI Gateway, Cline)
+   routes a Claude model and surfaces cache stats outside of
+   prompt_tokens_details. Without this fallback cache writes count as
+   0 and cache reads are missed entirely — port of cline/cline#10266."
   [u]
   (let [prompt-total (->int (:prompt_tokens u))
         completion (->int (:completion_tokens u))
         details (get u :prompt_tokens_details {})
-        cache-read (->int (:cached_tokens details))
-        cache-write (->int (:cache_write_tokens details))
+        cache-read (let [from-details (->int (:cached_tokens details))]
+                     (if (pos? from-details)
+                       from-details
+                       (->int (:cache_read_input_tokens u))))
+        cache-write (let [from-details (->int (:cache_write_tokens details))]
+                      (if (pos? from-details)
+                        from-details
+                        (->int (:cache_creation_input_tokens u))))
         out-details (get u :output_tokens_details {})
         reasoning (->int (:reasoning_tokens out-details))]
     {:usage/input-tokens (max 0 (- prompt-total cache-read cache-write))

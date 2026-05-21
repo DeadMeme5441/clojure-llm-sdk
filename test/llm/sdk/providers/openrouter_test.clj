@@ -66,3 +66,46 @@
         ev (transport/parse-stream-event t profile line)]
     (is (= :stream/content-delta (:event/type ev)))
     (is (= "Hello" (:event/delta ev)))))
+
+;; ---------------------------------------------------------------------------
+;; Caching wiring
+;; ---------------------------------------------------------------------------
+
+(deftest test-cache-envelope-on-claude
+  (testing "Claude on OpenRouter gets envelope-layout cache_control on system + tail"
+    (let [t (openrouter/make-transport)
+          profile (provider/get-provider :openrouter)
+          req {:request/model "anthropic/claude-sonnet-4"
+               :request/messages [{:message/role :system :message/content "Sys"}
+                                  {:message/role :user :message/content "u1"}
+                                  {:message/role :assistant :message/content "a1"}
+                                  {:message/role :user :message/content "u2"}]
+               :request/cache {:ttl "5m"}}
+          built (transport/build-request t profile req)
+          msgs (get-in built [:body :messages])]
+      (is (= {:type "ephemeral"} (:cache_control (first msgs))))
+      ;; tail messages marked
+      (is (= {:type "ephemeral"} (:cache_control (last msgs)))))))
+
+(deftest test-cache-prompt-key-in-extra-body
+  (testing "scope-id surfaces under extra_body.prompt_cache_key for OpenRouter passthrough"
+    (let [t (openrouter/make-transport)
+          profile (provider/get-provider :openrouter)
+          req {:request/model "anthropic/claude-sonnet-4"
+               :request/messages [{:message/role :user :message/content "Hi"}]
+               :request/cache {:scope-id "session-42"}}
+          built (transport/build-request t profile req)]
+      (is (= "session-42" (get-in built [:body :extra_body :prompt_cache_key]))))))
+
+(deftest test-cache-disabled-when-omitted
+  (testing "no :request/cache → no markers, no prompt_cache_key"
+    (let [t (openrouter/make-transport)
+          profile (provider/get-provider :openrouter)
+          req {:request/model "anthropic/claude-sonnet-4"
+               :request/messages [{:message/role :system :message/content "Sys"}
+                                  {:message/role :user :message/content "Hi"}]}
+          built (transport/build-request t profile req)
+          msgs (get-in built [:body :messages])]
+      (is (nil? (:cache_control (first msgs))))
+      (is (nil? (:cache_control (last msgs))))
+      (is (nil? (get-in built [:body :extra_body :prompt_cache_key]))))))
