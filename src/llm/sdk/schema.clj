@@ -261,7 +261,11 @@
    [:profile/capabilities {:optional true} [:set keyword?]]
    [:profile/env-var-names {:optional true} [:vector string?]]
    [:profile/quirks {:optional true} map?]
-   [:profile/transport-constructor ifn?]])
+   [:profile/transport-constructor ifn?]
+   ;; Optional adapter hooks
+   [:profile/embed-transport-constructor {:optional true} ifn?]
+   [:profile/url-builder {:optional true} ifn?]
+   [:profile/supported-params {:optional true} [:set keyword?]]])
 
 ;; ---------------------------------------------------------------------------
 ;; Validators
