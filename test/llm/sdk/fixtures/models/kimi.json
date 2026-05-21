@@ -1,0 +1,9 @@
+{
+  "object": "list",
+  "data": [
+    {"id": "moonshot-v1-8k", "object": "model", "created": 1700000000, "owned_by": "moonshot"},
+    {"id": "moonshot-v1-32k", "object": "model", "created": 1700000000, "owned_by": "moonshot"},
+    {"id": "moonshot-v1-128k", "object": "model", "created": 1700000000, "owned_by": "moonshot"},
+    {"id": "kimi-k2-0905-preview", "object": "model", "created": 1725490000, "owned_by": "moonshot"}
+  ]
+}

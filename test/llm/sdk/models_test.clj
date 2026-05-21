@@ -180,3 +180,41 @@
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
                           #"Provider /models fetch failed"
                           (models/fetch-models :openai)))))
+
+;; ---------------------------------------------------------------------------
+;; OpenAI-shape aliases (DeepSeek, Kimi) — use their own fixtures
+;; ---------------------------------------------------------------------------
+
+(deftest deepseek-fixture-parses
+  (let [body (load-fixture "deepseek")
+        entries (models/parse-openai-style body :deepseek
+                                           "https://api.deepseek.com/v1/models")]
+    (is (= 2 (count entries)))
+    (is (some #(= "deepseek-chat" (:model/id %)) entries))
+    (is (some #(= "deepseek-reasoner" (:model/id %)) entries))
+    (is (every? #(= :deepseek (:model/provider %)) entries))))
+
+(deftest kimi-fixture-parses
+  (let [body (load-fixture "kimi")
+        entries (models/parse-openai-style body :kimi
+                                           "https://api.moonshot.cn/v1/models")]
+    (is (= 4 (count entries)))
+    (is (some #(= "moonshot-v1-128k" (:model/id %)) entries))
+    (is (some #(= "kimi-k2-0905-preview" (:model/id %)) entries))
+    (is (every? #(= :kimi (:model/provider %)) entries))))
+
+;; ---------------------------------------------------------------------------
+;; Vertex /models — different envelope key + name prefix from Gemini Native
+;; ---------------------------------------------------------------------------
+
+(deftest vertex-fixture-parses
+  (let [body (load-fixture "vertex")
+        entries (models/parse-gemini-models
+                 body :vertex-gemini
+                 "https://us-central1-aiplatform.googleapis.com/v1/projects/x/locations/us-central1/publishers/google/models")]
+    (is (= 2 (count entries)))
+    (testing "publishers/google/models/ prefix stripped"
+      (is (some #(= "gemini-2.5-pro" (:model/id %)) entries))
+      (is (some #(= "gemini-2.5-flash" (:model/id %)) entries)))
+    (is (every? #(= :vertex-gemini (:model/provider %)) entries))
+    (is (every? #(= 1048576 (:model/context-length %)) entries))))

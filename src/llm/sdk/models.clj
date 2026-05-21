@@ -108,19 +108,24 @@
     "countMessageTokens" :count-tokens
     nil))
 
+(defn- strip-model-name-prefix [^String s]
+  (cond
+    (nil? s) s
+    (str/starts-with? s "publishers/google/models/") (subs s (count "publishers/google/models/"))
+    (str/starts-with? s "models/") (subs s 7)
+    :else s))
+
 (defn parse-gemini-models
   "Shape (Gemini Native + Vertex):
-   {models [{name 'models/gemini-2.5-pro', version, displayName,
-             description, inputTokenLimit, outputTokenLimit,
-             supportedGenerationMethods, temperature, ...}]}"
+     Native — {models [{name 'models/gemini-2.5-pro', ...}]}
+     Vertex — {publisherModels [{name 'publishers/google/models/...', ...}]}
+   Each entry carries displayName, inputTokenLimit, outputTokenLimit,
+   supportedGenerationMethods (mapped to capability keywords)."
   [body provider-id source-url]
-  (let [ts (now)]
+  (let [ts (now)
+        entries (or (:models body) (:publisherModels body))]
     (mapv (fn [m]
-            (let [raw-name (:name m)
-                  model-id (if (and (string? raw-name)
-                                    (str/starts-with? raw-name "models/"))
-                             (subs raw-name 7)
-                             raw-name)
+            (let [model-id (strip-model-name-prefix (:name m))
                   caps (->> (:supportedGenerationMethods m)
                             (keep gemini-method->capability)
                             (into #{}))]
@@ -133,7 +138,7 @@
                 (:inputTokenLimit m) (assoc :model/context-length (:inputTokenLimit m))
                 (:outputTokenLimit m) (assoc :model/max-output-tokens (:outputTokenLimit m))
                 (seq caps) (assoc :model/capabilities caps))))
-          (:models body))))
+          entries)))
 
 (defn- parse-decimal-string
   "OpenRouter encodes per-token pricing as decimal strings. Convert to
