@@ -6,8 +6,13 @@
         custom data for endpoints the public registries don't know.
      2. Live per-provider /models fetch — populated lazily by refresh!.
         Authoritative for what the provider currently advertises.
-     3. models.dev — breadth source via llm.sdk.models-dev. Includes the
-        bundled offline snapshot as its own innermost fallback.
+     3. LiteLLM snapshot — bundled at resources/litellm-snapshot.json
+        from llm.sdk.litellm-snapshot. Refreshable via
+        scripts/build_litellm_snapshot.py. Wide coverage of pricing +
+        capabilities, especially strong on Bedrock variants and
+        less-mainstream providers.
+     4. models.dev — breadth source via llm.sdk.models-dev. Includes
+        the bundled offline snapshot as its own innermost fallback.
 
    Lookups field-merge across all tiers: higher tiers fill in missing
    fields (like context-length and pricing) from lower tiers. The
@@ -17,7 +22,8 @@
    All operations are by [provider-keyword, model-id]."
   (:require [clojure.set :as set]
             [llm.sdk.models :as models]
-            [llm.sdk.models-dev :as mdev]))
+            [llm.sdk.models-dev :as mdev]
+            [llm.sdk.litellm-snapshot :as lsnap]))
 
 ;; ---------------------------------------------------------------------------
 ;; State — atoms isolating each mutable tier
@@ -68,10 +74,11 @@
 
 (defn lookup
   "Return the merged ModelEntry for (provider, model), or nil if no
-   layer knows the model. Field-merge order: models.dev (lowest) →
-   live → override."
+   layer knows the model. Field-merge order:
+     models.dev (lowest) → litellm-snapshot → live → override."
   [provider-id model-id]
   (merge-entries (mdev/lookup provider-id model-id)
+                 (lsnap/lookup provider-id model-id)
                  (get @live-store [provider-id model-id])
                  (get @override-store [provider-id model-id])))
 
@@ -86,6 +93,7 @@
   "Set of all provider keywords any tier knows about."
   []
   (set/union (mdev/known-providers)
+             (lsnap/known-providers)
              models/supported-providers
              (store-providers live-store)
              (store-providers override-store)))
@@ -101,15 +109,21 @@
    through with that tier's data only."
   [provider-id]
   (let [mdev-entries (mdev/list-models provider-id)
+        lsnap-entries (lsnap/list-models provider-id)
         live-entries (store-entries-for live-store provider-id)
         over-entries (store-entries-for override-store provider-id)
         ;; Build {model-id entry} maps per tier
         mdev-by-id (into {} (map (juxt :model/id identity)) mdev-entries)
+        lsnap-by-id (into {} (map (juxt :model/id identity)) lsnap-entries)
         live-by-id (into {} (map (juxt :model/id identity)) live-entries)
         over-by-id (into {} (map (juxt :model/id identity)) over-entries)
-        all-ids (set (concat (keys mdev-by-id) (keys live-by-id) (keys over-by-id)))]
+        all-ids (set (concat (keys mdev-by-id)
+                             (keys lsnap-by-id)
+                             (keys live-by-id)
+                             (keys over-by-id)))]
     (mapv (fn [mid]
             (merge-entries (get mdev-by-id mid)
+                           (get lsnap-by-id mid)
                            (get live-by-id mid)
                            (get over-by-id mid)))
           (sort all-ids))))
@@ -187,4 +201,5 @@
   []
   {:live-entries (count @live-store)
    :override-entries (count @override-store)
+   :litellm-snapshot-loaded (lsnap/loaded?)
    :models-dev-source (:source (or (mdev/fetch-all) {}))})
