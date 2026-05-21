@@ -66,11 +66,14 @@
 ;; ---------------------------------------------------------------------------
 
 (def ^:private new-aliases
-  [{:id :mistral   :base "https://api.mistral.ai/v1"     :env "MISTRAL_API_KEY"}
-   {:id :groq      :base "https://api.groq.com/openai/v1" :env "GROQ_API_KEY"}
-   {:id :cerebras  :base "https://api.cerebras.ai/v1"    :env "CEREBRAS_API_KEY"}
-   {:id :together  :base "https://api.together.xyz/v1"   :env "TOGETHER_API_KEY"}
-   {:id :xai       :base "https://api.x.ai/v1"           :env "XAI_API_KEY"}])
+  [{:id :mistral     :base "https://api.mistral.ai/v1"           :env "MISTRAL_API_KEY"}
+   {:id :groq        :base "https://api.groq.com/openai/v1"      :env "GROQ_API_KEY"}
+   {:id :cerebras    :base "https://api.cerebras.ai/v1"          :env "CEREBRAS_API_KEY"}
+   {:id :together    :base "https://api.together.xyz/v1"         :env "TOGETHER_API_KEY"}
+   {:id :xai         :base "https://api.x.ai/v1"                 :env "XAI_API_KEY"}
+   ;; T2-06 — HuggingFace Inference Router is a plain OpenAI-compat alias.
+   ;; TGI / self-hosted endpoints register their own profile.
+   {:id :huggingface :base "https://router.huggingface.co/v1"    :env "HF_TOKEN"}])
 
 (deftest test-new-aliases-registered
   (testing "each new alias has a profile with the expected URL and env-var"
@@ -190,5 +193,6 @@
     (is (contains? ids :groq))
     (is (contains? ids :cerebras))
     (is (contains? ids :together))
-    (is (contains? ids :xai))))
+    (is (contains? ids :xai))
+    (is (contains? ids :huggingface))))
 

@@ -240,6 +240,7 @@
 (defmethod fetch-models :cerebras [_] (openai-style-fetch :cerebras))
 (defmethod fetch-models :together [_] (openai-style-fetch :together))
 (defmethod fetch-models :xai [_] (openai-style-fetch :xai))
+(defmethod fetch-models :huggingface [_] (openai-style-fetch :huggingface))
 
 (defmethod fetch-models :anthropic [_]
   (let [p (profile! :anthropic)
@@ -303,7 +304,7 @@
   "Providers with a usable live /models endpoint."
   #{:openai :anthropic :gemini-native :vertex-gemini
     :openrouter :deepseek :kimi
-    :mistral :groq :cerebras :together :xai})
+    :mistral :groq :cerebras :together :xai :huggingface})
 
 (defn supports-models-listing?
   "Does this provider expose a /models endpoint we can call?"

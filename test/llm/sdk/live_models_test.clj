@@ -142,3 +142,8 @@
   (when (has-creds? "XAI_API_KEY")
     (testing "xAI /v1/models live"
       (smoke-fetch :xai))))
+
+(deftest ^:live live-huggingface-models
+  (when (has-creds? "HF_TOKEN")
+    (testing "HuggingFace router /v1/models live"
+      (smoke-fetch :huggingface))))

@@ -145,6 +145,19 @@
    (mk-provider :xai :openai-chat "https://api.x.ai/v1" :bearer
                 :profile/env-var-names ["XAI_API_KEY"]
                 :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning}))
+  ;; HuggingFace Inference Router — OpenAI-compat chat completions at
+  ;; https://router.huggingface.co/v1/chat/completions with the model
+  ;; in the request body (e.g. "meta-llama/Llama-3.3-70B-Instruct").
+  ;; The router handles cross-provider dispatch to its inference
+  ;; partners internally — the SDK just talks one wire shape.
+  ;;
+  ;; TGI / self-hosted users register their own profile with a custom
+  ;; base-url; the :profile/url-builder hook from T2-05 is available
+  ;; for fancier URL shapes.
+  (register-provider
+   (mk-provider :huggingface :openai-chat "https://router.huggingface.co/v1" :bearer
+                :profile/env-var-names ["HF_TOKEN"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema}))
   ;; Perplexity wires up like an OpenAI-compat alias (bearer + OpenAI-
   ;; shape body) but has its own transport (see providers/perplexity)
   ;; so it can extract citation parts and Perplexity-specific usage

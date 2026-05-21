@@ -65,3 +65,10 @@
   (when (has-creds? "XAI_API_KEY")
     (testing "xAI chat live"
       (smoke-chat :xai "grok-3-mini-fast"))))
+
+(deftest ^:live live-huggingface-chat
+  (when (has-creds? "HF_TOKEN")
+    (testing "HuggingFace router chat live"
+      ;; The router accepts namespaced model ids; pick a small free
+      ;; chat model so the smoke stays cheap.
+      (smoke-chat :huggingface "meta-llama/Llama-3.1-8B-Instruct"))))
