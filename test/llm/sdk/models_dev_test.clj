@@ -228,6 +228,21 @@
        (is (map? data))
        (is (seq data))))))
 
+(deftest cache-expiry-triggers-refetch
+  (let [hits (atom 0)]
+    (with-redefs [http/request
+                  (fn [_]
+                    (swap! hits inc)
+                    {:status 200 :body {:openai {:models {}}}})]
+      ;; First fetch populates in-mem
+      (mdev/fetch-all)
+      (is (= 1 @hits))
+      ;; Force expiry via TTL=0 — next call should re-fetch
+      (binding [mdev/*ttl-ms* 0]
+        (mdev/fetch-all)
+        (is (= 2 @hits)
+            "TTL=0 expires in-mem AND disk → second network hit")))))
+
 (deftest network-failure-with-stale-disk-uses-disk
   (let [stale-tree {:openai {:models {:stale-only-model {:id "stale-only-model"
                                                           :limit {:context 9999}}}}}]

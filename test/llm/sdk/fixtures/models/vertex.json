@@ -1,0 +1,20 @@
+{
+  "publisherModels": [
+    {
+      "name": "publishers/google/models/gemini-2.5-pro",
+      "version": "001",
+      "displayName": "Gemini 2.5 Pro",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": ["generateContent", "streamGenerateContent", "countTokens"]
+    },
+    {
+      "name": "publishers/google/models/gemini-2.5-flash",
+      "version": "001",
+      "displayName": "Gemini 2.5 Flash",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": ["generateContent", "streamGenerateContent", "countTokens"]
+    }
+  ]
+}
