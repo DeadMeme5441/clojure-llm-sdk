@@ -201,6 +201,38 @@
    [:embed/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
+;; Image generation request / response (T2-10)
+;; ---------------------------------------------------------------------------
+
+(def ImageGenRequest
+  [:map
+   [:image/model {:optional true} string?]
+   [:image/prompt string?]
+   [:image/n {:optional true} int?]
+   [:image/size {:optional true} string?]
+   [:image/quality {:optional true} [:enum :standard :hd :low :medium :high :auto]]
+   [:image/style {:optional true} [:enum :vivid :natural]]
+   [:image/response-format {:optional true} [:enum :url :b64_json]]
+   [:image/user {:optional true} string?]
+   [:image/provider-options {:optional true} map?]])
+
+(def Image
+  [:map
+   [:image/url {:optional true} string?]
+   [:image/b64 {:optional true} string?]
+   [:image/revised-prompt {:optional true} string?]])
+
+(def ImageGenResponse
+  [:map
+   [:image/id {:optional true} string?]
+   [:image/provider keyword?]
+   [:image/model string?]
+   [:image/images [:vector Image]]
+   [:image/created {:optional true} int?]
+   [:response/usage {:optional true} Usage]
+   [:image/raw {:optional true} any?]])
+
+;; ---------------------------------------------------------------------------
 ;; Rerank request / response (T2-16)
 ;; ---------------------------------------------------------------------------
 
@@ -324,6 +356,7 @@
    [:profile/embed-transport-constructor {:optional true} ifn?]
    [:profile/moderation-transport-constructor {:optional true} ifn?]
    [:profile/rerank-transport-constructor {:optional true} ifn?]
+   [:profile/image-transport-constructor {:optional true} ifn?]
    [:profile/url-builder {:optional true} ifn?]
    [:profile/supported-params {:optional true} [:set keyword?]]])
 
@@ -344,6 +377,8 @@
 (def validate-moderation-response (m/validator ModerationResponse))
 (def validate-rerank-request (m/validator RerankRequest))
 (def validate-rerank-response (m/validator RerankResponse))
+(def validate-image-gen-request (m/validator ImageGenRequest))
+(def validate-image-gen-response (m/validator ImageGenResponse))
 
 (defn explain-request [x] (m/explain Request x))
 (defn explain-response [x] (m/explain Response x))
