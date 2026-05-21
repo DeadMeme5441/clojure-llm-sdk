@@ -359,7 +359,10 @@
 
 (def ^:private compat-provider-ids
   [:openai :openrouter :deepseek :kimi
-   :mistral :groq :cerebras :together :xai :huggingface])
+   :mistral :groq :cerebras :together :xai :huggingface
+   ;; T2-19 aggregator aliases — all share the OpenAI chat wire shape.
+   :sambanova :deepinfra :lambda :nebius :hyperbolic :novita
+   :friendliai :featherless :cloudflare :dashscope :volcengine])
 
 (doseq [pid compat-provider-ids]
   (when-let [p (provider/get-provider pid)]

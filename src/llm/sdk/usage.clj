@@ -117,7 +117,9 @@
   [provider raw-usage]
   (case provider
     (:openai :openrouter :deepseek :kimi
-     :mistral :groq :cerebras :together :xai :perplexity :huggingface)
+     :mistral :groq :cerebras :together :xai :perplexity :huggingface
+     :sambanova :deepinfra :lambda :nebius :hyperbolic :novita
+     :friendliai :featherless :cloudflare :dashscope :volcengine)
     (normalize-openai-usage raw-usage)
     :anthropic (normalize-anthropic-usage raw-usage)
     :gemini-native (normalize-gemini-usage raw-usage)

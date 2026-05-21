@@ -242,6 +242,19 @@
 (defmethod fetch-models :together [_] (openai-style-fetch :together))
 (defmethod fetch-models :xai [_] (openai-style-fetch :xai))
 (defmethod fetch-models :huggingface [_] (openai-style-fetch :huggingface))
+;; T2-19 — aggregators expose OpenAI-style /v1/models, though some
+;; (e.g. Cloudflare with its per-account URL) require correctly
+;; configured base-urls before a fetch will succeed.
+(defmethod fetch-models :sambanova [_] (openai-style-fetch :sambanova))
+(defmethod fetch-models :deepinfra [_] (openai-style-fetch :deepinfra))
+(defmethod fetch-models :lambda [_] (openai-style-fetch :lambda))
+(defmethod fetch-models :nebius [_] (openai-style-fetch :nebius))
+(defmethod fetch-models :hyperbolic [_] (openai-style-fetch :hyperbolic))
+(defmethod fetch-models :novita [_] (openai-style-fetch :novita))
+(defmethod fetch-models :friendliai [_] (openai-style-fetch :friendliai))
+(defmethod fetch-models :featherless [_] (openai-style-fetch :featherless))
+(defmethod fetch-models :dashscope [_] (openai-style-fetch :dashscope))
+(defmethod fetch-models :volcengine [_] (openai-style-fetch :volcengine))
 
 (defmethod fetch-models :anthropic [_]
   (let [p (profile! :anthropic)
@@ -305,7 +318,9 @@
   "Providers with a usable live /models endpoint."
   #{:openai :anthropic :gemini-native :vertex-gemini
     :openrouter :deepseek :kimi
-    :mistral :groq :cerebras :together :xai :huggingface})
+    :mistral :groq :cerebras :together :xai :huggingface
+    :sambanova :deepinfra :lambda :nebius :hyperbolic :novita
+    :friendliai :featherless :dashscope :volcengine})
 
 (defn supports-models-listing?
   "Does this provider expose a /models endpoint we can call?"
