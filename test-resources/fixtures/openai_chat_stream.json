@@ -1,0 +1,10 @@
+{
+  "model": "gpt-4o",
+  "events": [
+    "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}",
+    "data: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}",
+    "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}",
+    "data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}"
+  ]
+}

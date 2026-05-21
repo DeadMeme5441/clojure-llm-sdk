@@ -1,0 +1,24 @@
+{:paths ["src" "resources"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+        org.clojure/core.async {:mvn/version "1.6.681"}
+        metosin/malli {:mvn/version "0.17.0"}
+        hato/hato {:mvn/version "1.0.0"}
+        cheshire/cheshire {:mvn/version "5.13.0"}}
+
+ :aliases
+ {:test {:extra-paths ["test" "test-resources"]
+         :extra-deps {io.github.cognitect-labs/test-runner
+                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+         :main-opts ["-m" "cognitect.test-runner"]
+         :exec-fn cognitect.test-runner.api/test}
+
+  :live-test {:extra-paths ["test" "test-resources"]
+              :extra-deps {io.github.cognitect-labs/test-runner
+                           {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+              :main-opts ["-m" "cognitect.test-runner"
+                          "--dir" "test"
+                          "--namespace-regex" "live-"]
+              :exec-fn cognitect.test-runner.api/test}
+
+  :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}}
+          :ns-default build}}}
