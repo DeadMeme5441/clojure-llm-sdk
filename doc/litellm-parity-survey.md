@@ -6,6 +6,35 @@ LiteLLM paths are relative to `/Users/hvyasanakere/Projects/MyriadSelf/litellm-r
 
 ---
 
+## Task 2 — Status as of May 2026
+
+| # | Title | Status |
+|---|---|---|
+| T2-01 | Embeddings API + EmbedTransport + OpenAI embed adapter | ✅ shipped |
+| T2-02 | Cohere chat adapter (native) | open |
+| T2-03 | OpenAI-compat alias mechanism + 5 new chat adapters (Mistral/Groq/Cerebras/Together/xAI) | ✅ shipped |
+| T2-04 | `:part/type :citation` + Perplexity adapter (incl. stream `:stream/citation`) | ✅ shipped |
+| T2-05 | Azure OpenAI deployment routing + `:profile/url-builder` hook | ✅ shipped |
+| T2-06 | HuggingFace Inference Router alias | ✅ shipped |
+| T2-07 | Embedding adapters — Cohere/Voyage/Mistral/Together/Jina | ✅ shipped |
+| T2-08 | `sdk/with-fallbacks` helper (no credential pools) | ✅ shipped |
+| T2-09 | Finish Bedrock adapter (Converse API + SigV4 + binary streams) | open |
+| T2-10 | Image generation API + OpenAI DALL-E adapter | ✅ shipped |
+| T2-11 | Image gen adapters — Vertex Imagen + Bedrock Titan | blocked on T2-09 |
+| T2-12 | `:profile/supported-params` + drop/warn | ✅ shipped |
+| T2-13 | Moderation API + OpenAI Moderations adapter | ✅ shipped |
+| T2-14 | Audio transcription API + Whisper + Groq STT | open |
+| T2-15 | Audio TTS API + OpenAI TTS + ElevenLabs | open |
+| T2-16 | Rerank API + Cohere/Voyage/Jina adapters | ✅ shipped |
+| T2-17 | LiteLLM-derived pricing snapshot tier | ✅ shipped |
+| T2-18 | Profile-level cost-calculator override + per-modality cost fns | open (blocked on T2-14) |
+| T2-19 | Aggregator profile aliases (11 providers) | ✅ shipped |
+| T2-20 | Native Ollama adapter | open |
+
+**13 of 20 issues shipped.** 371 tests / 1127 assertions green. Remaining work: T2-02 Cohere chat (heaviest P1), T2-09 Bedrock finish (heaviest overall), audio (T2-14/T2-15), and the dependents T2-11/T2-18/T2-20.
+
+---
+
 ## 1. Provider Parity Matrix
 
 ### Already covered — sanity check
