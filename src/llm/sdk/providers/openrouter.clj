@@ -11,6 +11,7 @@
             [llm.sdk.providers.openai-chat :as openai]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
+            [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
@@ -37,12 +38,18 @@
         ;; Reasoning in extra_body for OpenRouter (not top-level)
         reasoning-extra (when (and reasoning (:enabled reasoning))
                           {:reasoning {:enabled true
-                                       :effort (name (get reasoning :effort :medium))}})]
+                                       :effort (name (get reasoning :effort :medium))}})
+        ;; Cache routing key — OpenRouter forwards it to the upstream
+        ;; provider that supports prompt_cache_key (e.g. xAI Grok). It
+        ;; is harmless for providers that don't recognize the field.
+        cache-scope (when (cache/cache-enabled? request) (cache/scope-id request))
+        cache-extra (when cache-scope {:prompt_cache_key cache-scope})]
     (merge {}
            base-extra-body
            (when prefs {:provider prefs})
            (when plugins {:plugins plugins})
            reasoning-extra
+           cache-extra
            ;; Any caller-supplied extra_body under provider-options
            (get-in provider-opts [:extra_body]))))
 

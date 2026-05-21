@@ -56,6 +56,17 @@ n                               :message/content "What's the weather in NYC?"}]
       cost (sdk/estimate-cost :openai "gpt-4o" usage)]
   (println (:cost/amount-usd cost)))
 ;; => 0.0075M
+
+;; Context caching — opt in per request, the adapter handles the wire format
+(sdk/complete :anthropic
+              {:request/model "claude-haiku-4-5"
+               :request/messages [{:message/role :system
+                                   :message/content "<long system prompt>"}
+                                  {:message/role :user
+                                   :message/content "Hi"}]
+               :request/cache {:ttl "5m"}})
+;; usage on the next identical-prefix turn:
+;; {:usage/cached-input-tokens 13824 :usage/cache-write-tokens 12 ...}
 ```
 
 ## Supported Providers
@@ -89,8 +100,8 @@ n                               :message/content "What's the weather in NYC?"}]
 | `OPENROUTER_API_KEY` | OpenRouter | |
 | `DEEPSEEK_API_KEY` | DeepSeek | |
 | `KIMI_API_KEY` | Kimi / Moonshot | |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Vertex Gemini | GCP service account JSON path |
-| `VERTEX_PROJECT` + `VERTEX_LOCATION` | Vertex Gemini | Project routing |
+| `GOOGLE_OAUTH_ACCESS_TOKEN` | Vertex Gemini | OAuth2 access token (e.g. from `gcloud auth print-access-token`) |
+| `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION` | Vertex Gemini | Project + region routing (e.g. `us-central1`, `global`) |
 
 Create a `.env` file in your project root (gitignored by default):
 
@@ -239,6 +250,100 @@ OpenRouter-specific quirks handled automatically:
                 :pareto {:min-coding-score 0.8}}})
 ```
 
+## Context Caching
+
+Each provider ships its own caching contract. The SDK canonicalizes the
+caller-facing shape (`:request/cache`) and emits the right wire format
+per adapter — `cache_control` markers for Anthropic, envelope-layout
+markers for OpenRouter Claude/Qwen, `prompt_cache_key` for OpenAI/Codex,
+`cachedContent` references for Gemini, `cachePoint` sentinels for
+Bedrock. Cache statistics surface uniformly on the response under
+`:usage/cached-input-tokens` and `:usage/cache-write-tokens`.
+
+### Request shape
+
+```clojure
+:request/cache
+{:enabled?          true                  ; default true when the map is present
+ :ttl               "5m"                  ; or "1h" (Anthropic only)
+ :strategy          :auto                 ; :auto | :system-and-3 | :explicit | :none
+ :scope-id          "session-1234"        ; cache routing key (OpenAI/Codex/xAI)
+ :cached-content-id "cachedContents/xyz"  ; Gemini explicit cache resource name
+ :breakpoints       4                     ; max cache_control markers (Anthropic)
+ :tools-cache?      true}                 ; also cache the tools[] schema
+```
+
+Omit `:request/cache` entirely and nothing changes — no markers, no
+key, no `cachedContent`, no `cachePoint`. Caching is purely opt-in.
+
+### Per-provider matrix
+
+| Provider | Strategy | Mechanism | Live-verified |
+|---|---|---|---|
+| `:anthropic` (native) | `system-and-3` (native layout) | `cache_control` on system blocks, last N messages, optional tools[] | ✅ 13.8k tokens cached, 99.9% hit on turn 2 |
+| `:openrouter` (Claude/Qwen) | `system-and-3` (envelope layout) | `cache_control` on outer message dicts + `extra_body.prompt_cache_key` | ✅ 13.8k tokens cached, 92% cost reduction on turn 2 |
+| `:openrouter` (other) | `prompt-key` | `extra_body.prompt_cache_key` (forwarded to upstream that supports it) | — |
+| `:openai`, `:deepseek`, `:kimi` | `prompt-key` | top-level `prompt_cache_key` | ✅ accepted |
+| `:codex` (api.openai.com) | `prompt-key` | top-level `prompt_cache_key` | — |
+| `:codex` (api.x.ai) | `prompt-key` | `extra_body.prompt_cache_key` + `x-grok-conv-id` header | unit-tested |
+| `:codex-backend` (chatgpt.com) | `prompt-key` | top-level `prompt_cache_key` + `session_id`/`x-client-request-id` extra headers | — |
+| `:gemini-native`, `:vertex-gemini` | `implicit` (server-side, no opt-in) | reads `usageMetadata.cachedContentTokenCount` | ✅ Gemini 2.5 Flash @ us-central1: 12,261 tokens cached |
+| `:vertex-gemini` (with `:cached-content-id`) | `explicit` | `cachedContent: projects/.../cachedContents/...` body field | — |
+| `:bedrock` | `cache-point` | `{:cachePoint {:type "default"}}` blocks after system + final user | unit-tested |
+
+### Examples
+
+**Anthropic — cache system + recent turns:**
+```clojure
+(sdk/complete :anthropic
+              {:request/model "claude-sonnet-4-6"
+               :request/messages [{:message/role :system :message/content "<long prompt>"}
+                                  {:message/role :user :message/content "..."}]
+               :request/cache {:ttl "5m"}})
+```
+
+**OpenAI / Codex — pin a cache scope to a session id:**
+```clojure
+(sdk/complete :openai
+              {:request/model "gpt-4o"
+               :request/messages [...]
+               :request/cache {:scope-id "user-42-session-9"}})
+```
+
+**Gemini Native — reference a pre-created CachedContent resource:**
+```clojure
+(sdk/complete :gemini-native
+              {:request/model "gemini-2.5-pro"
+               :request/messages [...]
+               :request/cache {:cached-content-id "cachedContents/abc123"}})
+```
+
+**Inspect which strategy will fire for a provider/model:**
+```clojure
+(sdk/cache-strategy :openrouter "anthropic/claude-sonnet-4")
+;; => {:strategy :system-and-3, :layout :envelope, :reason "openrouter envelope"}
+
+(sdk/cache-strategy :vertex-gemini "gemini-2.5-flash")
+;; => {:strategy :implicit, :layout nil, :reason "vertex gemini implicit only"}
+```
+
+### Notes on Vertex / Gemini
+
+Gemini caching is **server-side implicit** by default — the SDK sends no
+opt-in field and Google fires the cache when it sees an identical
+prefix within "a short amount of time" (Google's wording). Cache hits
+surface in `usageMetadata.cachedContentTokenCount`. Empirically:
+
+- **Regional routing** (e.g. `location=us-central1`) fires the cache
+  reliably on GA models like `gemini-2.5-flash`.
+- **`location=global`** is the only routing for newer Gemini 3.x and
+  preview models, but global routing serves ON_DEMAND traffic without
+  request affinity, so cache hits are inconsistent until those models
+  ship to regional endpoints. See [python-genai #2113](https://github.com/googleapis/python-genai/issues/2113).
+- The SDK has no opt-in to flip — implicit caching is purely Google's
+  call. `:cached-content-id` is available if you want to pre-create a
+  CachedContent resource and reference it explicitly.
+
 ## Testing
 
 ```bash
@@ -255,7 +360,7 @@ source .env && clj -M:test
 
 Live tests are gated by credential availability and skipped cleanly when missing. They make minimal API calls (single-token "pong" prompts) to keep costs negligible.
 
-**Current test status:** 78 tests, 222 assertions, all passing.
+**Current test status:** 124 tests, 331 assertions, all passing.
 
 ## Project Structure
 
@@ -266,8 +371,9 @@ src/llm/sdk/
   transport.clj       # Transport protocol definition and helpers
   http.clj            # Thin HTTP layer (hato)
   stream.clj          # Streaming event taxonomy and reducer
-  usage.clj           # Usage normalization across providers
+  usage.clj           # Usage normalization across providers (incl. OpenRouter top-level fallback)
   pricing.clj         # Cost estimation with hardcoded + live pricing
+  cache.clj           # Provider-agnostic cache markers, layouts, and policy
   errors.clj          # Error classification and retry logic
   retry.clj           # Jittered backoff retry policy
   rate_limit.clj      # Rate limit tracking

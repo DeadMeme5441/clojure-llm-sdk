@@ -125,3 +125,83 @@
                    :content [{:type "tool_use" :name "get_weather" :id "tu_1"}]}]
         prefixed (#'anthropic/mcp-prefix-tool-names-in-messages messages)]
     (is (= "mcp_get_weather" (get-in prefixed [0 :content 0 :name])))))
+
+;; ---------------------------------------------------------------------------
+;; Caching
+;; ---------------------------------------------------------------------------
+
+(deftest test-cache-system-block-marker
+  (testing "system prompt blocks get cache_control on last block"
+    (let [t (anthropic/make-transport)
+          profile (provider/get-provider :anthropic)
+          req {:request/model "claude-sonnet-4-6"
+               :request/messages [{:message/role :system :message/content "Big system prompt"}
+                                  {:message/role :user :message/content "Hi"}]
+               :request/cache {}}
+          built (transport/build-request t profile req)
+          sys (get-in built [:body :system])]
+      (is (= {:type "ephemeral"} (get-in (last sys) [:cache_control]))))))
+
+(deftest test-cache-system-and-tail-native-layout
+  (testing "system + last 3 messages get inner-block cache_control"
+    (let [t (anthropic/make-transport)
+          profile (provider/get-provider :anthropic)
+          req {:request/model "claude-sonnet-4-6"
+               :request/messages [{:message/role :system :message/content "Sys"}
+                                  {:message/role :user :message/content "u1"}
+                                  {:message/role :assistant :message/content "a1"}
+                                  {:message/role :user :message/content "u2"}
+                                  {:message/role :assistant :message/content "a2"}
+                                  {:message/role :user :message/content "u3"}]
+               :request/cache {:breakpoints 4}}
+          built (transport/build-request t profile req)
+          msgs (get-in built [:body :messages])]
+      ;; 5 non-system messages → system + last 3 marked (4 bps total).
+      ;; system is extracted to :system field, so messages array has 5 items.
+      (is (= 5 (count msgs)))
+      ;; messages[0] = "u1" — not marked
+      (is (not (some :cache_control (get-in msgs [0 :content]))))
+      ;; messages[2,3,4] (a1 dropped from marking; last 3 are u2, a2, u3) — marked
+      (doseq [i [2 3 4]]
+        (is (= {:type "ephemeral"}
+               (get-in msgs [i :content (-> msgs (nth i) :content count dec) :cache_control]))
+            (str "expected marker on message " i))))))
+
+(deftest test-cache-1h-ttl
+  (testing "ttl=1h propagates to markers"
+    (let [t (anthropic/make-transport)
+          profile (provider/get-provider :anthropic)
+          req {:request/model "claude-sonnet-4-6"
+               :request/messages [{:message/role :system :message/content "Sys"}
+                                  {:message/role :user :message/content "u1"}]
+               :request/cache {:ttl "1h"}}
+          built (transport/build-request t profile req)
+          sys (get-in built [:body :system])]
+      (is (= {:type "ephemeral" :ttl "1h"} (get-in (last sys) [:cache_control]))))))
+
+(deftest test-cache-disabled-no-markers
+  (testing "without :request/cache, no markers anywhere"
+    (let [t (anthropic/make-transport)
+          profile (provider/get-provider :anthropic)
+          req {:request/model "claude-sonnet-4-6"
+               :request/messages [{:message/role :system :message/content "Sys"}
+                                  {:message/role :user :message/content "u1"}]}
+          built (transport/build-request t profile req)]
+      (is (not (some :cache_control (get-in built [:body :system]))))
+      (is (not (some :cache_control (mapcat (comp #(if (sequential? %) % []) :content)
+                                            (get-in built [:body :messages]))))))))
+
+(deftest test-cache-tools-cache-flag
+  (testing "tools-cache? marks last tool"
+    (let [t (anthropic/make-transport)
+          profile (provider/get-provider :anthropic)
+          req {:request/model "claude-sonnet-4-6"
+               :request/messages [{:message/role :user :message/content "Hi"}]
+               :request/tools [{:type :function :function {:name "a" :description "A"}}
+                                {:type :function :function {:name "b" :description "B"}}]
+               :request/cache {:tools-cache? true}}
+          built (transport/build-request t profile req)
+          tools (get-in built [:body :tools])]
+      (is (= 2 (count tools)))
+      (is (nil? (:cache_control (first tools))))
+      (is (= {:type "ephemeral"} (:cache_control (last tools)))))))

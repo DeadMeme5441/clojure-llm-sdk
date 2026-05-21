@@ -106,3 +106,35 @@
         ev (transport/parse-stream-event t profile line)]
     (is (= :stream/end (:event/type ev)))
     (is (= :stop (:event/finish-reason ev)))))
+
+;; ---------------------------------------------------------------------------
+;; Caching wiring
+;; ---------------------------------------------------------------------------
+
+(deftest test-cache-prompt-cache-key-passthrough
+  (testing "scope-id surfaces as body.prompt_cache_key for openai chat"
+    (let [t (openai/make-transport)
+          profile (provider/get-provider :openai)
+          req {:request/model "gpt-4o"
+               :request/messages [{:message/role :user :message/content "Hi"}]
+               :request/cache {:scope-id "session-1234"}}
+          built (transport/build-request t profile req)]
+      (is (= "session-1234" (get-in built [:body :prompt_cache_key]))))))
+
+(deftest test-cache-no-prompt-key-when-disabled
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        req {:request/model "gpt-4o"
+             :request/messages [{:message/role :user :message/content "Hi"}]}
+        built (transport/build-request t profile req)]
+    (is (nil? (get-in built [:body :prompt_cache_key])))))
+
+(deftest test-cache-deepseek-passthrough
+  (testing "DeepSeek accepts prompt_cache_key (server-side ignores but harmless)"
+    (let [t (openai/make-transport)
+          profile (provider/get-provider :deepseek)
+          req {:request/model "deepseek-chat"
+               :request/messages [{:message/role :user :message/content "Hi"}]
+               :request/cache {:scope-id "ds-session"}}
+          built (transport/build-request t profile req)]
+      (is (= "ds-session" (get-in built [:body :prompt_cache_key]))))))

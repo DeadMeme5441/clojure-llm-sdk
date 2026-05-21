@@ -131,7 +131,15 @@
      [:enabled {:optional true} boolean?]
      [:effort {:optional true} [:enum :minimal :low :medium :high :xhigh]]
      [:budget {:optional true} int?]]]
-   [:request/cache-hints {:optional true} [:vector string?]]
+   [:request/cache {:optional true}
+    [:map
+     [:enabled? {:optional true} boolean?]
+     [:ttl {:optional true} [:enum "5m" "1h"]]
+     [:strategy {:optional true} [:enum :auto :system-and-3 :explicit :none]]
+     [:scope-id {:optional true} string?]
+     [:cached-content-id {:optional true} string?]
+     [:breakpoints {:optional true} int?]
+     [:tools-cache? {:optional true} boolean?]]]
    [:request/metadata {:optional true} map?]
    [:request/provider-options {:optional true} map?]])
 

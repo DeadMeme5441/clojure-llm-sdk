@@ -186,3 +186,43 @@
   (is (= "fc_abc" (#'codex/derive-responses-function-call-id nil "fc_abc")))
   (is (= "fc_123" (#'codex/derive-responses-function-call-id "call_123" "other")))
   (is (str/starts-with? (#'codex/derive-responses-function-call-id nil nil) "fc_")))
+
+;; ---------------------------------------------------------------------------
+;; Caching wiring
+;; ---------------------------------------------------------------------------
+
+(deftest test-cache-prompt-cache-key-toplevel-on-openai
+  (testing "standard OpenAI Responses gets top-level prompt_cache_key"
+    (let [t (codex/make-transport)
+          profile (provider/get-provider :codex)
+          req {:request/model "o3"
+               :request/messages [{:message/role :user :message/content "Hi"}]
+               :request/cache {:scope-id "session-abc"}}
+          built (transport/build-request t profile req)]
+      (is (= "session-abc" (get-in built [:body :prompt_cache_key])))
+      (is (nil? (get-in built [:body :extra_body :prompt_cache_key]))))))
+
+(deftest test-cache-prompt-cache-key-xai-extra-body
+  (testing "xAI host moves prompt_cache_key into extra_body + sets grok conv header"
+    (let [t (codex/make-transport)
+          ;; Synthesize an xAI Responses profile so we don't touch the registry.
+          xai-profile {:profile/id :codex
+                       :profile/protocol-family :codex
+                       :profile/base-url "https://api.x.ai/v1"
+                       :profile/auth-strategy :bearer
+                       :profile/env-var-names []}
+          req {:request/model "grok-4"
+               :request/messages [{:message/role :user :message/content "Hi"}]
+               :request/cache {:scope-id "conv-xai"}}
+          built (transport/build-request t xai-profile req)]
+      (is (nil? (get-in built [:body :prompt_cache_key])))
+      (is (= "conv-xai" (get-in built [:body :extra_body :prompt_cache_key])))
+      (is (= "conv-xai" (get-in built [:headers "x-grok-conv-id"]))))))
+
+(deftest test-cache-no-cache-key-when-disabled
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex)
+        req {:request/model "o3"
+             :request/messages [{:message/role :user :message/content "Hi"}]}
+        built (transport/build-request t profile req)]
+    (is (nil? (get-in built [:body :prompt_cache_key])))))

@@ -40,6 +40,18 @@
                         :model/provider :anthropic
                         :model/context-length 200000
                         :model/capabilities #{:chat :streaming :tools :cache}}
+    "gemini-3.1-pro-preview" {:model/id "gemini-3.1-pro-preview"
+                              :model/provider :google
+                              :model/context-length 1048576
+                              :model/capabilities #{:chat :streaming :tools :vision :multimodal :reasoning :cache}}
+    "gemini-3.5-flash" {:model/id "gemini-3.5-flash"
+                        :model/provider :google
+                        :model/context-length 1048576
+                        :model/capabilities #{:chat :streaming :tools :vision :multimodal :reasoning :cache}}
+    "gemini-3.1-flash-lite-preview" {:model/id "gemini-3.1-flash-lite-preview"
+                                      :model/provider :google
+                                      :model/context-length 1048576
+                                      :model/capabilities #{:chat :streaming :tools :vision :multimodal :cache}}
     "gemini-2.5-pro" {:model/id "gemini-2.5-pro"
                       :model/provider :google
                       :model/context-length 1048576
