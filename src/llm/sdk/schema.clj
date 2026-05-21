@@ -201,6 +201,34 @@
    [:embed/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
+;; Rerank request / response (T2-16)
+;; ---------------------------------------------------------------------------
+
+(def RerankRequest
+  [:map
+   [:rerank/model string?]
+   [:rerank/query string?]
+   [:rerank/documents [:vector string?]]
+   [:rerank/top-n {:optional true} int?]
+   [:rerank/return-documents {:optional true} boolean?]
+   [:rerank/provider-options {:optional true} map?]])
+
+(def RerankResult
+  [:map
+   [:rerank/index int?]
+   [:rerank/score number?]
+   [:rerank/document {:optional true} string?]])
+
+(def RerankResponse
+  [:map
+   [:rerank/id {:optional true} string?]
+   [:rerank/provider keyword?]
+   [:rerank/model string?]
+   [:rerank/results [:vector RerankResult]]
+   [:response/usage {:optional true} Usage]
+   [:rerank/raw {:optional true} any?]])
+
+;; ---------------------------------------------------------------------------
 ;; Moderation request / response (T2-13)
 ;; ---------------------------------------------------------------------------
 
@@ -295,6 +323,7 @@
    ;; Optional adapter hooks
    [:profile/embed-transport-constructor {:optional true} ifn?]
    [:profile/moderation-transport-constructor {:optional true} ifn?]
+   [:profile/rerank-transport-constructor {:optional true} ifn?]
    [:profile/url-builder {:optional true} ifn?]
    [:profile/supported-params {:optional true} [:set keyword?]]])
 
@@ -313,6 +342,8 @@
 (def validate-embed-response (m/validator EmbedResponse))
 (def validate-moderation-request (m/validator ModerationRequest))
 (def validate-moderation-response (m/validator ModerationResponse))
+(def validate-rerank-request (m/validator RerankRequest))
+(def validate-rerank-response (m/validator RerankResponse))
 
 (defn explain-request [x] (m/explain Request x))
 (defn explain-response [x] (m/explain Response x))
