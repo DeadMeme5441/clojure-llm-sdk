@@ -43,7 +43,8 @@
    [:model/max-output-tokens {:optional true} int?]
    [:model/capabilities {:optional true} [:set keyword?]]
    [:model/cost {:optional true} ModelCost]
-   [:model/source [:enum :live-models-api :models-dev :bundled-snapshot :override]]
+   [:model/source [:enum :live-models-api :models-dev :bundled-snapshot
+                   :litellm-snapshot :override]]
    [:model/source-url {:optional true} string?]
    [:model/fetched-at {:optional true} inst?]])
 
