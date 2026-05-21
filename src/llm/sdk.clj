@@ -15,6 +15,7 @@
             [llm.sdk.registry :as registry]
             [llm.sdk.models :as models]
             [llm.sdk.embed :as embed-driver]
+            [llm.sdk.fallbacks :as fallbacks]
             ;; Ensure provider adapters are loaded so their transport
             ;; constructors are registered
             [llm.sdk.providers.openai-chat]
@@ -156,6 +157,23 @@
    :embed/user, :embed/provider-options."
   [provider-id request]
   (embed-driver/embed provider-id request))
+
+;; ---------------------------------------------------------------------------
+;; Fallbacks
+;; ---------------------------------------------------------------------------
+
+(defn with-fallbacks
+  "Try each [provider-id model-id] pair in order against the given
+   request, returning the first success. If all fail, throws ex-info
+   with :attempts (vector of failure maps) and :providers.
+
+   No credential pools, no cooldowns, no rate-limit tracking — that's
+   credential-pool routing, which is explicitly out of scope for this
+   SDK. Compose this with your own resilience layer for those needs."
+  ([providers request]
+   (fallbacks/with-fallbacks providers request))
+  ([providers request opts]
+   (fallbacks/with-fallbacks providers request opts)))
 
 ;; ---------------------------------------------------------------------------
 ;; Usage / pricing
