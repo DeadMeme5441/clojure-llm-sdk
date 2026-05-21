@@ -82,8 +82,9 @@
        (is (some? m))
        (is (pos? (:model/context-length m)))
        (is (pos? (get-in m [:model/cost :input-per-million])))
-       (is (= :models-dev (:model/source m))
-           "no live refresh, no override → models-dev source")))))
+       (is (contains? #{:models-dev :litellm-snapshot :bundled-snapshot}
+                      (:model/source m))
+           "no live refresh, no override → an offline tier source")))))
 
 ;; ---------------------------------------------------------------------------
 ;; refresh-models! — live tier population

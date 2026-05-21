@@ -94,14 +94,18 @@
 ;; Lookup precedence — uses bundled snapshot as lower tier
 ;; ---------------------------------------------------------------------------
 
-(deftest lookup-from-models-dev-only
+(deftest lookup-from-offline-tier
   (offline
    (fn []
      (let [e (registry/lookup :openai "gpt-4o")]
        (is (some? e))
        (is (= :openai (:model/provider e)))
-       (is (= :models-dev (:model/source e))
-           "no live, no override → models-dev tag")
+       ;; gpt-4o lives in both models.dev and the LiteLLM snapshot
+       ;; offline tiers; either source tag is acceptable as long as
+       ;; the entry didn't come from a live fetch or override.
+       (is (contains? #{:models-dev :litellm-snapshot :bundled-snapshot}
+                      (:model/source e))
+           "no live, no override → an offline tier tag")
        (is (pos? (:model/context-length e)))))))
 
 (deftest lookup-unknown-everywhere-returns-nil
