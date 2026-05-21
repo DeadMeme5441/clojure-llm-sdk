@@ -201,6 +201,36 @@
    [:embed/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
+;; Moderation request / response (T2-13)
+;; ---------------------------------------------------------------------------
+
+(def ModerationRequest
+  [:map
+   [:moderation/model {:optional true} string?]
+   [:moderation/inputs [:vector
+                        [:or string?
+                         [:map
+                          [:type [:enum :text :image_url]]
+                          [:text {:optional true} string?]
+                          [:image_url {:optional true} string?]]]]]
+   [:moderation/provider-options {:optional true} map?]])
+
+(def ModerationResult
+  [:map
+   [:moderation/flagged? boolean?]
+   [:moderation/categories {:optional true} [:map-of keyword? boolean?]]
+   [:moderation/scores {:optional true} [:map-of keyword? number?]]
+   [:moderation/categories-applied {:optional true} [:map-of keyword? [:vector keyword?]]]])
+
+(def ModerationResponse
+  [:map
+   [:moderation/id {:optional true} string?]
+   [:moderation/provider keyword?]
+   [:moderation/model string?]
+   [:moderation/results [:vector ModerationResult]]
+   [:moderation/raw {:optional true} any?]])
+
+;; ---------------------------------------------------------------------------
 ;; Response
 ;; ---------------------------------------------------------------------------
 
@@ -264,6 +294,7 @@
    [:profile/transport-constructor ifn?]
    ;; Optional adapter hooks
    [:profile/embed-transport-constructor {:optional true} ifn?]
+   [:profile/moderation-transport-constructor {:optional true} ifn?]
    [:profile/url-builder {:optional true} ifn?]
    [:profile/supported-params {:optional true} [:set keyword?]]])
 
@@ -280,8 +311,12 @@
 (def validate-provider-profile (m/validator ProviderProfile))
 (def validate-embed-request (m/validator EmbedRequest))
 (def validate-embed-response (m/validator EmbedResponse))
+(def validate-moderation-request (m/validator ModerationRequest))
+(def validate-moderation-response (m/validator ModerationResponse))
 
 (defn explain-request [x] (m/explain Request x))
 (defn explain-response [x] (m/explain Response x))
 (defn explain-embed-request [x] (m/explain EmbedRequest x))
 (defn explain-embed-response [x] (m/explain EmbedResponse x))
+(defn explain-moderation-request [x] (m/explain ModerationRequest x))
+(defn explain-moderation-response [x] (m/explain ModerationResponse x))
