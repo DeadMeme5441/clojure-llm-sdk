@@ -144,7 +144,16 @@
   (register-provider
    (mk-provider :xai :openai-chat "https://api.x.ai/v1" :bearer
                 :profile/env-var-names ["XAI_API_KEY"]
-                :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning})))
+                :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning}))
+  ;; Perplexity wires up like an OpenAI-compat alias (bearer + OpenAI-
+  ;; shape body) but has its own transport (see providers/perplexity)
+  ;; so it can extract citation parts and Perplexity-specific usage
+  ;; fields. NOT in openai-chat's compat-provider-ids list — the
+  ;; perplexity transport attaches its own constructor.
+  (register-provider
+   (mk-provider :perplexity :perplexity-chat "https://api.perplexity.ai" :bearer
+                :profile/env-var-names ["PERPLEXITY_API_KEY"]
+                :profile/capabilities #{:chat :streaming :json-schema :web-search})))
 
 ;; Auto-register on load
 (register-built-in-providers)

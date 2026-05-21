@@ -1,0 +1,39 @@
+{
+  "id": "ppx-12345",
+  "model": "sonar",
+  "object": "chat.completion",
+  "created": 1736500000,
+  "citations": [
+    "https://example.com/clojure-overview",
+    "https://example.com/clojure-history"
+  ],
+  "search_results": [
+    {
+      "url": "https://example.com/clojure-overview",
+      "title": "Clojure Programming Language Overview",
+      "snippet": "Clojure is a modern, dynamic, and functional Lisp on the JVM."
+    },
+    {
+      "url": "https://example.com/clojure-history",
+      "title": "A Short History of Clojure",
+      "snippet": "Created by Rich Hickey, first released in 2007."
+    }
+  ],
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Clojure is a Lisp dialect on the JVM created by Rich Hickey in 2007."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 18,
+    "total_tokens": 30,
+    "citation_tokens": 256,
+    "num_search_queries": 1
+  }
+}

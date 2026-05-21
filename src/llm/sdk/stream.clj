@@ -45,6 +45,17 @@
    :provider-state/provider provider
    :provider-state/data data})
 
+(defn citation-event
+  "Emit one citation. Adapters that surface citations on a final SSE
+   chunk (Perplexity is the first) return a vector ending in usage
+   and end events; sdk/complete flattens multi-event return values
+   from parse-stream-event."
+  [url & {:keys [title snippet]}]
+  (cond-> {:event/type :stream/citation
+           :citation/url url}
+    title (assoc :citation/title title)
+    snippet (assoc :citation/snippet snippet)))
+
 (defn error-event [error]
   {:event/type :stream/error
    :error/error error})
@@ -110,6 +121,13 @@
     (assoc-in acc [:provider-data
                    (:provider-state/provider event)]
               (:provider-state/data event))
+
+    :stream/citation
+    (update acc :parts conj
+            (cond-> {:part/type :citation
+                     :citation/url (:citation/url event)}
+              (:citation/title event) (assoc :citation/title (:citation/title event))
+              (:citation/snippet event) (assoc :citation/snippet (:citation/snippet event))))
 
     :stream/end
     (assoc acc :finish-reason (:event/finish-reason event))

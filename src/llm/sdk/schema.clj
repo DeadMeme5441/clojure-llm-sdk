@@ -56,6 +56,18 @@
    [:safety/blocked boolean?]
    [:safety/details {:optional true} map?]])
 
+(def CitationPart
+  "A search-result / cited-source surfaced by a provider. Perplexity
+   emits these inline; Anthropic web-search and Cohere documents will
+   reuse the same shape under T2-02 + later issues."
+  [:map
+   [:part/type [:= :citation]]
+   [:citation/url string?]
+   [:citation/title {:optional true} string?]
+   [:citation/snippet {:optional true} string?]
+   [:citation/text-range {:optional true} [:tuple int? int?]]
+   [:citation/source-id {:optional true} string?]])
+
 (def ProviderStatePart
   [:map
    [:part/type [:= :provider-state]]
@@ -77,6 +89,7 @@
    [:tool-result ToolResultPart]
    [:reasoning ReasoningPart]
    [:safety SafetyPart]
+   [:citation CitationPart]
    [:provider-state ProviderStatePart]
    [:unknown/provider-native UnknownProviderPart]])
 
@@ -157,6 +170,8 @@
    [:usage/image-tokens {:optional true} int?]
    [:usage/audio-tokens {:optional true} int?]
    [:usage/file-tokens {:optional true} int?]
+   [:usage/citation-tokens {:optional true} int?]
+   [:usage/search-queries {:optional true} int?]
    [:usage/total-tokens {:optional true} int?]
    [:usage/request-count {:optional true} int?]
    [:usage/provider-raw {:optional true} map?]])
@@ -216,6 +231,11 @@
    [:tool-call-end [:map [:event/type [:= :stream/tool-call-end]] [:tool-call/index int?]]]
    [:usage [:map [:event/type [:= :stream/usage]] [:usage Usage]]]
    [:provider-state [:map [:event/type [:= :stream/provider-state]] [:provider-state/provider keyword?] [:provider-state/data map?]]]
+   [:citation [:map
+               [:event/type [:= :stream/citation]]
+               [:citation/url string?]
+               [:citation/title {:optional true} string?]
+               [:citation/snippet {:optional true} string?]]]
    [:error [:map [:event/type [:= :stream/error]] [:error/error any?]]]
    [:end [:map [:event/type [:= :stream/end]] [:event/finish-reason {:optional true} [:enum :stop :length :tool-calls :content-filter :incomplete :unknown]]]]])
 

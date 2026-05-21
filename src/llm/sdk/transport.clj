@@ -17,8 +17,10 @@
     "Given a provider profile and raw HTTP response body, return a
      canonical Response map.")
   (parse-stream-event [this profile line]
-    "Given an SSE line string, return a StreamEvent map or nil if the
-     line should be ignored.")
+    "Given an SSE line string, return a StreamEvent map, a vector of
+     StreamEvent maps (when one SSE line carries multiple semantic
+     events, e.g. Perplexity's final chunk with citations + usage +
+     finish_reason), or nil if the line should be ignored.")
   (parse-error [this profile status body]
     "Given HTTP status and body, return a classified error map.")
   (normalize-usage [this profile raw-usage]
