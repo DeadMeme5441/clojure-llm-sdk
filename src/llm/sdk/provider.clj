@@ -97,15 +97,54 @@
                 :profile/env-var-names ["OPENROUTER_API_KEY"]
                 :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning :provider-routing}
                 :profile/quirks {:provider-preferences true
-                                 :pareto-router true})))
-
-;; :deepseek, :kimi, and the other OpenAI-compat aliases (:mistral :groq
-;; :cerebras :together :xai) are registered by
-;; llm.sdk.providers.openai-chat via register-alias!. Keeping them out of
-;; the built-in block here means one file owns OpenAI-compat profile
-;; data, and the transport-constructor wiring happens by construction
-;; (which fixed a latent bug where :kimi had a profile but no
-;; transport-constructor attached).
+                                 :pareto-router true}))
+  ;; OpenAI-compat aliases — same wire shape as :openai with different
+  ;; base-urls, auth env-vars, and small per-provider quirks. They live
+  ;; here (not in providers/openai-chat) so they're registered the
+  ;; moment anyone loads llm.sdk.provider — that's how
+  ;; llm.sdk.models and other lookups see them without first dragging
+  ;; in the chat adapter ns. The transport-constructor gets attached
+  ;; later by providers/openai-chat.
+  ;;
+  ;; User-defined OpenAI-compat aliases can be added via
+  ;; llm.sdk.providers.openai-chat/register-alias!, which builds a
+  ;; profile of the same shape and wires the constructor in one call.
+  (register-provider
+   (mk-provider :deepseek :openai-chat "https://api.deepseek.com/v1" :bearer
+                :profile/env-var-names ["DEEPSEEK_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :reasoning}
+                :profile/quirks {:thinking-explicit true
+                                 :reasoning-content-echo true}))
+  (register-provider
+   (mk-provider :kimi :openai-chat "https://api.moonshot.cn/v1" :bearer
+                :profile/env-var-names ["KIMI_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :reasoning}
+                :profile/quirks {:thinking-explicit true}))
+  (register-provider
+   (mk-provider :mistral :openai-chat "https://api.mistral.ai/v1" :bearer
+                :profile/env-var-names ["MISTRAL_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema}
+                ;; Mistral 400s on penalty fields. The :drops quirk is
+                ;; honoured by providers/openai-chat's apply-drops.
+                :profile/quirks {:drops #{:frequency_penalty :presence_penalty}}))
+  (register-provider
+   (mk-provider :groq :openai-chat "https://api.groq.com/openai/v1" :bearer
+                :profile/env-var-names ["GROQ_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning}
+                :profile/quirks {:reasoning-format :raw}))
+  (register-provider
+   (mk-provider :cerebras :openai-chat "https://api.cerebras.ai/v1" :bearer
+                :profile/env-var-names ["CEREBRAS_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :reasoning}
+                :profile/quirks {:reasoning-effort true}))
+  (register-provider
+   (mk-provider :together :openai-chat "https://api.together.xyz/v1" :bearer
+                :profile/env-var-names ["TOGETHER_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema}))
+  (register-provider
+   (mk-provider :xai :openai-chat "https://api.x.ai/v1" :bearer
+                :profile/env-var-names ["XAI_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning})))
 
 ;; Auto-register on load
 (register-built-in-providers)

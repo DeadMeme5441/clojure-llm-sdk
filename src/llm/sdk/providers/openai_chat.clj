@@ -337,65 +337,21 @@
   (provider/register-provider (build-alias-profile spec)))
 
 ;; ---------------------------------------------------------------------------
-;; Built-in OpenAI-compat profiles
+;; Attach the OpenAI-chat transport constructor to every built-in
+;; OpenAI-compat profile registered by llm.sdk.provider.
 ;;
-;; :openai and :openrouter are already registered by
-;; llm.sdk.provider/register-built-in-providers with custom config
-;; (capabilities, default-headers). Attach the transport-constructor here
-;; without overwriting that config. The rest are pure-alias profiles
-;; with no native quirks beyond what this helper expresses.
+;; Listing the ids explicitly (rather than scanning by protocol-family)
+;; matches the project's other adapter files — and means new entries
+;; in provider.clj need a one-line addition here too, which is the
+;; same place reviewers will look. The kimi-specific latent bug
+;; (profile but no constructor) is fixed by including it in the list.
 ;; ---------------------------------------------------------------------------
 
-(doseq [pid [:openai :openrouter]]
+(def ^:private compat-provider-ids
+  [:openai :openrouter :deepseek :kimi
+   :mistral :groq :cerebras :together :xai])
+
+(doseq [pid compat-provider-ids]
   (when-let [p (provider/get-provider pid)]
     (provider/register-provider
      (assoc p :profile/transport-constructor make-transport))))
-
-(register-alias!
- {:id :deepseek
-  :base-url "https://api.deepseek.com/v1"
-  :env-var-names ["DEEPSEEK_API_KEY"]
-  :capabilities #{:chat :streaming :tools :reasoning}
-  :quirks {:thinking-explicit true
-           :reasoning-content-echo true}})
-
-(register-alias!
- {:id :kimi
-  :base-url "https://api.moonshot.cn/v1"
-  :env-var-names ["KIMI_API_KEY"]
-  :capabilities #{:chat :streaming :tools :reasoning}
-  :quirks {:thinking-explicit true}})
-
-(register-alias!
- {:id :mistral
-  :base-url "https://api.mistral.ai/v1"
-  :env-var-names ["MISTRAL_API_KEY"]
-  :capabilities #{:chat :streaming :tools :json-schema}
-  ;; Mistral 400s on penalty fields; pass-through everything else.
-  :quirks {:drops #{:frequency_penalty :presence_penalty}}})
-
-(register-alias!
- {:id :groq
-  :base-url "https://api.groq.com/openai/v1"
-  :env-var-names ["GROQ_API_KEY"]
-  :capabilities #{:chat :streaming :tools :json-schema :reasoning}
-  :quirks {:reasoning-format :raw}})
-
-(register-alias!
- {:id :cerebras
-  :base-url "https://api.cerebras.ai/v1"
-  :env-var-names ["CEREBRAS_API_KEY"]
-  :capabilities #{:chat :streaming :tools :reasoning}
-  :quirks {:reasoning-effort true}})
-
-(register-alias!
- {:id :together
-  :base-url "https://api.together.xyz/v1"
-  :env-var-names ["TOGETHER_API_KEY"]
-  :capabilities #{:chat :streaming :tools :json-schema}})
-
-(register-alias!
- {:id :xai
-  :base-url "https://api.x.ai/v1"
-  :env-var-names ["XAI_API_KEY"]
-  :capabilities #{:chat :streaming :tools :json-schema :reasoning}})
