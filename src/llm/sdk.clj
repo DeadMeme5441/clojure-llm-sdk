@@ -16,6 +16,7 @@
             [llm.sdk.models :as models]
             [llm.sdk.embed :as embed-driver]
             [llm.sdk.fallbacks :as fallbacks]
+            [llm.sdk.request :as request]
             ;; Ensure provider adapters are loaded so their transport
             ;; constructors are registered
             [llm.sdk.providers.openai-chat]
@@ -111,6 +112,9 @@
   (let [profile (or (provider/get-provider provider-id)
                     (throw (ex-info "Unknown provider" {:provider provider-id})))
         transport ((:profile/transport-constructor profile))
+        ;; T2-12 — strip canonical fields the provider doesn't support
+        ;; (and warn) when the profile opts in via :profile/supported-params.
+        request (request/apply-supported-params profile request)
         req (transport/build-request transport profile request)]
     (if stream?
       ;; Streaming path
