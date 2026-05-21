@@ -166,7 +166,15 @@
   (register-provider
    (mk-provider :perplexity :perplexity-chat "https://api.perplexity.ai" :bearer
                 :profile/env-var-names ["PERPLEXITY_API_KEY"]
-                :profile/capabilities #{:chat :streaming :json-schema :web-search}))
+                :profile/capabilities #{:chat :streaming :json-schema :web-search}
+                ;; Perplexity's /chat/completions doesn't accept tools /
+                ;; tool_choice / reasoning / cache parameters — listing
+                ;; an explicit supported-params set means
+                ;; llm.sdk.request/apply-supported-params strips those
+                ;; with a warning instead of letting the provider 400.
+                :profile/supported-params #{:request/temperature :request/top-p
+                                            :request/max-tokens :request/stop
+                                            :request/response-format}))
   ;; --- Embedding-first providers (T2-07) ---
   ;; Cohere has its own embed wire shape (texts, input_type,
   ;; embedding_types) and its own embed transport — chat support
