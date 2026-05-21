@@ -196,7 +196,64 @@
    (mk-provider :jina :openai-embed "https://api.jina.ai/v1" :bearer
                 :profile/env-var-names ["JINA_API_KEY"]
                 :profile/capabilities #{:embedding :rerank}
-                :profile/supports-model-listing false)))
+                :profile/supports-model-listing false))
+  ;; --- Aggregator OpenAI-compat aliases (T2-19) ---
+  ;; Long-tail inference aggregators. Each is identical to :openai
+  ;; in wire shape — only the base-url and env-var differ — so the
+  ;; openai-chat transport handles them via the same compat-provider-
+  ;; ids list. Live tests for these are opt-in (no fixtures bundled).
+  (register-provider
+   (mk-provider :sambanova :openai-chat "https://api.sambanova.ai/v1" :bearer
+                :profile/env-var-names ["SAMBANOVA_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema}))
+  (register-provider
+   (mk-provider :deepinfra :openai-chat "https://api.deepinfra.com/v1/openai" :bearer
+                :profile/env-var-names ["DEEPINFRA_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema}))
+  (register-provider
+   (mk-provider :lambda :openai-chat "https://api.lambda.ai/v1" :bearer
+                :profile/env-var-names ["LAMBDA_API_KEY"]
+                :profile/capabilities #{:chat :streaming :json-schema}))
+  (register-provider
+   (mk-provider :nebius :openai-chat "https://api.studio.nebius.com/v1" :bearer
+                :profile/env-var-names ["NEBIUS_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema}))
+  (register-provider
+   (mk-provider :hyperbolic :openai-chat "https://api.hyperbolic.xyz/v1" :bearer
+                :profile/env-var-names ["HYPERBOLIC_API_KEY"]
+                :profile/capabilities #{:chat :streaming :json-schema}))
+  (register-provider
+   (mk-provider :novita :openai-chat "https://api.novita.ai/v3/openai" :bearer
+                :profile/env-var-names ["NOVITA_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema}))
+  (register-provider
+   (mk-provider :friendliai :openai-chat "https://api.friendli.ai/serverless/v1" :bearer
+                :profile/env-var-names ["FRIENDLI_TOKEN"]
+                :profile/capabilities #{:chat :streaming :json-schema}))
+  (register-provider
+   (mk-provider :featherless :openai-chat "https://api.featherless.ai/v1" :bearer
+                :profile/env-var-names ["FEATHERLESS_API_KEY"]
+                :profile/capabilities #{:chat :streaming :json-schema}))
+  (register-provider
+   (mk-provider :cloudflare :openai-chat
+                ;; Cloudflare Workers AI's OpenAI-compat surface lives
+                ;; under /accounts/{account_id}/ai/v1 — callers must
+                ;; configure the account-scoped base-url via overrides,
+                ;; since we can't ship a default that works for everyone.
+                ;; Documented here as a placeholder that's resolved per
+                ;; account at runtime by setting :profile/base-url.
+                "https://api.cloudflare.com/client/v4/accounts/REPLACE-WITH-ACCOUNT-ID/ai/v1" :bearer
+                :profile/env-var-names ["CLOUDFLARE_API_TOKEN"]
+                :profile/capabilities #{:chat :streaming :json-schema}))
+  (register-provider
+   (mk-provider :dashscope :openai-chat
+                "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" :bearer
+                :profile/env-var-names ["DASHSCOPE_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema}))
+  (register-provider
+   (mk-provider :volcengine :openai-chat "https://ark.cn-beijing.volces.com/api/v3" :bearer
+                :profile/env-var-names ["ARK_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :json-schema})))
 
 ;; Auto-register on load
 (register-built-in-providers)
