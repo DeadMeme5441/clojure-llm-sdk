@@ -90,6 +90,16 @@
         body'))
     body))
 
+(defn- complete-url
+  "Build the chat-completions URL. Honours a profile-level
+   :profile/url-builder fn (used by Azure deployment routing and the
+   HuggingFace router) when present; otherwise falls back to the
+   simple {base-url}/chat/completions form."
+  [profile request]
+  (if-let [builder (:profile/url-builder profile)]
+    (builder profile request "/chat/completions")
+    (str (:profile/base-url profile) "/chat/completions")))
+
 (defn build-request-openai
   [profile request]
   (let [model (:request/model request)
@@ -151,7 +161,7 @@
                 {:extra_body extra-body}))
         body (apply-drops body (get-in profile [:profile/quirks :drops]))]
     {:method :post
-     :url (str (:profile/base-url profile) "/chat/completions")
+     :url (complete-url profile request)
      :headers (provider/default-headers profile
                                  (provider/resolve-auth-token profile))
      :body body}))
@@ -355,3 +365,77 @@
   (when-let [p (provider/get-provider pid)]
     (provider/register-provider
      (assoc p :profile/transport-constructor make-transport))))
+
+;; ---------------------------------------------------------------------------
+;; Azure OpenAI deployment routing (T2-05)
+;;
+;; Azure differs from openai.com on URL shape and (optionally) auth
+;; header — body is identical. The URL builder pattern keeps the chat
+;; adapter unchanged for vanilla OpenAI while letting deployment-
+;; routed and HuggingFace-router profiles plug in.
+;; ---------------------------------------------------------------------------
+
+(defn azure-url-builder
+  "URL builder for Azure OpenAI deployments. Composes
+     {base-url}/openai/deployments/{deployment}{path}?api-version=...
+   Reads :azure/deployment and :azure/api-version off the profile."
+  [profile _request path]
+  (str (:profile/base-url profile)
+       "/openai/deployments/"
+       (:azure/deployment profile)
+       path
+       "?api-version="
+       (:azure/api-version profile)))
+
+(defn register-azure-deployment!
+  "Register an Azure OpenAI deployment as a provider profile.
+
+   Required:
+     :id           keyword id for the profile (e.g. :azure-gpt4o-prod)
+     :endpoint     base URL, e.g. \"https://my-rg.openai.azure.com\"
+                   (no trailing slash, no /openai/deployments/...)
+     :deployment   the deployment name configured in the Azure portal
+     :api-version  e.g. \"2024-08-01-preview\"
+
+   Optional:
+     :env-var-names      vector of env-var names to read the API key from
+                         (defaults to [\"AZURE_OPENAI_API_KEY\"])
+     :auth-strategy      :api-key-header (default) or :bearer (AAD)
+     :auth-header-name   defaults to \"api-key\" (only used with
+                         :api-key-header). Set to \"Authorization\" or
+                         pass :auth-strategy :bearer for AAD bearer.
+     :capabilities       defaults #{:chat :streaming :tools
+                                    :json-schema :reasoning}
+     :quirks             optional quirks map passed through verbatim
+     :default-headers    optional map merged into outgoing headers"
+  [{:keys [id endpoint deployment api-version
+           env-var-names auth-strategy auth-header-name
+           capabilities quirks default-headers]
+    :or {auth-strategy :api-key-header
+         auth-header-name "api-key"
+         capabilities #{:chat :streaming :tools :json-schema :reasoning}
+         quirks {}
+         default-headers {}}}]
+  (when-not (and id endpoint deployment api-version)
+    (throw (ex-info "register-azure-deployment! needs :id :endpoint :deployment :api-version"
+                    {:id id :endpoint endpoint
+                     :deployment deployment :api-version api-version})))
+  (provider/register-provider
+   (cond-> {:profile/id id
+            :profile/protocol-family :openai-chat
+            :profile/base-url endpoint
+            :profile/auth-strategy auth-strategy
+            :profile/env-var-names (vec (or env-var-names ["AZURE_OPENAI_API_KEY"]))
+            :profile/default-headers default-headers
+            :profile/capabilities capabilities
+            :profile/quirks quirks
+            ;; Azure /models is per-deployment and not useful as a
+            ;; catalog source — turn it off.
+            :profile/supports-model-listing false
+            :profile/transport-constructor make-transport
+            :profile/url-builder azure-url-builder
+            :azure/endpoint endpoint
+            :azure/deployment deployment
+            :azure/api-version api-version}
+     (= auth-strategy :api-key-header)
+     (assoc :profile/auth-header-name auth-header-name))))
