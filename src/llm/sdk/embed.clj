@@ -38,4 +38,8 @@
                          :status status
                          :body body
                          :provider provider-id})))
-      (et/parse-embed-response transport profile body))))
+      ;; Adapters that don't echo the model in the response leave
+      ;; :embed/model nil — fall back to what the caller asked for so
+      ;; the surface always carries a useful model id.
+      (let [parsed (et/parse-embed-response transport profile body)]
+        (update parsed :embed/model #(or % (:embed/model request)))))))

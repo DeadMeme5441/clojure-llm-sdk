@@ -81,7 +81,11 @@
                 :jina (normalize-jina-rerank-usage raw)
                 nil)]
     (cond-> {:rerank/provider provider-id
-             :rerank/model (or (:model raw) (str provider-id "-rerank"))
+             ;; Cohere /rerank doesn't echo the model in the response;
+             ;; leave nil here and let llm.sdk.rerank/rerank fill it
+             ;; in from the request. Jina does echo :model, so the
+             ;; raw value is forwarded when present.
+             :rerank/model (:model raw)
              :rerank/results results
              :rerank/raw raw}
       (:id raw) (assoc :rerank/id (:id raw))

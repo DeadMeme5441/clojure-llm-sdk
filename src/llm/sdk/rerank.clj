@@ -37,4 +37,8 @@
                          :status status
                          :body body
                          :provider provider-id})))
-      (rt/parse-rerank-response transport profile body))))
+      ;; Adapters whose servers don't echo the model leave
+      ;; :rerank/model nil — fall back to the caller-supplied id so
+      ;; the surface always carries the model that was actually used.
+      (let [parsed (rt/parse-rerank-response transport profile body)]
+        (update parsed :rerank/model #(or % (:rerank/model request)))))))

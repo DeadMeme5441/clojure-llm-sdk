@@ -95,11 +95,11 @@
   (let [vectors (extract-vectors raw)
         first-vec (first vectors)]
     (cond-> {:embed/provider (:profile/id profile)
-             :embed/model (or (:model raw)
-                              ;; Cohere doesn't always echo the model;
-                              ;; surface what we sent if the response
-                              ;; omits it.
-                              (some-> raw :response_type str))
+             ;; Cohere doesn't echo the model in the response — leave
+             ;; this nil and let llm.sdk.embed/embed fill it in from
+             ;; the request. (:response_type is "embeddings_floats",
+             ;; not a model id, so it isn't a useful fallback.)
+             :embed/model (:model raw)
              :embed/vectors vectors
              :embed/raw raw}
       first-vec

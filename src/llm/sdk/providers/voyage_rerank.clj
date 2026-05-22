@@ -46,7 +46,10 @@
   (let [results (mapv result->canonical (:data raw))
         total (->int (get-in raw [:usage :total_tokens]))]
     (cond-> {:rerank/provider :voyage
-             :rerank/model (or (:model raw) "voyage-rerank")
+             ;; Voyage doesn't echo the model — let the driver fill
+             ;; this in from the request so the caller sees the id
+             ;; they asked for instead of a generic stand-in.
+             :rerank/model (:model raw)
              :rerank/results results
              :rerank/raw raw}
       (:id raw) (assoc :rerank/id (:id raw))
