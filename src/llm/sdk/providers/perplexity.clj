@@ -174,7 +174,47 @@
 
 (defn make-transport [] (->PerplexityTransport))
 
+;; ---------------------------------------------------------------------------
+;; Custom cost calculator (T2-18)
+;;
+;; Perplexity's Sonar models charge token-style + per-search-query (the
+;; \"Sonar Pro\" tier is the canonical case). The default token math
+;; covers input/output, then we add an extra per-search-query line item
+;; for any pricing entry that carries :search-cost-per-call. The
+;; default calculator's :pricing.clj implementation skips the addend, so
+;; we plug in here.
+;; ---------------------------------------------------------------------------
+
+(defn perplexity-cost-calculator
+  "Reads canonical token + search-query usage and produces a
+   cost-result. Falls back to the default token cost when no
+   :search-cost-per-call is set."
+  [{:keys [_provider _model usage pricing]}]
+  (let [base ((requiring-resolve 'llm.sdk.pricing/estimate-cost)
+              usage pricing)
+        search-queries (or (:usage/search-queries usage)
+                           (get-in usage [:usage/provider-raw :num_search_queries])
+                           0)
+        per-call (some-> pricing :search-cost-per-call bigdec)
+        addend (if (and per-call (pos? search-queries))
+                 (.multiply (bigdec search-queries) per-call)
+                 0M)
+        amount (cond
+                 (and (:cost/amount-usd base) (pos? (.signum ^java.math.BigDecimal addend)))
+                 (.add ^java.math.BigDecimal (bigdec (:cost/amount-usd base)) addend)
+                 (:cost/amount-usd base) (:cost/amount-usd base)
+                 (pos? (.signum ^java.math.BigDecimal addend)) addend
+                 :else nil)]
+    (-> base
+        (assoc :cost/amount-usd amount)
+        (update :cost/notes (fnil conj [])
+                (str "Perplexity search queries: " search-queries
+                     (when per-call
+                       (str " @ $" per-call " each")))))))
+
 ;; Register
 (when-let [p (provider/get-provider :perplexity)]
   (provider/register-provider
-   (assoc p :profile/transport-constructor make-transport)))
+   (assoc p
+          :profile/transport-constructor make-transport
+          :profile/cost-calculator perplexity-cost-calculator)))

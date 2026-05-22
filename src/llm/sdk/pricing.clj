@@ -20,21 +20,36 @@
    consume it — internally we convert ModelEntry's :model/cost map back
    to this shape at lookup time."
   (:require [clojure.string :as str]
-            [llm.sdk.registry :as registry]))
+            [llm.sdk.registry :as registry]
+            [llm.sdk.provider :as provider]))
 
 ;; ---------------------------------------------------------------------------
 ;; Legacy entry shapes — preserved for callers that already depend on them
 ;; ---------------------------------------------------------------------------
 
 (defn pricing-entry
-  "Construct a pricing entry. Costs are per-million-tokens in USD."
+  "Construct a pricing entry. Token costs are per-million-tokens in USD.
+   Per-modality knobs:
+     :image-cost-per-image           dollars per image returned
+     :image-cost-per-megapixel       dollars per megapixel produced
+     :transcription-cost-per-minute  dollars per minute of audio in
+     :tts-cost-per-million-chars     dollars per 1M output characters
+     :search-cost-per-call           dollars per search query (Perplexity)"
   [& {:keys [input output cache-read cache-write request-cost
+             image-per-image image-per-megapixel
+             transcription-per-minute tts-per-million-chars
+             search-per-call
              source source-url pricing-version]}]
   {:input-cost-per-million input
    :output-cost-per-million output
    :cache-read-cost-per-million cache-read
    :cache-write-cost-per-million cache-write
    :request-cost request-cost
+   :image-cost-per-image image-per-image
+   :image-cost-per-megapixel image-per-megapixel
+   :transcription-cost-per-minute transcription-per-minute
+   :tts-cost-per-million-chars tts-per-million-chars
+   :search-cost-per-call search-per-call
    :source (or source :registry)
    :source-url source-url
    :pricing-version pricing-version})
@@ -56,13 +71,23 @@
    pricing-entry. Returns nil when the model entry has no cost data."
   [model-entry]
   (when-let [c (:model/cost model-entry)]
-    (when (or (:input-per-million c) (:output-per-million c))
+    (when (or (:input-per-million c)
+              (:output-per-million c)
+              (:image-per-image c)
+              (:transcription-per-minute c)
+              (:tts-per-million-chars c)
+              (:search-per-call c))
       (pricing-entry
        :input (:input-per-million c)
        :output (:output-per-million c)
        :cache-read (:cache-read-per-million c)
        :cache-write (:cache-write-per-million c)
        :request-cost (:request-cost c)
+       :image-per-image (:image-per-image c)
+       :image-per-megapixel (:image-per-megapixel c)
+       :transcription-per-minute (:transcription-per-minute c)
+       :tts-per-million-chars (:tts-per-million-chars c)
+       :search-per-call (:search-per-call c)
        :source (:model/source model-entry)
        :source-url (:model/source-url model-entry)))))
 
@@ -195,6 +220,91 @@
 (defn estimate-cost-for-model
   "Look up pricing through the registry and estimate cost for the given
    usage. Returns a cost-result. Works for any provider+model the
-   merged registry knows — no manual registration required."
+   merged registry knows — no manual registration required.
+
+   When the provider profile carries a :profile/cost-calculator fn, it
+   is called with {:provider :model :usage :pricing} and must return a
+   cost-result map. This is the escape hatch for providers whose pricing
+   doesn't fit the default per-million-token formula (Perplexity's
+   citation-token surcharge is the canonical example)."
   [provider model usage]
-  (estimate-cost usage (get-pricing provider model)))
+  (let [pricing (get-pricing provider model)
+        custom-fn (some-> (provider/get-provider provider)
+                          :profile/cost-calculator)]
+    (if custom-fn
+      (custom-fn {:provider provider :model model
+                  :usage usage :pricing pricing})
+      (estimate-cost usage pricing))))
+
+;; ---------------------------------------------------------------------------
+;; Per-modality cost helpers
+;; ---------------------------------------------------------------------------
+
+(defn embedding-cost
+  "Cost for an embedding call. Embeddings only meter input tokens."
+  [usage pricing]
+  (if-not pricing
+    (cost-result nil :unknown :none "No pricing data")
+    (let [tokens (:usage/input-tokens usage 0)
+          amount (per-million tokens (:input-cost-per-million pricing))]
+      (cost-result amount :actual (:source pricing)
+                   (str "Embedding tokens: " tokens)))))
+
+(defn image-cost
+  "Cost for an image-generation call. Pricing may be per-image (DALL-E,
+   ElevenLabs voice clone) or per-megapixel (Imagen, Stability).
+   Args:
+     :n-images   number of images produced
+     :width      pixels (optional, used for per-megapixel pricing)
+     :height     pixels (optional, used for per-megapixel pricing)"
+  [{:keys [n-images width height]} pricing]
+  (if-not pricing
+    (cost-result nil :unknown :none "No pricing data")
+    (let [n (or n-images 1)
+          per-image (:image-cost-per-image pricing)
+          per-mp (:image-cost-per-megapixel pricing)
+          megapixels (when (and width height)
+                       (/ (* width height) 1000000.0))
+          amount (cond
+                   per-image (-> (bigdec n) (.multiply (bigdec per-image)))
+                   (and per-mp megapixels)
+                   (-> (bigdec n) (.multiply (bigdec megapixels))
+                       (.multiply (bigdec per-mp)))
+                   :else 0M)]
+      (if (or per-image per-mp)
+        (cost-result amount :actual (:source pricing)
+                     (str "Images: " n
+                          (when megapixels (str " @ " (format "%.2f" megapixels) " MP each"))))
+        (cost-result nil :estimated (:source pricing)
+                     "No image-cost pricing for model")))))
+
+(defn transcription-cost
+  "Cost for a speech-to-text call. Most providers price per-minute of
+   audio input. duration-seconds may come from response :transcription/
+   duration-seconds (verbose_json) or the caller's own metering."
+  [{:keys [duration-seconds]} pricing]
+  (if-not pricing
+    (cost-result nil :unknown :none "No pricing data")
+    (let [minutes (when duration-seconds (/ duration-seconds 60.0))
+          per-min (:transcription-cost-per-minute pricing)]
+      (if (and minutes per-min)
+        (let [amount (-> (bigdec minutes) (.multiply (bigdec per-min)))]
+          (cost-result amount :actual (:source pricing)
+                       (str "Duration: " (format "%.2f" minutes) " min")))
+        (cost-result nil :estimated (:source pricing)
+                     "Missing duration or per-minute pricing")))))
+
+(defn tts-cost
+  "Cost for a text-to-speech call. Most TTS providers (OpenAI, ElevenLabs)
+   price per million output characters."
+  [{:keys [characters]} pricing]
+  (if-not pricing
+    (cost-result nil :unknown :none "No pricing data")
+    (let [chars (or characters 0)
+          per-m (:tts-cost-per-million-chars pricing)]
+      (if per-m
+        (let [amount (per-million chars per-m)]
+          (cost-result amount :actual (:source pricing)
+                       (str "Characters: " chars)))
+        (cost-result nil :estimated (:source pricing)
+                     "No TTS pricing for model")))))
