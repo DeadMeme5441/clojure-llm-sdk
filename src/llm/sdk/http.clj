@@ -11,6 +11,17 @@
   (or *http-client* (hc/build-http-client {:connect-timeout 30000
                                             :timeout 120000})))
 
+(defn- encode-body
+  "Serialize body to a JSON string unless already a string or byte array
+   (callers like the SigV4 path pre-serialize so signing covers the exact
+   bytes we send)."
+  [body]
+  (cond
+    (nil? body) nil
+    (string? body) body
+    (bytes? body) body
+    :else (json/generate-string body)))
+
 (defn request
   "Make an HTTP request. Returns a map with :status, :body, :headers
    for every status code (including 4xx/5xx) — callers branch on
@@ -28,7 +39,7 @@
               ;; context.
               :throw-exceptions? false}
         opts (if body
-               (assoc opts :body (json/generate-string body))
+               (assoc opts :body (encode-body body))
                opts)
         opts (if query-params
                (assoc opts :query-params query-params)
@@ -52,9 +63,29 @@
               :as :stream
               :http-client (client)}
         opts (if body
-               (assoc opts :body (json/generate-string body))
+               (assoc opts :body (encode-body body))
                opts)
         resp (hc/request opts)
         reader (java.io.BufferedReader.
                 (java.io.InputStreamReader. (:body resp)))]
     (line-seq reader)))
+
+(defn binary-stream-request
+  "Make a streaming HTTP request and return the raw java.io.InputStream
+   in :body. Used by adapters that speak a binary framing protocol
+   (e.g. AWS event-stream for Bedrock /converse-stream) and need to
+   decode frames themselves."
+  [{:keys [method url headers body]}]
+  (let [opts {:method method
+              :url url
+              :headers headers
+              :as :stream
+              :http-client (client)
+              :throw-exceptions? false}
+        opts (if body
+               (assoc opts :body (encode-body body))
+               opts)
+        resp (hc/request opts)]
+    {:status (:status resp)
+     :headers (:headers resp)
+     :body (:body resp)}))
