@@ -20,6 +20,8 @@
             [llm.sdk.image :as image-driver]
             [llm.sdk.fallbacks :as fallbacks]
             [llm.sdk.request :as request]
+            [llm.sdk.aws-sigv4 :as aws-sigv4]
+            [llm.sdk.aws-eventstream :as aws-eventstream]
             ;; Ensure provider adapters are loaded so their transport
             ;; constructors are registered
             [llm.sdk.providers.openai-chat]
@@ -108,12 +110,33 @@
 ;; Complete
 ;; ---------------------------------------------------------------------------
 
+(defn- sign-if-needed [profile req] (aws-sigv4/maybe-sign profile req))
+
+(defn- binary-stream-events
+  "Bedrock-style streaming: open a binary connection, decode AWS event-
+   stream frames, hand each parsed frame to parse-stream-event."
+  [transport profile req]
+  (let [{:keys [body status]} (http/binary-stream-request req)]
+    (when (and status (>= status 400))
+      (throw (ex-info "Provider streaming API error"
+                      {:status status :provider (:profile/id profile)})))
+    (->> (aws-eventstream/frame-seq body)
+         (map aws-eventstream/frame->json)
+         (mapcat (fn [frame]
+                   (let [ev (transport/parse-stream-event transport profile frame)]
+                     (cond
+                       (nil? ev) nil
+                       (sequential? ev) ev
+                       :else [ev])))))))
+
 (defn complete
   "Send a canonical request and return a canonical response.
    Provider must be a registered provider keyword (e.g. :openai).
    Request is a map conforming to llm.sdk.schema/Request.
    Options:
-     :stream?   If true, returns a core.async channel of stream events.
+     :stream?   If true, returns a lazy seq of stream events
+                (or a list-of-events plus terminal response when
+                :on-event is given).
      :on-event  Callback fn for each stream event (only if stream? true)."
   [provider-id request & {:keys [stream? on-event]}]
   (let [profile (or (provider/get-provider provider-id)
@@ -122,22 +145,26 @@
         ;; T2-12 — strip canonical fields the provider doesn't support
         ;; (and warn) when the profile opts in via :profile/supported-params.
         request (request/apply-supported-params profile request)
-        req (transport/build-request transport profile request)]
+        ;; Adapters may need to know if streaming so they can pick the
+        ;; right URL or shape (Bedrock /converse vs /converse-stream).
+        request (cond-> request stream? (assoc :request/stream? true))
+        req (transport/build-request transport profile request)
+        req (sign-if-needed profile req)
+        binary-stream? (= :aws-eventstream (:profile/binary-stream profile))]
     (if stream?
       ;; Streaming path
-      (let [events (http/sse-request req)
-            ;; parse-stream-event may return nil, a single event map,
-            ;; or a vector of events — flatten so callers always see
-            ;; a flat sequence of canonical StreamEvent maps.
-            parsed-events (mapcat (fn [line]
-                                    (let [ev (transport/parse-stream-event
-                                              transport profile line)]
-                                      (cond
-                                        (nil? ev) nil
-                                        (sequential? ev) ev
-                                        :else [ev])))
-                                  events)
-            parsed-events (concat [(stream/start-event)] parsed-events [(stream/end-event)])]
+      (let [events (if binary-stream?
+                     (binary-stream-events transport profile req)
+                     (let [ev-seq (http/sse-request req)]
+                       (mapcat (fn [line]
+                                 (let [ev (transport/parse-stream-event
+                                           transport profile line)]
+                                   (cond
+                                     (nil? ev) nil
+                                     (sequential? ev) ev
+                                     :else [ev])))
+                               ev-seq)))
+            parsed-events (concat [(stream/start-event)] events [(stream/end-event)])]
         (if on-event
           (do (doseq [ev parsed-events] (on-event ev))
               (stream/events->response parsed-events provider-id (:request/model request)))

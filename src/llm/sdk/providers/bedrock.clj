@@ -1,7 +1,19 @@
 (ns llm.sdk.providers.bedrock
   "AWS Bedrock Converse API transport adapter.
-   Uses AWS Signature V4 auth via hato's built-in support.
-   Supports guardrails and cross-region inference."
+
+   Auth: AWS Signature V4 — sdk/complete dispatches on
+   :profile/auth-strategy :aws-sigv4 and signs the request via
+   llm.sdk.aws-sigv4 just before the HTTP send.
+
+   Streaming: Bedrock's /converse-stream emits binary event-stream
+   frames (vnd.amazon.eventstream). sdk/complete reads the raw
+   InputStream via llm.sdk.aws-eventstream/frame-seq and hands
+   each parsed frame to parse-stream-event-bedrock as a map.
+
+   Model-id mapping: canonical short ids (e.g. claude-sonnet-4-5,
+   nova-pro) are mapped to Bedrock's region-versioned id format
+   (e.g. anthropic.claude-sonnet-4-5-20250101-v1:0); unknown ids
+   pass through verbatim so callers can provide explicit ARNs."
   (:require [clojure.string :as str]
             [cheshire.core :as json]
             [llm.sdk.transport :as t]
@@ -10,6 +22,60 @@
             [llm.sdk.usage :as usage]
             [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]))
+
+;; ---------------------------------------------------------------------------
+;; Model id mapping — canonical short id → Bedrock fully-qualified id
+;; ---------------------------------------------------------------------------
+;;
+;; Bedrock model ids encode publisher, model, release date, and version
+;; (`anthropic.claude-sonnet-4-20250514-v1:0`). Most callers want to
+;; pass the short canonical id; this table covers the common shortcuts.
+;; Anything not in the table is forwarded verbatim, which lets callers
+;; supply full Bedrock ARNs / inference-profile ids when needed.
+
+(def model-id-mapping
+  {"claude-3-5-sonnet" "anthropic.claude-3-5-sonnet-20241022-v2:0"
+   "claude-3-5-sonnet-latest" "anthropic.claude-3-5-sonnet-20241022-v2:0"
+   "claude-3-5-haiku" "anthropic.claude-3-5-haiku-20241022-v1:0"
+   "claude-3-opus" "anthropic.claude-3-opus-20240229-v1:0"
+   "claude-3-sonnet" "anthropic.claude-3-sonnet-20240229-v1:0"
+   "claude-3-haiku" "anthropic.claude-3-haiku-20240307-v1:0"
+   "claude-3-7-sonnet" "anthropic.claude-3-7-sonnet-20250219-v1:0"
+   "claude-sonnet-4" "anthropic.claude-sonnet-4-20250514-v1:0"
+   "claude-sonnet-4-5" "anthropic.claude-sonnet-4-5-20250101-v1:0"
+   "claude-opus-4" "anthropic.claude-opus-4-20250514-v1:0"
+   "claude-opus-4-1" "anthropic.claude-opus-4-1-20250805-v1:0"
+   "claude-haiku-4-5" "anthropic.claude-haiku-4-5-20251001-v1:0"
+   "nova-micro" "amazon.nova-micro-v1:0"
+   "nova-lite" "amazon.nova-lite-v1:0"
+   "nova-pro" "amazon.nova-pro-v1:0"
+   "nova-premier" "amazon.nova-premier-v1:0"
+   "command-r" "cohere.command-r-v1:0"
+   "command-r-plus" "cohere.command-r-plus-v1:0"
+   "llama3-1-8b" "meta.llama3-1-8b-instruct-v1:0"
+   "llama3-1-70b" "meta.llama3-1-70b-instruct-v1:0"
+   "llama3-1-405b" "meta.llama3-1-405b-instruct-v1:0"
+   "llama3-2-11b" "meta.llama3-2-11b-instruct-v1:0"
+   "llama3-2-90b" "meta.llama3-2-90b-instruct-v1:0"
+   "llama3-3-70b" "meta.llama3-3-70b-instruct-v1:0"
+   "mistral-large" "mistral.mistral-large-2407-v1:0"
+   "mistral-large-2402" "mistral.mistral-large-2402-v1:0"
+   "deepseek-r1" "deepseek.r1-v1:0"})
+
+(defn resolve-model-id
+  "Translate a canonical short id to the Bedrock fully-qualified id.
+   Pass-through if the id already looks Bedrock-shaped (contains '.' or ':')
+   or if it isn't in the table."
+  [model]
+  (when model
+    (or (get model-id-mapping model)
+        (when (or (str/includes? model ".")
+                  (str/includes? model ":")
+                  (str/starts-with? model "arn:"))
+          model)
+        ;; Unknown short ids — fall back to the verbatim string and let
+        ;; Bedrock surface the validation error to the caller.
+        model)))
 
 ;; ---------------------------------------------------------------------------
 ;; Finish reason mapping
@@ -43,7 +109,7 @@
           content)
     :else [{:text (str content)}]))
 
-(defn- message->bedrock [msg tool-name-by-id]
+(defn- message->bedrock [msg]
   (let [role (case (:message/role msg)
                :user "user"
                :assistant "assistant"
@@ -69,13 +135,7 @@
       {:role role :content (content->bedrock (:message/content msg))})))
 
 (defn- build-messages [messages]
-  (let [tool-name-by-id (into {}
-                              (mapcat (fn [msg]
-                                        (when (seq (:message/tool-calls msg))
-                                          (map #(vector (:tool-call/id %) (:tool-call/name %))
-                                               (:message/tool-calls msg))))
-                                      messages))]
-    (mapv #(message->bedrock % tool-name-by-id) messages)))
+  (mapv message->bedrock messages))
 
 ;; ---------------------------------------------------------------------------
 ;; Tool conversion
@@ -88,9 +148,26 @@
       :description (or (:description fn-data) "")
       :inputSchema {:json (or (:parameters fn-data) {:type "object"})}}}))
 
+(defn- tool-choice->bedrock [tc]
+  (cond
+    (= tc :auto) {:auto {}}
+    (= tc :required) {:any {}}
+    (= tc :none) nil
+    (and (map? tc) (= (:type tc) :function))
+    {:tool {:name (get-in tc [:function :name])}}
+    :else nil))
+
 ;; ---------------------------------------------------------------------------
 ;; Request building
 ;; ---------------------------------------------------------------------------
+
+(defn- aws-region []
+  (or (System/getenv "AWS_REGION")
+      (System/getenv "AWS_DEFAULT_REGION")
+      "us-east-1"))
+
+(defn- bedrock-base-url []
+  (str "https://bedrock-runtime." (aws-region) ".amazonaws.com"))
 
 (defn- cache-point-block []
   {:cachePoint {:type "default"}})
@@ -118,17 +195,13 @@
 
 (defn build-request-bedrock
   [profile request]
-  (let [model (:request/model request)
-        region (or (System/getenv "AWS_REGION") "us-east-1")
+  (let [stream? (boolean (:request/stream? request))
+        canonical-model (:request/model request)
+        model (resolve-model-id canonical-model)
         messages (remove #(= (:message/role %) :system) (:request/messages request))
         system-texts (keep #(when (= (:message/role %) :system)
                               (t/content->string (:message/content %)))
                            (:request/messages request))
-        ;; Caching: Bedrock Converse supports up to 4 cachePoint
-        ;; sentinels per request. Strategy: a sentinel after the
-        ;; system content array (caches the system prompt) and one
-        ;; after the final user message (caches the running history).
-        ;; Caller can disable via :request/cache {:strategy :none}.
         cache-on? (and (cache/cache-enabled? request)
                        (not= :none (get-in request [:request/cache :strategy])))
         system-content (when (seq system-texts) (mapv #(hash-map :text %) system-texts))
@@ -139,26 +212,38 @@
         native-messages (if cache-on?
                           (mark-last-message-cachable native-messages)
                           native-messages)
-        body (merge
-              {:modelId model
-               :messages native-messages}
-              (when (seq system-content)
-                {:system system-content})
-              (when (seq (:request/tools request))
-                {:toolConfig
-                 {:tools (mapv tool->bedrock (:request/tools request))}})
-              (when (:request/temperature request)
-                {:inferenceConfig {:temperature (:request/temperature request)}})
-              (when (:request/max-tokens request)
-                {:inferenceConfig {:maxTokens (:request/max-tokens request)}})
-              (when (:request/top-p request)
-                {:inferenceConfig {:topP (:request/top-p request)}}))]
+        tool-config (when (seq (:request/tools request))
+                      (cond-> {:tools (mapv tool->bedrock (:request/tools request))}
+                        (:request/tool-choice request)
+                        (assoc :toolChoice
+                               (tool-choice->bedrock
+                                (:request/tool-choice request)))))
+        inference-config
+        (cond-> {}
+          (:request/temperature request)
+          (assoc :temperature (:request/temperature request))
+          (:request/max-tokens request)
+          (assoc :maxTokens (:request/max-tokens request))
+          (:request/top-p request)
+          (assoc :topP (:request/top-p request))
+          (:request/stop request)
+          (assoc :stopSequences (vec (:request/stop request))))
+        body (cond-> {:messages native-messages}
+               (seq system-content) (assoc :system system-content)
+               tool-config (assoc :toolConfig tool-config)
+               (seq inference-config) (assoc :inferenceConfig inference-config)
+               (seq (get-in request [:request/provider-options :additional-model-request-fields]))
+               (assoc :additionalModelRequestFields
+                      (get-in request [:request/provider-options :additional-model-request-fields])))
+        path (if stream? "/converse-stream" "/converse")
+        url (str (bedrock-base-url) "/model/" model path)]
     {:method :post
-     :url (str "https://bedrock-runtime." region ".amazonaws.com/model/" model "/converse")
-     :headers (merge {"Content-Type" "application/json"
-                      "Accept" "application/json"}
-                     (provider/default-headers profile
-                                               (provider/resolve-auth-token profile)))
+     :url url
+     :headers (cond-> {"Content-Type" "application/json"
+                       "Accept" "application/json"}
+                stream? (assoc "Accept" "application/vnd.amazon.eventstream"))
+     ::aws-service "bedrock"
+     ::aws-region (aws-region)
      :body body}))
 
 ;; ---------------------------------------------------------------------------
@@ -192,53 +277,85 @@
                        {:usage/input-tokens (:inputTokens usage-raw 0)
                         :usage/output-tokens (:outputTokens usage-raw 0)
                         :usage/total-tokens (:totalTokens usage-raw 0)
+                        :usage/cached-input-tokens (:cacheReadInputTokens usage-raw 0)
+                        :usage/cache-write-tokens (:cacheWriteInputTokens usage-raw 0)
                         :usage/request-count 1
                         :usage/provider-raw usage-raw})
      :response/raw raw}))
 
 ;; ---------------------------------------------------------------------------
-;; Stream parsing (Bedrock streaming is event-stream with JSON lines)
+;; Stream parsing — handles either an eventstream frame map
+;; (preferred, emitted by aws-eventstream/frame-seq) or a raw JSON line
+;; (legacy fallback for tests + callers that pre-parsed frames).
 ;; ---------------------------------------------------------------------------
 
 (defn- parse-event-line [line]
   (try (json/parse-string line true)
        (catch Exception _ nil)))
 
-(defn parse-stream-event-bedrock
-  [profile line]
-  (when-let [data (parse-event-line line)]
-    (let [t (:type data)]
+(defn- frame->event
+  "Turn a single decoded frame into a canonical StreamEvent map (or nil
+   when there's nothing to emit)."
+  [{:keys [event-type data] :as _frame}]
+  (case event-type
+    "contentBlockDelta"
+    (let [delta (:delta data)]
       (cond
-        (= t "contentBlockDelta")
-        (let [delta (:delta (:contentBlockDelta data))]
-          (when (:text delta)
-            (stream/content-delta (:text delta))))
+        (:text delta) (stream/content-delta (:text delta))
+        (:reasoningContent delta)
+        (when-let [rt (get-in delta [:reasoningContent :text])]
+          (stream/reasoning-delta rt))
+        (:toolUse delta)
+        (stream/tool-call-delta (or (:contentBlockIndex data) 0)
+                                (get-in delta [:toolUse :input]))))
 
-        (= t "contentBlockStart")
-        (when (= (get-in data [:contentBlockStart :contentBlock :type]) "toolUse")
-          (let [block (get-in data [:contentBlockStart :contentBlock])]
-            (stream/tool-call-start 0 (:toolUseId block) (:name block))))
+    "contentBlockStart"
+    (let [block (get-in data [:start :toolUse])]
+      (when block
+        (stream/tool-call-start (or (:contentBlockIndex data) 0)
+                                (:toolUseId block)
+                                (:name block))))
 
-        (= t "metadata")
-        (when-let [u (get-in data [:metadata :usage])]
-          (stream/usage-event {:usage/input-tokens (:inputTokens u 0)
-                               :usage/output-tokens (:outputTokens u 0)
-                               :usage/total-tokens (:totalTokens u 0)
-                               :usage/request-count 1}))
+    "messageStart" nil
+    "messageStop"
+    (stream/end-event :finish-reason
+                      (get stop-reason-map (:stopReason data) :stop))
 
-        (= t "messageStop")
-        (stream/end-event :finish-reason (get stop-reason-map
-                                               (get-in data [:messageStop :stopReason])
-                                               :stop))
+    "metadata"
+    (when-let [u (:usage data)]
+      (stream/usage-event
+       {:usage/input-tokens (:inputTokens u 0)
+        :usage/output-tokens (:outputTokens u 0)
+        :usage/total-tokens (:totalTokens u 0)
+        :usage/cached-input-tokens (:cacheReadInputTokens u 0)
+        :usage/cache-write-tokens (:cacheWriteInputTokens u 0)
+        :usage/request-count 1}))
 
-        :else nil))))
+    nil))
+
+(defn parse-stream-event-bedrock
+  [_profile input]
+  (cond
+    ;; Frame map produced by aws-eventstream/frame->json
+    (and (map? input) (:event-type input))
+    (frame->event input)
+
+    ;; Legacy: caller passed a JSON line shaped like the older
+    ;; intermediate format used by the prior scaffold. Translate it
+    ;; into the frame shape and reuse the dispatcher above.
+    (string? input)
+    (when-let [data (parse-event-line input)]
+      (frame->event {:event-type (:type data)
+                     :data (or (get data (keyword (:type data))) data)}))
+
+    :else nil))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing
 ;; ---------------------------------------------------------------------------
 
 (defn parse-error-bedrock
-  [profile status body]
+  [_profile status body]
   (errors/classify-error (Exception. "Bedrock API error")
                          :status status
                          :body body
@@ -256,8 +373,8 @@
   (parse-response [this profile raw]
     (parse-response-bedrock profile raw))
 
-  (parse-stream-event [this profile line]
-    (parse-stream-event-bedrock profile line))
+  (parse-stream-event [this profile input]
+    (parse-stream-event-bedrock profile input))
 
   (parse-error [this profile status body]
     (parse-error-bedrock profile status body))
@@ -266,11 +383,13 @@
     {:usage/input-tokens (:inputTokens raw 0)
      :usage/output-tokens (:outputTokens raw 0)
      :usage/total-tokens (:totalTokens raw 0)
+     :usage/cached-input-tokens (:cacheReadInputTokens raw 0)
+     :usage/cache-write-tokens (:cacheWriteInputTokens raw 0)
      :usage/request-count 1
      :usage/provider-raw raw})
 
   (request-capabilities [_]
-    #{:chat :streaming :tools :guardrails}))
+    #{:chat :streaming :tools :guardrails :cache}))
 
 (defn make-transport []
   (->BedrockTransport))
@@ -281,7 +400,9 @@
   :profile/protocol-family :bedrock
   :profile/base-url "https://bedrock-runtime.us-east-1.amazonaws.com"
   :profile/auth-strategy :aws-sigv4
-  :profile/supports-model-listing true
-  :profile/capabilities #{:chat :streaming :tools :guardrails}
+  :profile/aws-service "bedrock"
+  :profile/supports-model-listing false
+  :profile/capabilities #{:chat :streaming :tools :guardrails :cache}
   :profile/env-var-names ["AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_REGION"]
+  :profile/binary-stream :aws-eventstream
   :profile/transport-constructor make-transport})
