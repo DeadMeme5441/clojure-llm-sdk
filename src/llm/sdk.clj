@@ -18,6 +18,7 @@
             [llm.sdk.moderate :as moderate-driver]
             [llm.sdk.rerank :as rerank-driver]
             [llm.sdk.image :as image-driver]
+            [llm.sdk.transcribe :as transcribe-driver]
             [llm.sdk.fallbacks :as fallbacks]
             [llm.sdk.request :as request]
             [llm.sdk.aws-sigv4 :as aws-sigv4]
@@ -28,6 +29,7 @@
             [llm.sdk.providers.openai-embed]
             [llm.sdk.providers.openai-moderation]
             [llm.sdk.providers.openai-image]
+            [llm.sdk.providers.openai-transcribe]
             [llm.sdk.providers.cohere-embed]
             [llm.sdk.providers.cohere-chat]
             [llm.sdk.providers.cohere-rerank]
@@ -243,6 +245,24 @@
    :image/response-format, :image/user, :image/provider-options."
   [provider-id request]
   (image-driver/generate-image provider-id request))
+
+;; ---------------------------------------------------------------------------
+;; Transcribe
+;; ---------------------------------------------------------------------------
+
+(defn transcribe
+  "Send a canonical audio-transcription request and return a TranscribeResponse.
+   Provider must carry :profile/transcribe-transport-constructor
+   (currently :openai and :groq under T2-14).
+
+   Required: :transcribe/file (java.io.File / path / bytes / InputStream)
+   and :transcribe/model. Optional: :transcribe/language,
+   :transcribe/prompt, :transcribe/temperature,
+   :transcribe/response-format (:json|:text|:srt|:verbose_json|:vtt),
+   :transcribe/timestamp-granularities (#{:segment :word}),
+   :transcribe/provider-options."
+  [provider-id request]
+  (transcribe-driver/transcribe provider-id request))
 
 ;; ---------------------------------------------------------------------------
 ;; Fallbacks
