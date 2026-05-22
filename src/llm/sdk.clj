@@ -29,6 +29,7 @@
             [llm.sdk.providers.openai-moderation]
             [llm.sdk.providers.openai-image]
             [llm.sdk.providers.cohere-embed]
+            [llm.sdk.providers.cohere-chat]
             [llm.sdk.providers.cohere-rerank]
             [llm.sdk.providers.voyage-rerank]
             [llm.sdk.providers.anthropic]
