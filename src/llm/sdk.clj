@@ -46,6 +46,7 @@
             [llm.sdk.providers.openrouter]
             [llm.sdk.providers.perplexity]
             [llm.sdk.providers.bedrock]
+            [llm.sdk.providers.ollama-native]
             [llm.sdk.providers.fake]))
 
 ;; ---------------------------------------------------------------------------
