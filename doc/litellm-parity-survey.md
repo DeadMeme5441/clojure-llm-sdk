@@ -31,7 +31,7 @@ LiteLLM paths are relative to `/Users/hvyasanakere/Projects/MyriadSelf/litellm-r
 | T2-19 | Aggregator profile aliases (11 providers) | ✅ shipped |
 | T2-20 | Native Ollama adapter (`/api/chat` + `/api/embed`) | ✅ shipped |
 
-**All 20 Task 2 issues shipped.** 429 tests / 1301 assertions green. The clojure-llm-sdk now spans seven modalities (chat / embed / moderate / rerank / image / transcribe / speak), 29 provider profiles, and three AWS-native pieces of infrastructure (SigV4 signer, `vnd.amazon.eventstream` decoder, Bedrock model-id mapping).
+**All 20 Task 2 issues shipped.** 433 tests / 1301 assertions green. The clojure-llm-sdk now spans seven modalities (chat / embed / moderate / rerank / image / transcribe / speak), 35 registered provider profiles, and three AWS-native pieces of infrastructure (SigV4 signer, `vnd.amazon.eventstream` decoder, Bedrock model-id mapping). End-to-end live-verified against Cohere (chat / embed / rerank), OpenAI (chat / embed / moderation), Anthropic, OpenRouter, DeepSeek, Kimi, and Vertex AI.
 
 ---
 
