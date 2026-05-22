@@ -30,6 +30,8 @@
             [llm.sdk.providers.openai-embed]
             [llm.sdk.providers.openai-moderation]
             [llm.sdk.providers.openai-image]
+            [llm.sdk.providers.vertex-imagen]
+            [llm.sdk.providers.bedrock-image]
             [llm.sdk.providers.openai-transcribe]
             [llm.sdk.providers.openai-speak]
             [llm.sdk.providers.elevenlabs]
