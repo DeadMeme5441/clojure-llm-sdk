@@ -8,6 +8,7 @@
    support throw a clear ex-info."
   (:require [llm.sdk.provider :as provider]
             [llm.sdk.http :as http]
+            [llm.sdk.aws-sigv4 :as aws-sigv4]
             [llm.sdk.transport.image :as it]))
 
 (defn generate-image
@@ -30,6 +31,7 @@
                             {:provider provider-id})))
         transport (ctor)
         req (it/build-image-request transport profile request)
+        req (aws-sigv4/maybe-sign profile req)
         resp (http/request req)
         status (:status resp)
         body (:body resp)]
