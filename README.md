@@ -324,6 +324,8 @@ Each provider profile carries the constructor for any modality it supports:
 
 Calling `sdk/embed` on a provider whose profile lacks `:profile/embed-transport-constructor` throws an `ex-info` with a clear message rather than failing downstream.
 
+**Model echo.** Cohere `/embed` + `/rerank` and Voyage `/rerank` don't echo the requested model id in their responses. The `sdk/embed` and `sdk/rerank` drivers backfill `:embed/model` / `:rerank/model` from the request when the parsed response leaves them `nil`, so the surface always carries the id the caller asked for. If the server echoes a different id (rare — alias resolution), the server's answer wins.
+
 ### Provider-specific replay state
 
 A key design principle: **provider-specific replay state must survive round-trips**:
@@ -676,7 +678,9 @@ source .env && clj -M:live-test -n llm.sdk.live-azure-test
 
 Live tests are gated by credential availability and skipped cleanly when missing. They make minimal API calls (single-token "ok" prompts, fractional-cent embed calls) to keep costs negligible. DALL-E live image-gen tests are intentionally not bundled — at ~$0.04 each they're more expensive than every other live smoke combined, so they're documented as manual smokes instead.
 
-**Current test status:** 429 tests, 1301 assertions, all passing.
+**Current test status:** 433 tests, 1301 assertions, all passing.
+
+**Provider smoke scripts.** `scripts/cohere_live_demo.clj` exercises every Cohere surface — embed (multiple `input_type` + dim variants), rerank (English + multilingual), and chat (basic + streaming + RAG with `:documents`/`citation_options` + forced tool call) — and prints the actual responses. Run with `source .env && clojure -Sdeps '{:paths ["src" "resources" "scripts"]}' -M -m cohere-live-demo`. Useful sanity check before shipping a key rotation or after adapter edits.
 
 ## Project structure
 
@@ -747,6 +751,7 @@ resources/
   litellm-snapshot.json       # T2-17 LiteLLM snapshot tier
 scripts/
   build_litellm_snapshot.py   # Refresh resources/litellm-snapshot.json
+  cohere_live_demo.clj        # Exercise Cohere embed/rerank/chat end-to-end
 test/llm/sdk/                 # Mirror of src structure for unit tests
   live_*.clj                  # Env-gated live integration tests
 test-resources/fixtures/      # Golden JSON fixtures for adapter parsing
