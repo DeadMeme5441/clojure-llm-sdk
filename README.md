@@ -4,7 +4,7 @@ A production-quality Clojure SDK for LLM providers — LiteLLM-style canonicaliz
 
 > **This is a provider SDK, not an agent framework.** It owns provider weirdness so your application doesn't have to. It does not import credential pools, CLI runtimes, plugin scanning, observability sinks, secret managers, or proxy/router/budget machinery — those are app concerns.
 
-The SDK ships **27 provider profiles** and **five canonical modalities** (chat, embeddings, moderation, rerank, image generation), plus a `with-fallbacks` helper for sequential provider fallback. See [doc/litellm-parity-survey.md](doc/litellm-parity-survey.md) for the full design rationale and what was deliberately left out.
+The SDK ships **35 registered provider profiles** across **seven canonical modalities** (chat, embeddings, moderation, rerank, image generation, audio transcription, text-to-speech), plus a `with-fallbacks` helper for sequential provider fallback. See [doc/litellm-parity-survey.md](doc/litellm-parity-survey.md) for the full design rationale and what was deliberately left out.
 
 ## Installation
 
@@ -74,6 +74,31 @@ com.deadmeme5441/clojure-llm-sdk {:git/url "https://github.com/DeadMeme5441/cloj
    :image/quality :hd})
 ;; => {:image/provider :openai :image/model "dall-e-3"
 ;;     :image/images [{:image/url "https://..." :image/revised-prompt "..."}]}
+
+;; Also: :vertex-imagen (Imagen 3 / 4) and :bedrock (Titan Image / Stability SDXL)
+
+;; --- Audio transcription (speech-to-text) ---
+(sdk/transcribe
+  :openai
+  {:transcribe/model "whisper-1"
+   :transcribe/file (java.io.File. "/path/to/clip.wav")
+   :transcribe/language "en"
+   :transcribe/response-format :verbose_json
+   :transcribe/timestamp-granularities #{:segment :word}})
+;; => {:transcription/text "Hello there." :transcription/language "english"
+;;     :transcription/segments [...] :transcription/words [...]
+;;     :transcription/duration-seconds 1.42}
+;; Also: :groq (whisper-large-v3, distil-whisper-large-v3-en)
+
+;; --- Text-to-speech ---
+(sdk/speak
+  :openai
+  {:speak/model "tts-1"
+   :speak/voice "alloy"
+   :speak/input "Hello, world!"
+   :speak/format :mp3})
+;; => {:audio/bytes <byte[]> :audio/content-type "audio/mpeg"}
+;; Also: :elevenlabs (per-voice-id endpoint, eleven_multilingual_v2)
 
 ;; --- Tools ---
 (sdk/complete
@@ -276,15 +301,25 @@ Each modality has its own narrow protocol — no god-protocol. New modalities sl
 | Moderation | `llm.sdk.transport.moderate/ModerationTransport` | `llm.sdk.moderate/moderate` | `sdk/moderate` |
 | Rerank | `llm.sdk.transport.rerank/RerankTransport` | `llm.sdk.rerank/rerank` | `sdk/rerank` |
 | Image generation | `llm.sdk.transport.image/ImageTransport` | `llm.sdk.image/generate-image` | `sdk/generate-image` |
+| Audio transcription | `llm.sdk.transport.transcribe/TranscribeTransport` | `llm.sdk.transcribe/transcribe` | `sdk/transcribe` |
+| Text-to-speech | `llm.sdk.transport.speak/SpeakTransport` | `llm.sdk.speak/speak` | `sdk/speak` |
 
 Each provider profile carries the constructor for any modality it supports:
 
 ```clojure
-:profile/transport-constructor            ; chat (required)
+:profile/transport-constructor            ; chat (required for chat providers)
 :profile/embed-transport-constructor      ; optional
 :profile/moderation-transport-constructor ; optional
 :profile/rerank-transport-constructor     ; optional
 :profile/image-transport-constructor      ; optional
+:profile/transcribe-transport-constructor ; optional (STT)
+:profile/speak-transport-constructor      ; optional (TTS)
+:profile/cost-calculator                  ; optional — replaces default
+                                          ; pricing math (Perplexity)
+:profile/url-builder                      ; optional — request-time URL
+                                          ; mangling (Azure deployment)
+:profile/aws-service / :profile/binary-stream  ; Bedrock SigV4 hint +
+                                                ; eventstream marker
 ```
 
 Calling `sdk/embed` on a provider whose profile lacks `:profile/embed-transport-constructor` throws an `ex-info` with a clear message rather than failing downstream.
@@ -641,7 +676,7 @@ source .env && clj -M:live-test -n llm.sdk.live-azure-test
 
 Live tests are gated by credential availability and skipped cleanly when missing. They make minimal API calls (single-token "ok" prompts, fractional-cent embed calls) to keep costs negligible. DALL-E live image-gen tests are intentionally not bundled — at ~$0.04 each they're more expensive than every other live smoke combined, so they're documented as manual smokes instead.
 
-**Current test status:** 371 tests, 1127 assertions, all passing.
+**Current test status:** 429 tests, 1301 assertions, all passing.
 
 ## Project structure
 
@@ -669,30 +704,43 @@ src/llm/sdk/
   embed.clj               # sdk/embed driver (T2-01)
   moderate.clj            # sdk/moderate driver (T2-13)
   rerank.clj              # sdk/rerank driver (T2-16)
-  image.clj               # sdk/generate-image driver (T2-10)
+  image.clj               # sdk/generate-image driver (T2-10, T2-11)
+  transcribe.clj          # sdk/transcribe driver (T2-14)
+  speak.clj               # sdk/speak driver (T2-15)
+  aws_sigv4.clj           # AWS Signature V4 signer (T2-09)
+  aws_eventstream.clj     # vnd.amazon.eventstream binary frame decoder (T2-09)
   sdk.clj                 # Public API (complete, embed, moderate, rerank,
-                          # generate-image, with-fallbacks, ...)
+                          # generate-image, transcribe, speak, with-fallbacks, ...)
   transport/
     embed.clj             # EmbedTransport protocol (T2-01)
     moderate.clj          # ModerationTransport protocol (T2-13)
     rerank.clj            # RerankTransport protocol (T2-16)
     image.clj             # ImageTransport protocol (T2-10)
+    transcribe.clj        # TranscribeTransport protocol (T2-14)
+    speak.clj             # SpeakTransport protocol (T2-15)
   providers/
     openai_chat.clj       # OpenAI Chat Completions + alias mechanism (build-alias-profile,
                           # register-alias!, register-azure-deployment!)
     openai_embed.clj      # OpenAI /embeddings (also attached to mistral/together/voyage/jina)
     openai_moderation.clj # OpenAI /moderations
     openai_image.clj      # OpenAI /images/generations
+    openai_transcribe.clj # OpenAI /audio/transcriptions (Whisper; shared by :groq)
+    openai_speak.clj      # OpenAI /audio/speech (tts-1, tts-1-hd, gpt-4o-mini-tts)
+    elevenlabs.clj        # ElevenLabs /v1/text-to-speech/:voice_id
     openrouter.clj        # OpenRouter (wraps OpenAI Chat)
     anthropic.clj         # Anthropic Messages (with OAuth auto-detect)
     gemini_native.clj     # Gemini Native API
     vertex_gemini.clj     # Vertex AI Gemini
+    vertex_imagen.clj     # Vertex Imagen 3 / 4 (:predict endpoint, T2-11)
     codex.clj             # OpenAI Responses API + Codex Backend
-    perplexity.clj        # Perplexity chat with citation extraction (T2-04)
+    perplexity.clj        # Perplexity chat + citation-token cost calculator (T2-04, T2-18)
+    cohere_chat.clj       # Cohere /v2/chat — native shape, citations, tool calls (T2-02)
     cohere_embed.clj      # Cohere /embed (native shape, T2-07)
     cohere_rerank.clj     # Cohere & Jina shared rerank shape (T2-16)
     voyage_rerank.clj     # Voyage rerank (top_k / data shape, T2-16)
-    bedrock.clj           # AWS Bedrock (scaffolded — see T2-09)
+    bedrock.clj           # AWS Bedrock Converse API (SigV4 + binary event-stream, T2-09)
+    bedrock_image.clj     # Bedrock Titan Image + Stability SD (T2-11)
+    ollama_native.clj     # Ollama /api/chat + /api/embed (NDJSON streaming, T2-20)
     fake.clj              # Test provider
 resources/
   models-dev-snapshot.json    # Bundled offline snapshot (models.dev)
