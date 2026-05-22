@@ -19,6 +19,7 @@
             [llm.sdk.rerank :as rerank-driver]
             [llm.sdk.image :as image-driver]
             [llm.sdk.transcribe :as transcribe-driver]
+            [llm.sdk.speak :as speak-driver]
             [llm.sdk.fallbacks :as fallbacks]
             [llm.sdk.request :as request]
             [llm.sdk.aws-sigv4 :as aws-sigv4]
@@ -30,6 +31,8 @@
             [llm.sdk.providers.openai-moderation]
             [llm.sdk.providers.openai-image]
             [llm.sdk.providers.openai-transcribe]
+            [llm.sdk.providers.openai-speak]
+            [llm.sdk.providers.elevenlabs]
             [llm.sdk.providers.cohere-embed]
             [llm.sdk.providers.cohere-chat]
             [llm.sdk.providers.cohere-rerank]
@@ -263,6 +266,22 @@
    :transcribe/provider-options."
   [provider-id request]
   (transcribe-driver/transcribe provider-id request))
+
+;; ---------------------------------------------------------------------------
+;; Speak (text-to-speech)
+;; ---------------------------------------------------------------------------
+
+(defn speak
+  "Send a canonical text-to-speech request and return a SpeakResponse
+   {:audio/bytes byte-array :audio/content-type str ...}.
+   Provider must carry :profile/speak-transport-constructor
+   (currently :openai and :elevenlabs under T2-15).
+
+   Required: :speak/model, :speak/input. Optional: :speak/voice,
+   :speak/format (:mp3|:opus|:aac|:flac|:wav|:pcm), :speak/speed,
+   :speak/instructions, :speak/provider-options."
+  [provider-id request]
+  (speak-driver/speak provider-id request))
 
 ;; ---------------------------------------------------------------------------
 ;; Fallbacks
