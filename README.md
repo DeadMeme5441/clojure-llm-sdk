@@ -384,6 +384,26 @@ Events reduce into an accumulator that builds the final canonical response. Cita
 
 Terminal errors (auth, quota, content-filter) fall through to the next provider just like transient ones — the caller asked for a fallback chain, so the SDK respects that intent. **No credential pools, no cooldowns, no TPM/RPM tracking, no budget routing** — those are credential-pool features and stay the calling application's concern.
 
+### Retries (opt-in)
+
+`sdk/complete` is one-shot by default — a 429 or transient 5xx throws immediately so callers see the failure. Pass `:retry` to enable backoff:
+
+```clojure
+;; Use the bundled default policy (3 attempts, jittered exponential
+;; backoff, only retries classified-retryable errors: rate-limit,
+;; timeout, server, overloaded, network, provider-bug).
+(sdk/complete :openai req :retry true)
+
+;; Customize — caller-supplied keys are merged into the default policy.
+(sdk/complete :openai req
+              :retry {:retry/max-attempts 5
+                      :retry/base-delay-ms 1000})
+```
+
+Rate-limit responses with a `Retry-After` header sleep for *at least* the header value — the SDK takes `max(header, computed-backoff-jitter)` so a server's explicit hint is never undercut. Non-retryable errors (auth, invalid-request, content-filter, unsupported-parameter, quota) skip the retry loop and throw immediately.
+
+Streaming requests (`:stream? true`) are not retried; a partially-consumed stream can't be safely resumed by the SDK. Wrap your own loop around `sdk/complete` if you need stream retry semantics.
+
 ### Supported-params drop+warn
 
 Profiles can declare `:profile/supported-params` (a set of canonical request keys). When set, `sdk/complete` strips any droppable canonical field present in the request but missing from the set, and emits a warning. Perplexity is the first profile to opt in — its `/chat/completions` rejects `:request/tools`, `:request/tool-choice`, `:request/reasoning`, and `:request/cache`, so these are silently dropped (with a warning) instead of letting the provider 400.

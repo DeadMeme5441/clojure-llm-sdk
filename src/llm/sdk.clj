@@ -142,6 +142,79 @@
   (when resp
     (pricing/stamp-response-cost-and-cache resp provider-id model)))
 
+(defn- normalize-retry-policy
+  "Translate the :retry kwarg into either nil (one-shot) or a policy map.
+   true → default-policy; a map → merged into default-policy so callers
+   can override only the keys they care about."
+  [retry]
+  (cond
+    (or (nil? retry) (false? retry)) nil
+    (true? retry) (retry/default-policy)
+    (map? retry) (merge (retry/default-policy) retry)
+    :else nil))
+
+(defn- retry-after-ms-from
+  "Read the Retry-After header off a hato response and convert to ms.
+   Header lookup is case-insensitive at the source but hato returns a
+   keyword-or-string map — we try both spellings."
+  [resp]
+  (let [headers (:headers resp)
+        v (or (get headers "retry-after")
+              (get headers "Retry-After")
+              (get headers :retry-after))]
+    (retry/parse-retry-after v)))
+
+(def ^:dynamic *retry-sleep-fn*
+  "Indirection for tests — replace to drive retry without actually
+   sleeping. Default is Thread/sleep."
+  (fn [ms] (Thread/sleep (long ms))))
+
+(defn- complete-non-streaming
+  "Run the non-streaming request path, with optional retry. `policy`
+   is nil (one-shot) or a normalized policy map."
+  [transport profile req provider-id model policy]
+  (loop [attempt 1]
+    (let [outcome
+          (try
+            (let [resp (http/request req)
+                  status (:status resp)
+                  body (:body resp)]
+              (if (and (number? status) (>= status 400))
+                {:tag :http-error
+                 :err (transport/parse-error transport profile status body)
+                 :status status :body body :resp resp}
+                {:tag :ok
+                 :response (transport/parse-response transport profile body)}))
+            (catch Exception e
+              {:tag :exception :ex e}))]
+      (case (:tag outcome)
+        :ok
+        (stamp (:response outcome) provider-id model)
+
+        :http-error
+        (let [classified (:err outcome)
+              decision (when policy (retry/should-retry? classified policy attempt))]
+          (if (:retry? decision)
+            (let [wait (max (or (retry-after-ms-from (:resp outcome)) 0)
+                            (:delay-ms decision))]
+              (*retry-sleep-fn* wait)
+              (recur (inc attempt)))
+            (throw (ex-info "Provider API error"
+                            {:error classified
+                             :status (:status outcome)
+                             :body (:body outcome)
+                             :provider provider-id
+                             :attempts attempt}))))
+
+        :exception
+        (let [e (:ex outcome)
+              classified (errors/classify-error e :provider provider-id)
+              decision (when policy (retry/should-retry? classified policy attempt))]
+          (if (:retry? decision)
+            (do (*retry-sleep-fn* (:delay-ms decision))
+                (recur (inc attempt)))
+            (throw e)))))))
+
 (defn complete
   "Send a canonical request and return a canonical response.
    Provider must be a registered provider keyword (e.g. :openai).
@@ -156,8 +229,14 @@
      :stream?   If true, returns a lazy seq of stream events
                 (or a list-of-events plus terminal response when
                 :on-event is given).
-     :on-event  Callback fn for each stream event (only if stream? true)."
-  [provider-id request & {:keys [stream? on-event]}]
+     :on-event  Callback fn for each stream event (only if stream? true).
+     :retry     Opt-in retry policy. nil/false → one-shot (default).
+                true → use llm.sdk.retry/default-policy. A map → merged
+                into the default policy; supply only the keys you want
+                to override (e.g. {:retry/max-attempts 5}).
+                Streaming requests are not retried — partial streams
+                can't be safely resumed by the SDK."
+  [provider-id request & {:keys [stream? on-event retry]}]
   (let [profile (or (provider/get-provider provider-id)
                     (throw (ex-info "Unknown provider" {:provider provider-id})))
         transport ((:profile/transport-constructor profile))
@@ -172,7 +251,9 @@
         binary-stream? (= :aws-eventstream (:profile/binary-stream profile))
         model (:request/model request)]
     (if stream?
-      ;; Streaming path
+      ;; Streaming path — retry NOT applied; a partially-consumed stream
+      ;; can't be safely resumed by the SDK. Wrap your own retry loop
+      ;; if you need it.
       (let [events (if binary-stream?
                      (binary-stream-events transport profile req)
                      (let [ev-seq (http/sse-request req)]
@@ -191,18 +272,8 @@
                      provider-id model))
           parsed-events))
       ;; Non-streaming path
-      (let [resp (http/request req)
-            status (:status resp)
-            body (:body resp)]
-        (if (>= status 400)
-          (let [err (transport/parse-error transport profile status body)]
-            (throw (ex-info "Provider API error"
-                            {:error err
-                             :status status
-                             :body body
-                             :provider provider-id})))
-          (stamp (transport/parse-response transport profile body)
-                 provider-id model))))))
+      (complete-non-streaming transport profile req provider-id model
+                              (normalize-retry-policy retry)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Embed
