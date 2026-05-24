@@ -227,7 +227,8 @@ com.deadmeme5441/clojure-llm-sdk {:git/url "https://github.com/DeadMeme5441/cloj
 | `ANTHROPIC_API_KEY` | Anthropic (API key) — `sk-ant-api03-*` |
 | `CLAUDE_OAT_TOKEN` | Anthropic (OAuth) — `sk-ant-oat-*` or JWT `eyJ*` |
 | `GEMINI_API_KEY` | Gemini Native |
-| `GOOGLE_OAUTH_ACCESS_TOKEN` | Vertex Gemini — bearer override (`gcloud auth print-access-token`) |
+| `GOOGLE_OAUTH_ACCESS_TOKEN` | Vertex Gemini — pre-resolved bearer (skips ADC) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Vertex Gemini — path to a service-account JSON for ADC (auto JWT exchange) |
 | `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION` | Vertex Gemini — project + region (`us-central1`, `global`, …) |
 | `OPENROUTER_API_KEY` | OpenRouter |
 | `DEEPSEEK_API_KEY` | DeepSeek |
@@ -285,10 +286,21 @@ All chat providers translate to/from a canonical schema:
  :response/usage {:usage/input-tokens 10
                   :usage/output-tokens 5
                   :usage/total-tokens 15}
+ :response/cost {:cost/usd 0.0012M
+                 :cost/estimated? true
+                 :cost/pricing-source "models-dev"
+                 :cost/breakdown {:input-tokens 10
+                                  :output-tokens 5
+                                  :input-cost-per-million 2.5
+                                  :output-cost-per-million 10.0}}
+ :response/cache {:cache/status :hit  ; :hit | :miss | :unknown
+                  :cache/cached-tokens 200}
  :response/provider-data {...}}      ; provider-specific replay state
 ```
 
 Part types: `:text`, `:image`, `:file`, `:tool-call`, `:tool-result`, `:reasoning`, `:safety`, `:citation`, `:provider-state`, `:unknown/provider-native`.
+
+`sdk/complete` stamps `:response/cost` and `:response/cache` on every response after parsing — providers never have to fill them in. The honesty rule is non-negotiable: when pricing or cache data is missing, the SDK surfaces `:cost/usd :unknown` and `:cache/status :unknown` — **never** `0` or `$0`. See [doc/canonical-response.md](doc/canonical-response.md) for the full contract.
 
 ### Per-modality protocols
 
@@ -402,6 +414,74 @@ When OAuth is detected, the adapter automatically:
 
 ;; Uses CLAUDE_OAT_TOKEN (OAuth — auto-detected)
 (sdk/complete :anthropic req)
+```
+
+### Vertex Gemini (ADC)
+
+Vertex auth follows Google's official Application Default Credentials
+chain ([cloud.google.com/docs/authentication/application-default-credentials](https://cloud.google.com/docs/authentication/application-default-credentials))
+— same order the `google-auth` Python library and `google-cloud-*` Go
+client libraries use. The adapter tries each source in order and stops
+on the first match:
+
+**Convenience layer (above ADC proper):**
+1. `:request/provider-options [:vertex :access-token]` — caller-supplied bearer
+2. `GOOGLE_OAUTH_ACCESS_TOKEN` env — pre-resolved bearer
+
+**Proper ADC chain:**
+3. `GOOGLE_APPLICATION_CREDENTIALS` env var → credentials file. The
+   SDK auto-detects the type:
+   - `service_account` → RS256-sign a JWT with the SA's private key
+     and exchange via the `jwt-bearer` grant at
+     `https://oauth2.googleapis.com/token`.
+   - `authorized_user` → POST a `refresh_token` grant with the
+     embedded `client_id`/`client_secret`/`refresh_token`.
+   - `external_account` (workload identity federation) → raises a
+     clear "not yet supported" error; use SA JSON or
+     `gcloud auth application-default login` instead.
+4. Well-known file at
+   `~/.config/gcloud/application_default_credentials.json` — this is
+   what `gcloud auth application-default login` writes
+   (authorized_user format). Recommended local-dev path.
+5. GCE / Cloud Run / GKE metadata server at
+   `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token`
+   — short connect-timeout so non-GCP hosts fail fast.
+
+Exchanged tokens are cached in-memory (by `client_email` for SAs, by
+`client_id` for authorized_user) until 60 seconds before expiry. When
+none of the five layers yields a token, the SDK raises ex-info with
+`:error/type :auth/missing-credentials` and an `:attempted` vector
+listing every source it tried. No silent fallback.
+
+Failures *within* a step (broken SA JSON, unsupported credential type,
+refused refresh-token grant) surface their own ex-info directly — the
+chain only falls through when a step legitimately has nothing to offer.
+
+Project resolution: request opts > profile quirks `:vertex-project` >
+`GOOGLE_CLOUD_PROJECT` env > `GCLOUD_PROJECT` env > `project_id` of the
+SA JSON > `quota_project_id` of the authorized_user JSON. Missing
+project throws `:vertex/missing-project`.
+
+Location resolution: request opts > profile quirks `:vertex-location` >
+`GOOGLE_CLOUD_LOCATION` env > `"us-central1"` default. The location
+chooses the host: `global` → `aiplatform.googleapis.com`, otherwise
+`{location}-aiplatform.googleapis.com`.
+
+```bash
+# Easiest local-dev setup — populates the well-known file:
+gcloud auth application-default login
+export GOOGLE_CLOUD_PROJECT=my-project
+```
+
+```clojure
+;; With ADC set up, no auth config needed in code
+(sdk/complete :vertex-gemini
+              {:request/model "gemini-2.5-pro"
+               :request/messages [{:message/role :user
+                                   :message/content "Hi"}]})
+
+;; Or point at a service-account JSON explicitly
+;; export GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json
 ```
 
 ### Codex (OpenAI Responses API)
@@ -657,28 +737,37 @@ Tests run with the cache dir bound to a sandbox so they never touch
 ## Testing
 
 ```bash
-# Unit tests (fast, no network)
+# Unit tests (fast, no network, no paid calls).
+# The :test alias excludes ^:live and ^:integration via cognitect's
+# --exclude flag, so accidental API keys in the env can't drag a
+# paid call into a default run.
 clj -M:test
 
-# Live integration tests (env-gated, real money for chat/image/audio)
-# Most live tests are gated on the matching API key being in the env;
-# they skip cleanly when missing.
-source .env && clj -M:test
-
-# Run only the live namespaces (currently needs an explicit -n; the
-# default :live-test regex has a pre-existing bug)
-source .env && clj -M:live-test -n llm.sdk.live-models-test
-source .env && clj -M:live-test -n llm.sdk.live-embed-test
-source .env && clj -M:live-test -n llm.sdk.live-moderation-test
-source .env && clj -M:live-test -n llm.sdk.live-rerank-test
-source .env && clj -M:live-test -n llm.sdk.live-alias-chat-test
-source .env && clj -M:live-test -n llm.sdk.live-perplexity-test
-source .env && clj -M:live-test -n llm.sdk.live-azure-test
+# Opt-in live runner. Narrows to live_*.clj namespaces AND requires
+# ^:live metadata, so a stray non-live deftest in a live_* file
+# still wouldn't trigger a paid call.
+source .env && clj -M:live-test
 ```
 
-Live tests are gated by credential availability and skipped cleanly when missing. They make minimal API calls (single-token "ok" prompts, fractional-cent embed calls) to keep costs negligible. DALL-E live image-gen tests are intentionally not bundled — at ~$0.04 each they're more expensive than every other live smoke combined, so they're documented as manual smokes instead.
+Live tests are tagged `^:live` (or `^:integration` for the historical
+ones in `live_test.clj`). They are gated by credential availability
+and skipped cleanly when missing. They make minimal API calls
+(single-token "ok" prompts, fractional-cent embed calls) to keep
+costs negligible. DALL-E live image-gen tests are intentionally not
+bundled — at ~$0.04 each they're more expensive than every other
+live smoke combined, so they're documented as manual smokes instead.
 
-**Current test status:** 433 tests, 1301 assertions, all passing.
+### Test-discipline rules
+
+- `clj -M:test` must never make a paid API call. The alias excludes
+  `^:live` and `^:integration` so this is enforced even when keys are
+  exported in the environment.
+- Every deftest in any `test/**/live_*.clj` file MUST carry `^:live`
+  or `^:integration` metadata. Adding a new live test without the tag
+  reintroduces the accidental-paid-call risk the alias guards against.
+- Golden tests against captured provider payloads belong in the
+  non-live suite — those don't hit the network, so they should run
+  every time `clj -M:test` is invoked.
 
 **Provider smoke scripts.** `scripts/cohere_live_demo.clj` exercises every Cohere surface — embed (multiple `input_type` + dim variants), rerank (English + multilingual), and chat (basic + streaming + RAG with `:documents`/`citation_options` + forced tool call) — and prints the actual responses. Run with `source .env && clojure -Sdeps '{:paths ["src" "resources" "scripts"]}' -M -m cohere-live-demo`. Useful sanity check before shipping a key rotation or after adapter edits.
 
