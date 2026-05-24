@@ -6,18 +6,30 @@
         cheshire/cheshire {:mvn/version "5.13.0"}}
 
  :aliases
- {:test {:extra-paths ["test" "test-resources"]
+ {;; Default-safe: exclude live/integration metadata so `clj -M:test`
+  ;; never makes a paid API call, even if API keys are present in the
+  ;; environment. Live tests live in test/llm/sdk/live_*.clj and carry
+  ;; ^:live (or ^:integration) on every deftest.
+  :test {:extra-paths ["test" "test-resources"]
          :extra-deps {io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
-         :main-opts ["-m" "cognitect.test-runner"]
-         :exec-fn cognitect.test-runner.api/test}
+         :main-opts ["-m" "cognitect.test-runner"
+                     "--exclude" ":live"
+                     "--exclude" ":integration"]
+         :exec-fn cognitect.test-runner.api/test
+         :exec-args {:excludes [:live :integration]}}
 
+  ;; Opt-in live runner. Narrows to live_*.clj namespaces AND requires
+  ;; the ^:live metadata, so a stray non-live deftest in a live_* file
+  ;; still wouldn't run here.
   :live-test {:extra-paths ["test" "test-resources"]
               :extra-deps {io.github.cognitect-labs/test-runner
                            {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
               :main-opts ["-m" "cognitect.test-runner"
                           "--dir" "test"
-                          "--namespace-regex" "live-"]
+                          "--namespace-regex" "live-"
+                          "--include" ":live"
+                          "--include" ":integration"]
               :exec-fn cognitect.test-runner.api/test}
 
   :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}}
