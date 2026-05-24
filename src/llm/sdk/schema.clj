@@ -291,6 +291,36 @@
    [:moderation/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
+;; Cost (canonical :response/cost)
+;;
+;; Honesty rule: never substitute $0 for unknown. When pricing or usage
+;; is missing, :cost/usd is the keyword :unknown — not 0M.
+;; ---------------------------------------------------------------------------
+
+(def Cost
+  [:map
+   [:cost/usd [:or number? [:= :unknown]]]
+   [:cost/estimated? boolean?]
+   [:cost/pricing-source {:optional true} [:or string? keyword? nil?]]
+   [:cost/source-url {:optional true} [:or string? nil?]]
+   [:cost/breakdown {:optional true} map?]
+   [:cost/reason {:optional true} string?]])
+
+;; ---------------------------------------------------------------------------
+;; Cache (canonical :response/cache)
+;;
+;; Honesty rule: never substitute 0 for unknown. When the provider did
+;; not report cache stats, :cache/status is :unknown and the token counts
+;; are the keyword :unknown — not 0.
+;; ---------------------------------------------------------------------------
+
+(def Cache
+  [:map
+   [:cache/status [:enum :hit :miss :unknown]]
+   [:cache/cached-tokens [:or int? [:= :unknown]]]
+   [:cache/cache-write-tokens {:optional true} [:or int? [:= :unknown]]]])
+
+;; ---------------------------------------------------------------------------
 ;; Response
 ;; ---------------------------------------------------------------------------
 
@@ -304,6 +334,8 @@
    [:response/finish-reason [:enum :stop :length :tool-calls :content-filter
                             :incomplete :unknown]]
    [:response/usage {:optional true} Usage]
+   [:response/cost {:optional true} Cost]
+   [:response/cache {:optional true} Cache]
    [:response/provider-data {:optional true} map?]
    [:response/raw {:optional true} any?]])
 
