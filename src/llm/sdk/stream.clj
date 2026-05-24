@@ -130,7 +130,13 @@
               (:citation/snippet event) (assoc :citation/snippet (:citation/snippet event))))
 
     :stream/end
-    (assoc acc :finish-reason (:event/finish-reason event))
+    ;; sdk/complete appends a synthetic terminal :stream/end with no
+    ;; finish-reason after the provider's own stream is consumed —
+    ;; only update when the event actually carries one so we don't
+    ;; clobber the real reason the provider already reported.
+    (if-let [fr (:event/finish-reason event)]
+      (assoc acc :finish-reason fr)
+      acc)
 
     ;; default
     acc))

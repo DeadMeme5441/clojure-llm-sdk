@@ -315,6 +315,33 @@
         built (vertex/build-request-vertex profile req)]
     (is (re-find #"^https://aiplatform\.googleapis\.com/" (:url built)))))
 
+(deftest build-request-stream-uses-stream-endpoint
+  (testing "streaming flips the Vertex URL suffix to :streamGenerateContent?alt=sse"
+    (let [profile (provider/get-provider :vertex-gemini)
+          req {:request/model "gemini-2.5-flash"
+               :request/messages [{:message/role :user :message/content "hi"}]
+               :request/stream? true
+               :request/provider-options
+               {:vertex {:project "p-stream" :location "us-central1"
+                         :access-token "tok-stream"}}}
+          built (vertex/build-request-vertex profile req)]
+      (is (re-find #":streamGenerateContent\?alt=sse$" (:url built))
+          ":streamGenerateContent suffix + ?alt=sse query")
+      (is (not (re-find #":generateContent[^a-zA-Z]" (:url built)))))))
+
+(deftest build-request-non-stream-uses-generate-content
+  (testing "explicit non-streaming keeps :generateContent"
+    (let [profile (provider/get-provider :vertex-gemini)
+          req {:request/model "gemini-2.5-flash"
+               :request/messages [{:message/role :user :message/content "hi"}]
+               :request/stream? false
+               :request/provider-options
+               {:vertex {:project "p-nostream" :location "us-central1"
+                         :access-token "tok"}}}
+          built (vertex/build-request-vertex profile req)]
+      (is (re-find #":generateContent$" (:url built)))
+      (is (not (re-find #"streamGenerateContent" (:url built)))))))
+
 (deftest build-request-throws-on-missing-project
   (let [profile (provider/get-provider :vertex-gemini)
         req {:request/model "gemini-2.5-flash"

@@ -64,13 +64,19 @@
         model-norm (cond-> model
                      (str/starts-with? (str/lower-case model) "models/")
                      (subs 7))
-        token (gcp-auth/resolve-access-token request profile)]
+        token (gcp-auth/resolve-access-token request profile)
+        ;; Vertex matches Gemini Native's endpoint naming: :generateContent
+        ;; for unary calls, :streamGenerateContent for streams. ?alt=sse
+        ;; picks SSE framing over the default JSON-array stream so the
+        ;; existing parse-stream-event SSE parser can consume it.
+        stream? (boolean (:request/stream? request))
+        suffix (if stream? ":streamGenerateContent?alt=sse" ":generateContent")]
     (assoc base-req
            :url (str host
                      "/v1/projects/" project
                      "/locations/" location
                      "/publishers/google/models/" model-norm
-                     ":generateContent")
+                     suffix)
            :headers (merge (:headers base-req)
                            {"Authorization" (str "Bearer " token)}))))
 

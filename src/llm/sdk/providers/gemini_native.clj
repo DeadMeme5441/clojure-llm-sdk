@@ -190,9 +190,15 @@
                 {:generationConfig {:stopSequences (if (string? (:request/stop request))
                                                      [(:request/stop request)]
                                                      (:request/stop request))}})
-              thinking)]
+              thinking)
+        ;; Gemini uses a different endpoint suffix + ?alt=sse for
+        ;; SSE-formatted streams. Without alt=sse the streaming
+        ;; endpoint returns a JSON array of chunks instead, which the
+        ;; SSE parser in parse-stream-event-gemini can't consume.
+        stream? (boolean (:request/stream? request))
+        suffix (if stream? ":streamGenerateContent?alt=sse" ":generateContent")]
     {:method :post
-     :url (str (:profile/base-url profile) "/" model-norm ":generateContent")
+     :url (str (:profile/base-url profile) "/" model-norm suffix)
      :headers (merge (provider/default-headers profile
                                                (provider/resolve-auth-token profile))
                      {"Content-Type" "application/json"})
@@ -253,28 +259,44 @@
              (catch Exception _ nil))))))
 
 (defn parse-stream-event-gemini
+  "Parse one SSE line into a vector of canonical stream events.
+
+   Gemini's streaming chunks frequently bundle a content part *and*
+   usageMetadata *and* a finishReason in the same chunk (especially
+   the terminal one). Returning a vector — which sdk/complete flattens
+   via `(sequential? ev)` — keeps every event from a single chunk
+   addressable, instead of losing usage and finish to a `cond` that
+   only picks the first match."
   [profile line]
   (when-let [data (parse-sse-line line)]
     (let [candidate (first (:candidates data))
           parts (:parts (:content candidate))
-          part (first parts)]
-      (cond
-        (:text part)
-        (if (:thought part)
-          (stream/reasoning-delta (:text part))
-          (stream/content-delta (:text part)))
+          part-events (keep (fn [part]
+                              (cond
+                                (:text part)
+                                (if (:thought part)
+                                  (stream/reasoning-delta (:text part))
+                                  (stream/content-delta (:text part)))
 
-        (:functionCall part)
-        (let [fc (:functionCall part)]
-          (stream/tool-call-start 0 (str (java.util.UUID/randomUUID)) (:name fc)))
+                                (:functionCall part)
+                                (let [fc (:functionCall part)]
+                                  (stream/tool-call-start
+                                   0
+                                   (str (java.util.UUID/randomUUID))
+                                   (:name fc)))
 
-        (:usageMetadata data)
-        (stream/usage-event (usage/normalize-usage :gemini-native (:usageMetadata data)))
-
-        (:finishReason candidate)
-        (stream/end-event :finish-reason (get finish-reason-map (:finishReason candidate) :unknown))
-
-        :else nil))))
+                                :else nil))
+                            parts)
+          usage-ev (when-let [u (:usageMetadata data)]
+                     (stream/usage-event
+                      (usage/normalize-usage :gemini-native u)))
+          finish-ev (when-let [fr (:finishReason candidate)]
+                      (stream/end-event
+                       :finish-reason (get finish-reason-map fr :unknown)))
+          events (cond-> (vec part-events)
+                   usage-ev (conj usage-ev)
+                   finish-ev (conj finish-ev))]
+      (not-empty events))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing
