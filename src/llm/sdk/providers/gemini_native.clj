@@ -226,7 +226,7 @@
                   :safety/category "gemini-safety"
                   :safety/severity (str (:safetyRatings candidate))
                   :safety/blocked (= finish-reason :content-filter)})]
-    {:response/provider :gemini-native
+    {:response/provider (or (:profile/id profile) :gemini-native)
      :response/model (:modelVersion raw)
      :response/parts (into []
                            (concat
