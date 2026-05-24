@@ -237,6 +237,96 @@
       (estimate-cost usage pricing))))
 
 ;; ---------------------------------------------------------------------------
+;; Canonical :response/cost stamping
+;;
+;; Honesty rule: never substitute $0 for unknown. When pricing or usage
+;; is missing, :cost/usd is the keyword :unknown.
+;; ---------------------------------------------------------------------------
+
+(defn canonical-cost
+  "Build a canonical :response/cost map for (provider, model, usage).
+   Returns nil when usage is nil — caller should not stamp cost on a
+   response that has no usage to attribute it to."
+  [provider model usage]
+  (when usage
+    (let [pricing (get-pricing provider model)
+          custom-fn (some-> (provider/get-provider provider)
+                            :profile/cost-calculator)
+          result (if custom-fn
+                   (custom-fn {:provider provider :model model
+                               :usage usage :pricing pricing})
+                   (estimate-cost usage pricing))
+          amount (:cost/amount-usd result)
+          status (:cost/status result)
+          src (:source pricing)
+          src-url (:source-url pricing)]
+      (cond
+        (and (= status :actual) (some? amount))
+        {:cost/usd amount
+         :cost/estimated? true
+         :cost/pricing-source (when src (name src))
+         :cost/source-url src-url
+         :cost/breakdown
+         (cond-> {:input-tokens (:usage/input-tokens usage 0)
+                  :output-tokens (:usage/output-tokens usage 0)}
+           (some? (:usage/cached-input-tokens usage))
+           (assoc :cached-input-tokens (:usage/cached-input-tokens usage))
+           (some? (:usage/cache-write-tokens usage))
+           (assoc :cache-write-tokens (:usage/cache-write-tokens usage))
+           (:input-cost-per-million pricing)
+           (assoc :input-cost-per-million (:input-cost-per-million pricing))
+           (:output-cost-per-million pricing)
+           (assoc :output-cost-per-million (:output-cost-per-million pricing))
+           (:cache-read-cost-per-million pricing)
+           (assoc :cache-read-cost-per-million (:cache-read-cost-per-million pricing))
+           (:cache-write-cost-per-million pricing)
+           (assoc :cache-write-cost-per-million (:cache-write-cost-per-million pricing)))}
+
+        :else
+        {:cost/usd :unknown
+         :cost/estimated? true
+         :cost/pricing-source (when src (name src))
+         :cost/source-url src-url
+         :cost/reason (cond
+                        (nil? pricing) "no pricing data for model"
+                        :else (or (:cost/label result) "incomplete pricing data"))}))))
+
+(defn canonical-cache
+  "Build a canonical :response/cache map from a usage map.
+
+   Status is :hit when the provider reported a positive cached-input-tokens
+   count, :miss when it explicitly reported 0, and :unknown when the
+   provider did not report cache stats at all.
+
+   The usage normalizers omit :usage/cached-input-tokens when the raw
+   provider payload had no cache field — that absence is how :unknown
+   propagates here."
+  [usage]
+  (let [cached (:usage/cached-input-tokens usage)
+        write (:usage/cache-write-tokens usage)]
+    (cond-> {:cache/status (cond
+                             (and (number? cached) (pos? cached)) :hit
+                             (and (number? cached) (zero? cached)) :miss
+                             :else :unknown)
+             :cache/cached-tokens (if (number? cached) cached :unknown)}
+      (or (number? write) (some? cached))
+      (assoc :cache/cache-write-tokens (if (number? write) write :unknown)))))
+
+(defn stamp-response-cost-and-cache
+  "Augment a parsed canonical response with :response/cost and
+   :response/cache, derived from its usage. Pure transform — does not
+   touch the wire. When the response carries no :response/usage,
+   stamps unknown cost and unknown cache (callers want consistent
+   shape; honest unknowns are still surfaced)."
+  [response provider-id model]
+  (let [usage (:response/usage response)
+        cost (canonical-cost provider-id model usage)
+        cache (canonical-cache (or usage {}))]
+    (cond-> response
+      cost (assoc :response/cost cost)
+      true (assoc :response/cache cache))))
+
+;; ---------------------------------------------------------------------------
 ;; Per-modality cost helpers
 ;; ---------------------------------------------------------------------------
 

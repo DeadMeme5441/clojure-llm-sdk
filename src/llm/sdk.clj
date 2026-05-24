@@ -138,10 +138,20 @@
                        (sequential? ev) ev
                        :else [ev])))))))
 
+(defn- stamp [resp provider-id model]
+  (when resp
+    (pricing/stamp-response-cost-and-cache resp provider-id model)))
+
 (defn complete
   "Send a canonical request and return a canonical response.
    Provider must be a registered provider keyword (e.g. :openai).
    Request is a map conforming to llm.sdk.schema/Request.
+
+   The returned response is stamped with :response/cost and
+   :response/cache derived from its :response/usage. When pricing or
+   cache stats are unknown, those fields carry honest :unknown markers
+   — never substituted 0/$0.
+
    Options:
      :stream?   If true, returns a lazy seq of stream events
                 (or a list-of-events plus terminal response when
@@ -159,7 +169,8 @@
         request (cond-> request stream? (assoc :request/stream? true))
         req (transport/build-request transport profile request)
         req (sign-if-needed profile req)
-        binary-stream? (= :aws-eventstream (:profile/binary-stream profile))]
+        binary-stream? (= :aws-eventstream (:profile/binary-stream profile))
+        model (:request/model request)]
     (if stream?
       ;; Streaming path
       (let [events (if binary-stream?
@@ -176,7 +187,8 @@
             parsed-events (concat [(stream/start-event)] events [(stream/end-event)])]
         (if on-event
           (do (doseq [ev parsed-events] (on-event ev))
-              (stream/events->response parsed-events provider-id (:request/model request)))
+              (stamp (stream/events->response parsed-events provider-id model)
+                     provider-id model))
           parsed-events))
       ;; Non-streaming path
       (let [resp (http/request req)
@@ -189,7 +201,8 @@
                              :status status
                              :body body
                              :provider provider-id})))
-          (transport/parse-response transport profile body))))))
+          (stamp (transport/parse-response transport profile body)
+                 provider-id model))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Embed
@@ -320,6 +333,19 @@
     (let [route (pricing/resolve-billing-route model :provider provider)]
       (pricing/fetch-pricing! route :api-key api-key)))
   (pricing/estimate-cost-for-model provider model usage))
+
+(defn canonical-cost
+  "Build a canonical :response/cost map (the same shape complete/embed
+   stamp on responses). Useful for after-the-fact attribution.
+   Returns {:cost/usd :unknown :cost/estimated? true ...} when pricing
+   or usage is unknown."
+  [provider model usage]
+  (pricing/canonical-cost provider model usage))
+
+(defn canonical-cache
+  "Build a canonical :response/cache map from a canonical Usage."
+  [usage]
+  (pricing/canonical-cache (or usage {})))
 
 ;; ---------------------------------------------------------------------------
 ;; Error classification
