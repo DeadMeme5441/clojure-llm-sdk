@@ -1,13 +1,22 @@
 (ns llm.sdk.providers.vertex-gemini
   "Vertex AI Gemini transport adapter.
-   Builds on Gemini native with different auth (GCP OAuth) and endpoint structure.
-   Uses project/region routing."
+
+   Builds on Gemini native with different auth (GCP OAuth) and endpoint
+   structure. Auth resolution follows the standard GCP ADC chain via
+   llm.sdk.gcp-auth: request opts → GOOGLE_OAUTH_ACCESS_TOKEN env →
+   `gcloud auth print-access-token` → GOOGLE_APPLICATION_CREDENTIALS
+   service-account JSON (RS256-signed JWT exchanged at
+   oauth2.googleapis.com/token).
+
+   Project resolution: request opts → profile quirks →
+   GOOGLE_CLOUD_PROJECT env → SA JSON project_id."
   (:require [clojure.string :as str]
             [llm.sdk.transport :as t]
             [llm.sdk.provider :as provider]
             [llm.sdk.providers.gemini-native :as gemini]
             [llm.sdk.usage :as usage]
-            [llm.sdk.errors :as errors]))
+            [llm.sdk.errors :as errors]
+            [llm.sdk.gcp-auth :as gcp-auth]))
 
 ;; ---------------------------------------------------------------------------
 ;; Vertex endpoints use:
@@ -16,12 +25,17 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- vertex-project
-  "Resolve the GCP project id. Caller > profile quirks > env."
+  "Resolve the GCP project id. Throws when no source provides one."
   [profile request]
-  (or (get-in request [:request/provider-options :vertex :project])
-      (get-in profile [:profile/quirks :vertex-project])
-      (System/getenv "GOOGLE_CLOUD_PROJECT")
-      ""))
+  (or (gcp-auth/resolve-project request profile)
+      (throw (ex-info
+              (str "Vertex project id not set. Provide it via request "
+                   "provider-options [:vertex :project], profile quirks "
+                   ":vertex-project, GOOGLE_CLOUD_PROJECT env, or in the "
+                   "service-account JSON pointed to by "
+                   "GOOGLE_APPLICATION_CREDENTIALS.")
+              {:error/type :vertex/missing-project
+               :provider :vertex-gemini}))))
 
 (defn- vertex-location
   "Resolve the GCP location. Caller > profile quirks > env > default."
@@ -40,18 +54,6 @@
     "https://aiplatform.googleapis.com"
     (str "https://" location "-aiplatform.googleapis.com")))
 
-(defn- vertex-access-token
-  "Resolve a GCP OAuth2 access token.
-   Order: request provider-options > GOOGLE_OAUTH_ACCESS_TOKEN env var.
-   Note: GOOGLE_APPLICATION_CREDENTIALS is a file *path* (a service-
-   account JSON), not an access token — exchanging it for an access
-   token requires a JWT signer, which is out of scope for this SDK.
-   Callers must materialize a token themselves (e.g. via
-   `gcloud auth print-access-token`)."
-  [request]
-  (or (get-in request [:request/provider-options :vertex :access-token])
-      (System/getenv "GOOGLE_OAUTH_ACCESS_TOKEN")))
-
 (defn build-request-vertex
   [profile request]
   (let [base-req (gemini/build-request-gemini profile request)
@@ -62,7 +64,7 @@
         model-norm (cond-> model
                      (str/starts-with? (str/lower-case model) "models/")
                      (subs 7))
-        token (vertex-access-token request)]
+        token (gcp-auth/resolve-access-token request profile)]
     (assoc base-req
            :url (str host
                      "/v1/projects/" project
@@ -70,7 +72,7 @@
                      "/publishers/google/models/" model-norm
                      ":generateContent")
            :headers (merge (:headers base-req)
-                           (when token {"Authorization" (str "Bearer " token)})))))
+                           {"Authorization" (str "Bearer " token)}))))
 
 (defn parse-response-vertex
   [profile raw]
@@ -118,5 +120,6 @@
   :profile/auth-strategy :gcp-oauth
   :profile/supports-model-listing true
   :profile/capabilities #{:chat :streaming :tools :multimodal :reasoning}
-  :profile/env-var-names ["GOOGLE_APPLICATION_CREDENTIALS"]
+  :profile/env-var-names ["GOOGLE_APPLICATION_CREDENTIALS"
+                          "GOOGLE_OAUTH_ACCESS_TOKEN"]
   :profile/transport-constructor make-transport})
