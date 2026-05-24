@@ -12,11 +12,11 @@
    Providers without a public /models endpoint (Codex, Codex-backend,
    Bedrock, Fake) throw :error :unsupported on fetch — callers should
    route those through models.dev / snapshot layers only."
-  (:require [clojure.java.shell :as shell]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [malli.core :as m]
             [llm.sdk.http :as http]
-            [llm.sdk.provider :as provider]))
+            [llm.sdk.provider :as provider]
+            [llm.sdk.gcp-auth :as gcp-auth]))
 
 ;; ---------------------------------------------------------------------------
 ;; ModelEntry schema
@@ -190,25 +190,24 @@
           (:data body))))
 
 ;; ---------------------------------------------------------------------------
-;; Vertex auth — gcloud OAuth or env override
+;; Vertex auth — full ADC chain, same code path as sdk/complete uses
+;; for actual chat requests. See llm.sdk.gcp-auth for the resolution
+;; order (provider-opts > env bearer > SA JSON > authorized_user
+;; well-known file > GCE metadata server).
 ;; ---------------------------------------------------------------------------
 
 (defn- vertex-auth-token
-  "Resolve a Vertex OAuth token. Honours GOOGLE_OAUTH_ACCESS_TOKEN first,
-   then falls back to `gcloud auth print-access-token --project=$GCP`.
-   Throws ex-info if neither yields a token."
+  "Resolve a Vertex OAuth token via the same ADC chain that sdk/complete
+   uses for chat requests. /models fetches don't carry a request map,
+   so we pass an empty one — every layer of the chain still gets a
+   chance via env, well-known file, or metadata server.
+
+   Falls back to a synthetic profile when get-provider returns nil
+   (test paths that don't load the full SDK)."
   []
-  (or (System/getenv "GOOGLE_OAUTH_ACCESS_TOKEN")
-      (let [project (System/getenv "GOOGLE_CLOUD_PROJECT")
-            args (cond-> ["gcloud" "auth" "print-access-token"]
-                   (seq project) (conj (str "--project=" project)))
-            {:keys [exit out err]} (apply shell/sh args)]
-        (if (and (zero? exit) (seq (str/trim (or out ""))))
-          (str/trim out)
-          (throw (ex-info "Vertex auth failed — set GOOGLE_OAUTH_ACCESS_TOKEN or install gcloud"
-                          {:provider :vertex-gemini
-                           :gcloud-exit exit
-                           :gcloud-err (str/trim (or err ""))}))))))
+  (gcp-auth/resolve-access-token
+   {} (or (provider/get-provider :vertex-gemini)
+          {:profile/id :vertex-gemini})))
 
 ;; ---------------------------------------------------------------------------
 ;; Per-provider fetch (URL + auth + parse)
@@ -273,8 +272,15 @@
     (parse-gemini-models (get-json url headers) :gemini-native url)))
 
 (defmethod fetch-models :vertex-gemini [_]
-  (let [project (System/getenv "GOOGLE_CLOUD_PROJECT")
-        raw-location (System/getenv "GOOGLE_CLOUD_LOCATION")
+  ;; The provider profile may not be registered yet (tests that pull
+  ;; in llm.sdk.models without loading the full SDK), so degrade
+  ;; gracefully: get-provider returns nil and resolve-project/auth
+  ;; fall through to env vars and the well-known file.
+  (let [p (or (provider/get-provider :vertex-gemini)
+              {:profile/id :vertex-gemini})
+        project (gcp-auth/resolve-project {} p)
+        raw-location (or (get-in p [:profile/quirks :vertex-location])
+                         (System/getenv "GOOGLE_CLOUD_LOCATION"))
         ;; The Vertex /publishers/google/models catalog endpoint does
         ;; NOT serve location=global (returns 404). Fall back to a
         ;; regional host for the catalog probe only — chat completion
@@ -284,7 +290,11 @@
                    (= raw-location "global") "us-central1"
                    :else raw-location)]
     (when-not project
-      (throw (ex-info "GOOGLE_CLOUD_PROJECT required for Vertex /models (quota project header)"
+      (throw (ex-info (str "Vertex /models needs a GCP project for the "
+                           "X-Goog-User-Project quota header. Set "
+                           "GOOGLE_CLOUD_PROJECT, or run "
+                           "`gcloud auth application-default login --quota-project=<project>` "
+                           "so ADC picks it up from the well-known file.")
                       {:provider :vertex-gemini :error :missing-config})))
     (let [;; The catalog is at /v1beta1/publishers/google/models on the
           ;; regional aiplatform host. It's NOT project-scoped in the

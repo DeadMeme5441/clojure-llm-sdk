@@ -9,16 +9,23 @@
    To run only this suite:
      source .env && clj -M:live-test -n llm.sdk.live-models-test"
   (:require [clojure.test :refer [deftest is testing]]
-            [llm.sdk.models :as models]))
+            [llm.sdk.gcp-auth :as gcp-auth]
+            [llm.sdk.models :as models]
+            [llm.sdk.provider :as provider]))
 
 (defn- has-creds? [env-var]
   (boolean (System/getenv env-var)))
 
-(defn- vertex-available? []
+(defn- vertex-available?
+  "Vertex catalog needs a project for X-Goog-User-Project AND any one
+   of the ADC chain sources to yield a token. Probe by attempting
+   token resolution; success ⇒ ADC is set up; throw ⇒ skip cleanly."
+  []
   (and (has-creds? "GOOGLE_CLOUD_PROJECT")
-       (or (has-creds? "GOOGLE_OAUTH_ACCESS_TOKEN")
-           ;; gcloud on PATH counts — fetch-models :vertex-gemini will shell out
-           (zero? (:exit (clojure.java.shell/sh "which" "gcloud"))))))
+       (try (gcp-auth/resolve-access-token
+             {} (provider/get-provider :vertex-gemini))
+            true
+            (catch Exception _ false))))
 
 (defn- smoke-fetch
   "Hit a provider's /models, assert non-empty and shape-conformant."
