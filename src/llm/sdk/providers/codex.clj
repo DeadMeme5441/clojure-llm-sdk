@@ -13,7 +13,8 @@
             [llm.sdk.usage :as usage]
             [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors])
-  (:import [java.security MessageDigest]
+  (:import [java.io File]
+           [java.security MessageDigest]
            [java.util Base64]))
 
 (declare parse-stream-event-codex)
@@ -85,32 +86,66 @@
                        (str (System/getProperty "user.home") "/.codex"))]
     (str codex-home "/auth.json")))
 
+(def ^:private codex-auth-cache
+  "Memoized Codex CLI auth file parse. The cache is invalidated when
+   auth.json path, mtime, or length changes. We still stat the file per
+   backend request, but avoid reparsing and rereading stable credentials."
+  (atom nil))
+
+(defn- codex-auth-file-state [path]
+  (try
+    (let [f (File. path)]
+      (when (.isFile f)
+        {:path (.getAbsolutePath f)
+         :modified-ms (.lastModified f)
+         :length (.length f)}))
+    (catch Exception _ nil)))
+
+(defn- jwt-account-id [access-token]
+  (when (string? access-token)
+    (try
+      (let [parts (str/split access-token #"\.")
+            payload-b64 (when (> (count parts) 1)
+                          (let [p (nth parts 1)
+                                pad (mod (- 4 (mod (count p) 4)) 4)]
+                            (str p (apply str (repeat pad "=")))))
+            payload (when payload-b64
+                      (String. (.decode (Base64/getUrlDecoder) payload-b64) "UTF-8"))
+            claims (when payload (json/parse-string payload true))]
+        (get-in claims ["https://api.openai.com/auth" "chatgpt_account_id"]))
+      (catch Exception _ nil))))
+
+(defn- parse-codex-auth-file [path]
+  (when-let [data (try (json/parse-string (slurp path) true)
+                       (catch Exception _ nil))]
+    (when-let [tokens (:tokens data)]
+      (let [access-token (:access_token tokens)]
+        {:access-token access-token
+         :refresh-token (:refresh_token tokens)
+         :account-id (jwt-account-id access-token)
+         :auth-mode (:auth_mode data)}))))
+
 (defn read-codex-auth
   "Read Codex OAuth tokens from ~/.codex/auth.json.
    Returns a map with :access-token, :refresh-token, :account-id, :auth-mode.
-   Returns nil if the file doesn't exist or is invalid."
+   Returns nil if the file doesn't exist or is invalid.
+
+   The parsed file is cached and invalidated by path, modified time, and
+   length so backend calls do not reread stable Codex CLI credentials on
+   every request."
   []
-  (let [path (codex-auth-file-path)]
-    (when-let [data (try (json/parse-string (slurp path) true)
-                         (catch Exception _ nil))]
-      (when-let [tokens (:tokens data)]
-        (let [access-token (:access_token tokens)
-              ;; Extract ChatGPT-Account-ID from JWT payload
-              account-id (when (string? access-token)
-                           (try
-                             (let [parts (str/split access-token #"\.")
-                                   payload-b64 (when (> (count parts) 1)
-                                                 (let [p (nth parts 1)]
-                                                   (str p (apply str (repeat (- 4 (mod (count p) 4)) "=")))))
-                                   payload (when payload-b64
-                                             (String. (.decode (Base64/getUrlDecoder) payload-b64) "UTF-8"))
-                                   claims (when payload (json/parse-string payload true))]
-                               (get-in claims ["https://api.openai.com/auth" "chatgpt_account_id"]))
-                             (catch Exception _ nil)))]
-          {:access-token access-token
-           :refresh-token (:refresh_token tokens)
-           :account-id account-id
-           :auth-mode (:auth_mode data)})))))
+  (let [path (codex-auth-file-path)
+        state (codex-auth-file-state path)]
+    (if-not state
+      (do
+        (reset! codex-auth-cache nil)
+        nil)
+      (let [cached @codex-auth-cache]
+        (if (= state (:state cached))
+          (:auth cached)
+          (let [auth (parse-codex-auth-file path)]
+            (reset! codex-auth-cache {:state state :auth auth})
+            auth))))))
 
 (defn codex-backend-auth-headers
   "Build headers for the chatgpt.com/backend-api/codex endpoint.
