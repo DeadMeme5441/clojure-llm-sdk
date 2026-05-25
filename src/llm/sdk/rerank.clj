@@ -9,6 +9,7 @@
   (:require [llm.sdk.provider :as provider]
             [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
+            [llm.sdk.errors :as errors]
             [llm.sdk.transport.rerank :as rt]))
 
 (defn rerank
@@ -18,8 +19,10 @@
    (vector of strings).
    Optional: :rerank/top-n, :rerank/return-documents,
    :rerank/provider-options."
-  [provider-id request]
-  (let [profile (or (provider/get-provider provider-id)
+  [provider-id request & {:keys [config]}]
+  (let [profile (some-> (provider/get-provider provider-id)
+                        (provider/apply-runtime-config config))
+        profile (or profile
                     (throw (ex-info "Unknown provider"
                                     {:provider provider-id})))
         _ (when-not (schema/validate-rerank-request request)
@@ -32,7 +35,14 @@
                             {:provider provider-id})))
         transport (ctor)
         req (rt/build-rerank-request transport profile request)
-        resp (http/request req)
+        req (provider/apply-http-options profile req)
+        resp (try
+               (http/request req)
+               (catch Exception e
+                 (throw (ex-info "Provider rerank transport error"
+                                 {:error (errors/classify-error e :provider provider-id)
+                                  :provider provider-id}
+                                 e))))
         status (:status resp)
         body (:body resp)]
     (if (>= status 400)

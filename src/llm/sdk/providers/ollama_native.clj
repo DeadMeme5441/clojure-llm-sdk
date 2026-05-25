@@ -35,7 +35,12 @@
   (when (sequential? content)
     (->> content
          (filter #(= (:part/type %) :image))
-         (mapv :image/url))))
+         (mapv (fn [part]
+                 (let [url (:image/url part)]
+                   (or (:image/data part)
+                       (when (and (string? url) (str/starts-with? url "data:"))
+                         (second (str/split url #"," 2)))
+                       url)))))))
 
 (defn- message->ollama [msg]
   (let [content (:message/content msg)
@@ -133,10 +138,10 @@
   (let [msg (:message raw)
         text (:content msg)
         tool-calls (vec
-                    (mapv (fn [tc]
+                    (map-indexed (fn [idx tc]
                             {:part/type :tool-call
-                             :tool-call/id (or (:id tc) (str (random-uuid)))
-                             :tool-call/name (get-in tc [:function :name])
+                             :tool-call/id (or (:id tc) (str "ollama_call_" idx))
+                             :tool-call/name (or (get-in tc [:function :name]) "")
                              :tool-call/arguments
                              (let [a (get-in tc [:function :arguments])]
                                (if (string? a) a (json/generate-string a)))})
@@ -167,13 +172,16 @@
             text (:content msg)]
         (cond
           (seq tool-calls)
-          (let [tc (first tool-calls)]
-            [(stream/tool-call-start 0
-                                     (or (:id tc) (str (random-uuid)))
-                                     (get-in tc [:function :name]))
-             (stream/tool-call-delta 0
-                                     (let [a (get-in tc [:function :arguments])]
-                                       (if (string? a) a (json/generate-string a))))])
+          (mapcat
+           (fn [[idx tc]]
+             [(stream/tool-call-start idx
+                                      (or (:id tc) (str "ollama_call_" idx))
+                                      (or (get-in tc [:function :name]) ""))
+              (stream/tool-call-delta idx
+                                      (let [a (get-in tc [:function :arguments])]
+                                        (if (string? a) a (json/generate-string (or a {})))))
+              (stream/tool-call-end idx)])
+           (map-indexed vector tool-calls))
 
           (and (seq text) (not done?))
           (stream/content-delta text)
@@ -264,10 +272,11 @@
 (provider/register-provider
  {:profile/id :ollama-native
   :profile/protocol-family :ollama-native
-  :profile/base-url "http://localhost:11434"
+  :profile/base-url (or (System/getenv "OLLAMA_BASE_URL")
+                        "http://localhost:11434")
   :profile/auth-strategy :none
-  :profile/supports-model-listing true
+  :profile/supports-model-listing false
   :profile/capabilities #{:chat :streaming :tools :embedding :multimodal}
-  :profile/env-var-names ["OLLAMA_BASE_URL"]
+  :profile/env-var-names []
   :profile/transport-constructor make-transport
   :profile/embed-transport-constructor make-embed-transport})

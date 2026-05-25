@@ -32,25 +32,43 @@
                                messages))]
     {:parts (mapv (fn [t] {:text t}) texts)}))
 
+(defn- image-inline-data [part]
+  (let [url (:image/url part)
+        data (:image/data part)
+        mime (or (:image/mime-type part) "image/png")]
+    (cond
+      (seq data)
+      {:inlineData {:mimeType mime :data data}}
+
+      (and (string? url) (str/starts-with? url "data:"))
+      (let [[header encoded] (str/split url #"," 2)
+            mime (or (second (re-find #"data:([^;]+)" header)) mime)]
+        {:inlineData {:mimeType mime :data encoded}})
+
+      (seq url)
+      {:fileData {:mimeType mime :fileUri url}}
+
+      :else
+      {:text "[image]"})))
+
 (defn- content->gemini-parts [content]
   (cond
+    (nil? content)
+    []
+
     (string? content) [{:text content}]
     (sequential? content)
     (mapv (fn [part]
             (case (:part/type part)
               :text {:text (:text part)}
-              :image (let [url (:image/url part)]
-                       (if (str/starts-with? url "data:")
-                         (let [[header encoded] (str/split url #"," 2)
-                               mime (second (re-find #"data:([^;]+)" header))]
-                           {:inlineData {:mimeType mime :data encoded}})
-                         {:text (str "[image: " url "]")}))
+              :image (image-inline-data part)
               {:text (str part)}))
           content)
     :else [{:text (str content)}]))
 
 (defn- tool-call-signature [tc]
-  (get-in tc [:tool-call/provider-data :extra_content :google :thought_signature]))
+  (or (get-in tc [:tool-call/provider-data :gemini/thought-signature])
+      (get-in tc [:tool-call/provider-data :extra_content :google :thought_signature])))
 
 (defn- message->gemini [msg tool-name-by-id]
   (let [role (case (:message/role msg)
@@ -61,12 +79,15 @@
     (cond
       ;; Tool result
       (= (:message/role msg) :tool)
-      {:role "user"
-       :parts [{:functionResponse
-                {:name (or (get tool-name-by-id (:message/tool-call-id msg))
-                           (:message/name msg)
-                           "tool")
-                 :response {:output (t/content->string content)}}}]}
+      (let [tool-call-id (:message/tool-call-id msg)
+            response (cond-> {:name (or (get tool-name-by-id tool-call-id)
+                                        (:message/name msg)
+                                        "tool")
+                              :response {:output (t/content->string content)}}
+                       tool-call-id
+                       (assoc :id tool-call-id))]
+        {:role "user"
+         :parts [{:functionResponse response}]})
 
       ;; Assistant with tool calls
       (seq (:message/tool-calls msg))
@@ -76,8 +97,11 @@
                (mapv (fn [tc]
                        (let [args (try (json/parse-string (:tool-call/arguments tc))
                                        (catch Exception _ {}))
-                             part {:functionCall {:name (:tool-call/name tc)
-                                                  :args args}}]
+                             function-call (cond-> {:name (:tool-call/name tc)
+                                                    :args args}
+                                             (:tool-call/id tc)
+                                             (assoc :id (:tool-call/id tc)))
+                             part {:functionCall function-call}]
                          (if-let [sig (tool-call-signature tc)]
                            (assoc part :thoughtSignature sig)
                            part)))
@@ -217,19 +241,37 @@
   [profile raw]
   (let [candidate (first (:candidates raw))
         parts (:parts (:content candidate))
-        text-parts (vec (keep #(when (:text %) (:text %)) parts))
-        thought-parts (vec (keep #(when (and (:text %) (:thought %)) (:text %)) parts))
-        tool-calls (vec (keep #(when (:functionCall %)
-                            (let [fc (:functionCall %)]
-                              {:part/type :tool-call
-                               :tool-call/id (str (java.util.UUID/randomUUID))
-                               :tool-call/name (:name fc)
-                               :tool-call/arguments (json/generate-string (:args fc))
-                               :tool-call/provider-data
-                               (cond-> {}
-                                 (:thoughtSignature %) (assoc :extra_content
-                                                              {:google {:thought_signature (:thoughtSignature %)}}))}))
-                          parts))
+        canonical-parts (->> (or parts [])
+                             (map-indexed
+                              (fn [idx part]
+                                (cond
+                                  (:functionCall part)
+                                  (let [fc (:functionCall part)
+                                        call-id (or (:id fc) (str "gemini_call_" idx))]
+                                    {:part/type :tool-call
+                                     :tool-call/id call-id
+                                     :tool-call/name (or (:name fc) "")
+                                     :tool-call/arguments (json/generate-string (or (:args fc) {}))
+                                     :tool-call/provider-data
+                                     (cond-> {:gemini/function-call-id call-id}
+                                       (:thoughtSignature part)
+                                       (assoc :gemini/thought-signature (:thoughtSignature part)
+                                              :extra_content
+                                              {:google {:thought_signature (:thoughtSignature part)}}))})
+
+                                  (and (:text part) (:thought part))
+                                  (cond-> {:part/type :reasoning
+                                           :reasoning/text (:text part)}
+                                    (:thoughtSignature part)
+                                    (assoc :reasoning/signature (:thoughtSignature part)))
+
+                                  (:text part)
+                                  {:part/type :text :text (:text part)}
+
+                                  :else nil)))
+                             (remove nil?)
+                             vec)
+        tool-calls (vec (filter #(= (:part/type %) :tool-call) canonical-parts))
         finish-reason (get finish-reason-map (:finishReason candidate) :unknown)
         usage-raw (:usageMetadata raw)
         safety (when (seq (:safetyRatings candidate))
@@ -239,12 +281,7 @@
                   :safety/blocked (= finish-reason :content-filter)})]
     {:response/provider (or (:profile/id profile) :gemini-native)
      :response/model (:modelVersion raw)
-     :response/parts (into []
-                           (concat
-                            (map #(hash-map :part/type :text :text %) text-parts)
-                            (map #(hash-map :part/type :reasoning :reasoning/text %) thought-parts)
-                            tool-calls
-                            (when safety [safety])))
+     :response/parts (cond-> canonical-parts safety (conj safety))
      :response/tool-calls (not-empty tool-calls)
      :response/finish-reason finish-reason
      :response/usage (when usage-raw
@@ -276,22 +313,34 @@
   (when-let [data (parse-sse-line line)]
     (let [candidate (first (:candidates data))
           parts (:parts (:content candidate))
-          part-events (keep (fn [part]
-                              (cond
-                                (:text part)
-                                (if (:thought part)
-                                  (stream/reasoning-delta (:text part))
-                                  (stream/content-delta (:text part)))
+          part-events (mapcat
+                       (fn [[idx part]]
+                         (let [signature-ev (when-let [sig (:thoughtSignature part)]
+                                              (stream/provider-state-event
+                                               :gemini
+                                               {:parts {idx {:thoughtSignature sig}}}))]
+                           (cond
+                             (:text part)
+                             (remove nil?
+                                     [(if (:thought part)
+                                        (stream/reasoning-delta (:text part))
+                                        (stream/content-delta (:text part)))
+                                      signature-ev])
 
-                                (:functionCall part)
-                                (let [fc (:functionCall part)]
-                                  (stream/tool-call-start
-                                   0
-                                   (str (java.util.UUID/randomUUID))
-                                   (:name fc)))
+                             (:functionCall part)
+                             (let [fc (:functionCall part)
+                                   call-id (or (:id fc) (str "gemini_call_" idx))
+                                   args (json/generate-string (or (:args fc) {}))]
+                               (remove nil?
+                                       [(stream/tool-call-start idx call-id (or (:name fc) ""))
+                                        (when (seq args)
+                                          (stream/tool-call-delta idx args))
+                                        (stream/tool-call-end idx)
+                                        signature-ev]))
 
-                                :else nil))
-                            parts)
+                             :else
+                             (remove nil? [signature-ev]))))
+                       (map-indexed vector (or parts [])))
           usage-ev (when-let [u (:usageMetadata data)]
                      (stream/usage-event
                       (usage/normalize-usage :gemini-native u)))

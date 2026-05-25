@@ -9,6 +9,7 @@
   (:require [llm.sdk.provider :as provider]
             [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
+            [llm.sdk.errors :as errors]
             [llm.sdk.aws-sigv4 :as aws-sigv4]
             [llm.sdk.transport.image :as it]))
 
@@ -22,8 +23,10 @@
 
    The canonical response includes :image/images — a vector of
    {:image/url? :image/b64? :image/revised-prompt?}."
-  [provider-id request]
-  (let [profile (or (provider/get-provider provider-id)
+  [provider-id request & {:keys [config]}]
+  (let [profile (some-> (provider/get-provider provider-id)
+                        (provider/apply-runtime-config config))
+        profile (or profile
                     (throw (ex-info "Unknown provider"
                                     {:provider provider-id})))
         _ (when-not (schema/validate-image-gen-request request)
@@ -36,8 +39,15 @@
                             {:provider provider-id})))
         transport (ctor)
         req (it/build-image-request transport profile request)
+        req (provider/apply-http-options profile req)
         req (aws-sigv4/maybe-sign profile req)
-        resp (http/request req)
+        resp (try
+               (http/request req)
+               (catch Exception e
+                 (throw (ex-info "Provider image transport error"
+                                 {:error (errors/classify-error e :provider provider-id)
+                                  :provider provider-id}
+                                 e))))
         status (:status resp)
         body (:body resp)]
     (if (>= status 400)

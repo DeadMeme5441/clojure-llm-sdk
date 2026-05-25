@@ -161,6 +161,11 @@
        (is (= :kimi-code
               (:model/provider (mdev/lookup :kimi-code "k2p6"))))))))
 
+(deftest kimi-public-does-not-reuse-kimi-code-catalog
+  (offline
+   (fn []
+     (is (nil? (mdev/lookup :kimi "k2p6"))))))
+
 (deftest list-models-returns-many
   (offline
    (fn []

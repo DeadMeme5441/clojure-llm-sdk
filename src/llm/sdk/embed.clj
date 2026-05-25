@@ -10,6 +10,7 @@
   (:require [llm.sdk.provider :as provider]
             [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
+            [llm.sdk.errors :as errors]
             [llm.sdk.transport.embed :as et]))
 
 (defn embed
@@ -19,8 +20,10 @@
    vector of strings). Optional fields: :embed/dimensions,
    :embed/encoding-format (:float or :base64), :embed/user,
    :embed/provider-options."
-  [provider-id request]
-  (let [profile (or (provider/get-provider provider-id)
+  [provider-id request & {:keys [config]}]
+  (let [profile (some-> (provider/get-provider provider-id)
+                        (provider/apply-runtime-config config))
+        profile (or profile
                     (throw (ex-info "Unknown provider"
                                     {:provider provider-id})))
         _ (when-not (schema/validate-embed-request request)
@@ -33,7 +36,14 @@
                             {:provider provider-id})))
         transport (ctor)
         req (et/build-embed-request transport profile request)
-        resp (http/request req)
+        req (provider/apply-http-options profile req)
+        resp (try
+               (http/request req)
+               (catch Exception e
+                 (throw (ex-info "Provider embed transport error"
+                                 {:error (errors/classify-error e :provider provider-id)
+                                  :provider provider-id}
+                                 e))))
         status (:status resp)
         body (:body resp)]
     (if (>= status 400)

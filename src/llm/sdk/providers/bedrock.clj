@@ -94,16 +94,23 @@
 
 (defn- content->bedrock [content]
   (cond
+    (nil? content)
+    []
+
     (string? content)
     [{:text content}]
     (sequential? content)
     (mapv (fn [part]
             (case (:part/type part)
               :text {:text (:text part)}
-              :image {:image {:format (case (get part :image/detail :auto)
-                                       (:auto :low) "jpeg"
-                                       "png")
-                              :source {:bytes (:image/url part)}}}
+              :image {:image {:format (or (some-> (:image/mime-type part)
+                                                   (str/split #"/")
+                                                   second)
+                                          (case (get part :image/detail :auto)
+                                            (:auto :low) "jpeg"
+                                            "png"))
+                              :source {:bytes (or (:image/data part)
+                                                  (:image/url part))}}}
               {:text (str part)}))
           content)
     :else [{:text (str content)}]))
@@ -122,13 +129,14 @@
 
       (seq (:message/tool-calls msg))
       {:role "assistant"
-       :content (mapv (fn [tc]
-                        {:toolUse
-                         {:toolUseId (:tool-call/id tc)
-                          :name (:tool-call/name tc)
-                          :input (try (json/parse-string (:tool-call/arguments tc))
-                                      (catch Exception _ {}))}})
-                      (:message/tool-calls msg))}
+       :content (into (content->bedrock (:message/content msg))
+                      (map (fn [tc]
+                             {:toolUse
+                              {:toolUseId (:tool-call/id tc)
+                               :name (:tool-call/name tc)
+                               :input (try (json/parse-string (:tool-call/arguments tc))
+                                           (catch Exception _ {}))}})
+                           (:message/tool-calls msg)))}
 
       :else
       {:role role :content (content->bedrock (:message/content msg))})))
@@ -254,22 +262,27 @@
   (let [output (:output raw)
         msg (:message output)
         content (:content msg)
-        text-parts (keep #(when (:text %) (:text %)) content)
-        tool-calls (vec (keep #(when (:toolUse %)
-                            (let [tu (:toolUse %)]
-                              {:part/type :tool-call
-                               :tool-call/id (:toolUseId tu)
-                               :tool-call/name (:name tu)
-                               :tool-call/arguments (json/generate-string (:input tu))}))
-                          content))
+        parts (vec
+               (keep (fn [part]
+                       (cond
+                         (:text part)
+                         {:part/type :text :text (:text part)}
+
+                         (:toolUse part)
+                         (let [tu (:toolUse part)]
+                           {:part/type :tool-call
+                            :tool-call/id (:toolUseId tu)
+                            :tool-call/name (:name tu)
+                            :tool-call/arguments (json/generate-string (:input tu))})
+
+                         :else nil))
+                     content))
+        tool-calls (vec (filter #(= (:part/type %) :tool-call) parts))
         stop-reason (get stop-reason-map (:stopReason raw) :stop)
         usage-raw (:usage raw)]
     {:response/provider :bedrock
      :response/model (:modelId raw)
-     :response/parts (into []
-                           (concat
-                            (map #(hash-map :part/type :text :text %) text-parts)
-                            tool-calls))
+     :response/parts parts
      :response/tool-calls (not-empty tool-calls)
      :response/finish-reason stop-reason
      :response/usage (when usage-raw

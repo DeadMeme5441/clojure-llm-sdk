@@ -109,8 +109,9 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest fetch-models-rejects-unsupported-providers
-  (testing "Codex / Codex-backend / Bedrock / fake have no /models"
-    (doseq [pid [:codex :codex-backend :bedrock :fake]]
+  (testing "Providers without implemented live model listing reject fetches"
+    (doseq [pid [:codex :codex-backend :bedrock :fake
+                 :kimi-code :perplexity :cloudflare :ollama-native]]
       (is (thrown? clojure.lang.ExceptionInfo (models/fetch-models pid))))))
 
 (deftest supports-models-listing-reports-expected-set
@@ -122,6 +123,9 @@
   (is (true? (models/supports-models-listing? :deepseek)))
   (is (true? (models/supports-models-listing? :kimi)))
   (is (false? (models/supports-models-listing? :kimi-code)))
+  (is (false? (models/supports-models-listing? :perplexity)))
+  (is (false? (models/supports-models-listing? :cloudflare)))
+  (is (false? (models/supports-models-listing? :ollama-native)))
   (is (false? (models/supports-models-listing? :codex)))
   (is (false? (models/supports-models-listing? :bedrock)))
   (is (false? (models/supports-models-listing? :fake))))

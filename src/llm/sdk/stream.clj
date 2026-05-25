@@ -73,6 +73,14 @@
 (defn- empty-acc []
   (->Accumulator [] {} nil nil {}))
 
+(defn- deep-merge
+  [& maps]
+  (letfn [(merge-entry [a b]
+            (if (and (map? a) (map? b))
+              (merge-with merge-entry a b)
+              b))]
+    (apply merge-with merge-entry maps)))
+
 (defn- update-last-text [parts delta]
   (if (and (seq parts) (= (:part/type (peek parts)) :text))
     (conj (pop parts) (update (peek parts) :text str delta))
@@ -83,11 +91,44 @@
     (conj (pop parts) (update (peek parts) :reasoning/text str delta))
     (conj parts {:part/type :reasoning :reasoning/text delta :reasoning/encrypted (boolean encrypted)})))
 
-(defn- update-tool-call [acc index f & args]
-  (update-in acc [:tool-calls-indexed index]
-             (fn [tc]
-               (let [base (or tc {:tool-call/index index})]
-                 (apply f base args)))))
+(defn- base-tool-call [index]
+  {:tool-call/index index
+   :tool-call/id (str "tool_call_" index)
+   :tool-call/name ""
+   :tool-call/arguments ""
+   :tool-call/provider-data {:stream/index index}})
+
+(defn- tool-call-part [tc]
+  (cond-> {:part/type :tool-call
+           :tool-call/id (or (:tool-call/id tc)
+                             (str "tool_call_" (:tool-call/index tc)))
+           :tool-call/name (or (:tool-call/name tc) "")
+           :tool-call/arguments (or (:tool-call/arguments tc) "")}
+    (:tool-call/provider-data tc)
+    (assoc :tool-call/provider-data (:tool-call/provider-data tc))))
+
+(defn- tool-call-part-index [part]
+  (get-in part [:tool-call/provider-data :stream/index]))
+
+(defn- update-tool-call-part [parts index tc]
+  (let [parts (vec parts)
+        part (tool-call-part tc)
+        pos (first (keep-indexed
+                    (fn [i p]
+                      (when (and (= (:part/type p) :tool-call)
+                                 (= index (tool-call-part-index p)))
+                        i))
+                    parts))]
+    (if (some? pos)
+      (assoc parts pos part)
+      (conj parts part))))
+
+(defn- revise-tool-call [acc index f]
+  (let [acc' (update-in acc [:tool-calls-indexed index]
+                        (fn [tc]
+                          (f (or tc (base-tool-call index)))))
+        tc (get-in acc' [:tool-calls-indexed index])]
+    (update acc' :parts update-tool-call-part index tc)))
 
 (defn reduce-event
   "Reduce a single stream event into an accumulator."
@@ -100,15 +141,20 @@
     (update acc :parts update-last-reasoning (:event/delta event) (:event/encrypted event))
 
     :stream/tool-call-start
-    (update-tool-call acc (:tool-call/index event)
-                      assoc
-                      :tool-call/id (:tool-call/id event)
-                      :tool-call/name (:tool-call/name event)
-                      :tool-call/arguments "")
+    (revise-tool-call acc (:tool-call/index event)
+                      (fn [tc]
+                        (assoc tc
+                               :tool-call/id (or (:tool-call/id event)
+                                                 (:tool-call/id tc))
+                               :tool-call/name (or (:tool-call/name event)
+                                                   (:tool-call/name tc))
+                               :tool-call/arguments (or (:tool-call/arguments tc) ""))))
 
     :stream/tool-call-delta
-    (update-tool-call acc (:tool-call/index event)
-                      update :tool-call/arguments str (:tool-call/arguments-delta event))
+    (revise-tool-call acc (:tool-call/index event)
+                      (fn [tc]
+                        (update tc :tool-call/arguments str
+                                (or (:tool-call/arguments-delta event) ""))))
 
     :stream/tool-call-end
     acc ;; marker only
@@ -117,9 +163,8 @@
     (assoc acc :usage (:usage event))
 
     :stream/provider-state
-    (assoc-in acc [:provider-data
-                   (:provider-state/provider event)]
-              (:provider-state/data event))
+    (update-in acc [:provider-data (:provider-state/provider event)]
+               #(deep-merge (or % {}) (:provider-state/data event)))
 
     :stream/citation
     (update acc :parts conj
@@ -150,15 +195,10 @@
   [acc provider model]
   (let [tool-calls (->> (:tool-calls-indexed acc)
                         (sort-by key)
-                        (mapv (fn [[_ tc]]
-                                {:part/type :tool-call
-                                 :tool-call/id (:tool-call/id tc)
-                                 :tool-call/name (:tool-call/name tc)
-                                 :tool-call/arguments (:tool-call/arguments tc)})))
-        parts (into (:parts acc) tool-calls)]
+                        (mapv (fn [[_ tc]] (tool-call-part tc))))]
     {:response/provider provider
      :response/model model
-     :response/parts parts
+     :response/parts (:parts acc)
      :response/tool-calls (not-empty tool-calls)
      :response/finish-reason (or (:finish-reason acc) :unknown)
      :response/usage (:usage acc)

@@ -8,25 +8,27 @@
 ;; ---------------------------------------------------------------------------
 
 (def TextPart
-  [:map
+  [:map {:closed true}
    [:part/type [:= :text]]
    [:text string?]])
 
 (def ImagePart
-  [:map
+  [:map {:closed true}
    [:part/type [:= :image]]
-   [:image/url string?]
+   [:image/url {:optional true} string?]
+   [:image/mime-type {:optional true} string?]
+   [:image/data {:optional true} string?]
    [:image/detail {:optional true} [:enum :auto :low :high]]])
 
 (def FilePart
-  [:map
+  [:map {:closed true}
    [:part/type [:= :file]]
    [:file/name string?]
    [:file/content string?]
    [:file/mime-type {:optional true} string?]])
 
 (def ToolCallPart
-  [:map
+  [:map {:closed true}
    [:part/type [:= :tool-call]]
    [:tool-call/id string?]
    [:tool-call/name string?]
@@ -34,7 +36,7 @@
    [:tool-call/provider-data {:optional true} map?]])
 
 (def ToolResultPart
-  [:map
+  [:map {:closed true}
    [:part/type [:= :tool-result]]
    [:tool-result/id string?]
    [:tool-result/name string?]
@@ -42,14 +44,14 @@
    [:tool-result/is-error {:optional true} boolean?]])
 
 (def ReasoningPart
-  [:map
+  [:map {:closed true}
    [:part/type [:= :reasoning]]
    [:reasoning/text string?]
    [:reasoning/encrypted {:optional true} boolean?]
    [:reasoning/signature {:optional true} string?]])
 
 (def SafetyPart
-  [:map
+  [:map {:closed true}
    [:part/type [:= :safety]]
    [:safety/category string?]
    [:safety/severity [:or string? keyword?]]
@@ -60,7 +62,7 @@
   "A search-result / cited-source surfaced by a provider. Perplexity
    emits these inline; Anthropic web-search and Cohere documents will
    reuse the same shape when those surfaces are added."
-  [:map
+  [:map {:closed true}
    [:part/type [:= :citation]]
    [:citation/url string?]
    [:citation/title {:optional true} string?]
@@ -69,13 +71,13 @@
    [:citation/source-id {:optional true} string?]])
 
 (def ProviderStatePart
-  [:map
+  [:map {:closed true}
    [:part/type [:= :provider-state]]
    [:provider-state/provider keyword?]
    [:provider-state/data map?]])
 
 (def UnknownProviderPart
-  [:map
+  [:map {:closed true}
    [:part/type [:= :unknown/provider-native]]
    [:unknown/provider keyword?]
    [:unknown/data any?]])
@@ -98,10 +100,11 @@
 ;; ---------------------------------------------------------------------------
 
 (def Message
-  [:map
+  [:map {:closed true}
    [:message/role [:enum :system :developer :user :assistant :tool]]
    [:message/content {:optional true} [:or string? [:vector Part]]]
    [:message/tool-calls {:optional true} [:vector ToolCallPart]]
+   [:message/tool-call-id {:optional true} string?]
    [:message/name {:optional true} string?]
    [:message/provider-data {:optional true} map?]])
 
@@ -110,10 +113,10 @@
 ;; ---------------------------------------------------------------------------
 
 (def ToolFunction
-  [:map
+  [:map {:closed true}
    [:type [:= :function]]
    [:function
-    [:map
+    [:map {:closed true}
      [:name string?]
      [:description {:optional true} string?]
      [:parameters {:optional true} map?]
@@ -124,31 +127,33 @@
 ;; ---------------------------------------------------------------------------
 
 (def Request
-  [:map
+  [:map {:closed true}
    [:request/model string?]
    [:request/messages [:vector Message]]
    [:request/tools {:optional true} [:vector ToolFunction]]
    [:request/tool-choice {:optional true}
     [:or [:enum :auto :none :required]
-         [:map [:type [:= :function]] [:function [:map [:name string?]]]]]]
+         [:map {:closed true}
+          [:type [:= :function]]
+          [:function [:map {:closed true} [:name string?]]]]]]
    [:request/temperature {:optional true} number?]
    [:request/top-p {:optional true} number?]
    [:request/max-tokens {:optional true} int?]
    [:request/stop {:optional true} [:or string? [:vector string?]]]
    [:request/response-format {:optional true}
-    [:map
+    [:map {:closed true}
      [:type [:enum :text :json_schema :json_object]]
      [:name {:optional true} string?]
      [:description {:optional true} string?]
      [:strict {:optional true} boolean?]
      [:json-schema {:optional true} map?]]]
    [:request/reasoning {:optional true}
-    [:map
+    [:map {:closed true}
      [:enabled {:optional true} boolean?]
      [:effort {:optional true} [:enum :minimal :low :medium :high :xhigh]]
      [:budget {:optional true} int?]]]
    [:request/cache {:optional true}
-    [:map
+    [:map {:closed true}
      [:enabled? {:optional true} boolean?]
      [:ttl {:optional true} [:enum "5m" "1h"]]
      [:strategy {:optional true} [:enum :auto :system-and-3 :explicit :none]]
@@ -164,7 +169,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def Usage
-  [:map
+  [:map {:closed true}
    [:usage/input-tokens int?]
    [:usage/output-tokens int?]
    [:usage/reasoning-tokens {:optional true} int?]
@@ -184,7 +189,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def EmbedRequest
-  [:map
+  [:map {:closed true}
    [:embed/model string?]
    [:embed/inputs [:vector string?]]
    [:embed/dimensions {:optional true} int?]
@@ -193,7 +198,7 @@
    [:embed/provider-options {:optional true} map?]])
 
 (def EmbedResponse
-  [:map
+  [:map {:closed true}
    [:embed/id {:optional true} string?]
    [:embed/provider keyword?]
    [:embed/model string?]
@@ -208,7 +213,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def ImageGenRequest
-  [:map
+  [:map {:closed true}
    [:image/model {:optional true} string?]
    [:image/prompt string?]
    [:image/n {:optional true} int?]
@@ -220,13 +225,13 @@
    [:image/provider-options {:optional true} map?]])
 
 (def Image
-  [:map
+  [:map {:closed true}
    [:image/url {:optional true} string?]
    [:image/b64 {:optional true} string?]
    [:image/revised-prompt {:optional true} string?]])
 
 (def ImageGenResponse
-  [:map
+  [:map {:closed true}
    [:image/id {:optional true} string?]
    [:image/provider keyword?]
    [:image/model string?]
@@ -240,7 +245,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def RerankRequest
-  [:map
+  [:map {:closed true}
    [:rerank/model string?]
    [:rerank/query string?]
    [:rerank/documents [:vector string?]]
@@ -249,13 +254,13 @@
    [:rerank/provider-options {:optional true} map?]])
 
 (def RerankResult
-  [:map
+  [:map {:closed true}
    [:rerank/index int?]
    [:rerank/score number?]
    [:rerank/document {:optional true} string?]])
 
 (def RerankResponse
-  [:map
+  [:map {:closed true}
    [:rerank/id {:optional true} string?]
    [:rerank/provider keyword?]
    [:rerank/model string?]
@@ -268,30 +273,85 @@
 ;; ---------------------------------------------------------------------------
 
 (def ModerationRequest
-  [:map
+  [:map {:closed true}
    [:moderation/model {:optional true} string?]
    [:moderation/inputs [:vector
                         [:or string?
-                         [:map
+                         [:map {:closed true}
                           [:type [:enum :text :image_url]]
                           [:text {:optional true} string?]
                           [:image_url {:optional true} string?]]]]]
    [:moderation/provider-options {:optional true} map?]])
 
 (def ModerationResult
-  [:map
+  [:map {:closed true}
    [:moderation/flagged? boolean?]
    [:moderation/categories {:optional true} [:map-of keyword? boolean?]]
    [:moderation/scores {:optional true} [:map-of keyword? number?]]
    [:moderation/categories-applied {:optional true} [:map-of keyword? [:vector keyword?]]]])
 
 (def ModerationResponse
-  [:map
+  [:map {:closed true}
    [:moderation/id {:optional true} string?]
    [:moderation/provider keyword?]
    [:moderation/model string?]
    [:moderation/results [:vector ModerationResult]]
    [:moderation/raw {:optional true} any?]])
+
+;; ---------------------------------------------------------------------------
+;; Audio transcription request / response
+;; ---------------------------------------------------------------------------
+
+(def TranscribeRequest
+  [:map {:closed true}
+   [:transcribe/model string?]
+   [:transcribe/file any?]
+   [:transcribe/filename {:optional true} string?]
+   [:transcribe/language {:optional true} string?]
+   [:transcribe/prompt {:optional true} string?]
+   [:transcribe/temperature {:optional true} number?]
+   [:transcribe/response-format {:optional true} [:enum :json :text :srt :verbose_json :vtt]]
+   [:transcribe/timestamp-granularities {:optional true} [:set [:enum :segment :word]]]
+   [:transcribe/provider-options {:optional true} map?]])
+
+(def TranscriptionSegment
+  [:map
+   [:id {:optional true} any?]
+   [:start {:optional true} any?]
+   [:end {:optional true} any?]
+   [:text {:optional true} any?]])
+
+(def TranscribeResponse
+  [:map {:closed true}
+   [:transcription/text string?]
+   [:transcription/language {:optional true} string?]
+   [:transcription/duration-seconds {:optional true} number?]
+   [:transcription/segments {:optional true} [:vector map?]]
+   [:transcription/words {:optional true} [:vector map?]]
+   [:response/usage {:optional true} Usage]
+   [:response/raw {:optional true} any?]])
+
+;; ---------------------------------------------------------------------------
+;; Text-to-speech request / response
+;; ---------------------------------------------------------------------------
+
+(def SpeakRequest
+  [:map {:closed true}
+   [:speak/model string?]
+   [:speak/input string?]
+   [:speak/voice {:optional true} string?]
+   [:speak/format {:optional true} [:enum :mp3 :opus :aac :flac :wav :pcm]]
+   [:speak/speed {:optional true} number?]
+   [:speak/instructions {:optional true} string?]
+   [:speak/provider-options {:optional true} map?]])
+
+(def SpeakResponse
+  [:map {:closed true}
+   [:audio/bytes any?]
+   [:audio/content-type string?]
+   [:audio/model {:optional true} string?]
+   [:response/usage {:optional true} Usage]
+   [:response/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
 ;; Cost (canonical :response/cost)
@@ -301,7 +361,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def Cost
-  [:map
+  [:map {:closed true}
    [:cost/usd [:or number? [:= :unknown]]]
    [:cost/estimated? boolean?]
    [:cost/pricing-source {:optional true} [:or string? keyword? nil?]]
@@ -318,7 +378,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def Cache
-  [:map
+  [:map {:closed true}
    [:cache/status [:enum :hit :miss :unknown]]
    [:cache/cached-tokens [:or int? [:= :unknown]]]
    [:cache/cache-write-tokens {:optional true} [:or int? [:= :unknown]]]])
@@ -328,7 +388,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def Response
-  [:map
+  [:map {:closed true}
    [:response/id {:optional true} string?]
    [:response/provider keyword?]
    [:response/model string?]
@@ -381,6 +441,10 @@
    [:profile/auth-header-name {:optional true} string?]
    [:profile/auth-query-param {:optional true} string?]
    [:profile/default-headers {:optional true} map?]
+   [:profile/auth-token {:optional true} string?]
+   [:profile/http-client {:optional true} any?]
+   [:profile/connect-timeout-ms {:optional true} int?]
+   [:profile/timeout-ms {:optional true} int?]
    [:profile/supports-model-listing boolean?]
    [:profile/default-max-tokens {:optional true} int?]
    [:profile/fixed-temperature {:optional true} [:or number? [:= :omit]]]
@@ -417,6 +481,10 @@
 (def validate-rerank-response (m/validator RerankResponse))
 (def validate-image-gen-request (m/validator ImageGenRequest))
 (def validate-image-gen-response (m/validator ImageGenResponse))
+(def validate-transcribe-request (m/validator TranscribeRequest))
+(def validate-transcribe-response (m/validator TranscribeResponse))
+(def validate-speak-request (m/validator SpeakRequest))
+(def validate-speak-response (m/validator SpeakResponse))
 
 (defn explain-request [x] (m/explain Request x))
 (defn explain-response [x] (m/explain Response x))
@@ -428,3 +496,7 @@
 (defn explain-rerank-response [x] (m/explain RerankResponse x))
 (defn explain-image-gen-request [x] (m/explain ImageGenRequest x))
 (defn explain-image-gen-response [x] (m/explain ImageGenResponse x))
+(defn explain-transcribe-request [x] (m/explain TranscribeRequest x))
+(defn explain-transcribe-response [x] (m/explain TranscribeResponse x))
+(defn explain-speak-request [x] (m/explain SpeakRequest x))
+(defn explain-speak-response [x] (m/explain SpeakResponse x))

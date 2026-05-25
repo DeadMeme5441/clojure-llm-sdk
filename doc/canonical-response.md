@@ -141,6 +141,13 @@ stamped with the same `:response/cost` and `:response/cache` shapes —
 the reducer in `llm.sdk.stream` produces the parts/usage/finish-reason,
 and the stamping happens after.
 
+Tool-call start and argument-delta events are reduced into both
+`:response/tool-calls` and an ordered `:part/type :tool-call` entry in
+`:response/parts`. Provider-state events are merged into
+`:response/provider-data` so replay data such as Anthropic signatures,
+Gemini thought signatures, and encrypted reasoning handles can be kept
+for the next turn.
+
 The raw event stream itself does not carry cost or cache events. Cost
 and cache are post-hoc computations that need the full usage envelope,
 which arrives near the end of the stream.

@@ -28,7 +28,12 @@
    [:output-per-million {:optional true} number?]
    [:cache-read-per-million {:optional true} number?]
    [:cache-write-per-million {:optional true} number?]
-   [:request-cost {:optional true} number?]])
+   [:request-cost {:optional true} number?]
+   [:image-per-image {:optional true} number?]
+   [:image-per-megapixel {:optional true} number?]
+   [:transcription-per-minute {:optional true} number?]
+   [:tts-per-million-chars {:optional true} number?]
+   [:search-per-call {:optional true} number?]])
 
 (def ModelEntry
   "Canonical model registry entry. Every layer (live /models, models.dev,

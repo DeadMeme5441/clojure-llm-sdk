@@ -9,6 +9,11 @@
         :request/messages [{:message/role :user
                             :message/content "Hello"}]}))
   (is (not (schema/validate-request
+            {:request/model "gpt-4o"
+             :request/messages [{:message/role :user
+                                 :message/content "Hello"}]
+             :request/temprature 0.2})))
+  (is (not (schema/validate-request
             {:request/model "gpt-4o"}))))
 
 (deftest test-response-validation
@@ -26,6 +31,9 @@
                              :tool-call/id "call_1"
                              :tool-call/name "foo"
                              :tool-call/arguments "{}"}))
+  (is (schema/validate-part {:part/type :image
+                             :image/data "base64"
+                             :image/mime-type "image/png"}))
   (is (schema/validate-part {:part/type :reasoning
                              :reasoning/text "thinking..."})))
 
@@ -37,7 +45,13 @@
                                                   {:part/type :tool-call
                                                    :tool-call/id "c1"
                                                    :tool-call/name "x"
-                                                   :tool-call/arguments "{}"}]})))
+                                                   :tool-call/arguments "{}"}]}))
+  (is (schema/validate-message {:message/role :tool
+                                :message/tool-call-id "c1"
+                                :message/content "result"}))
+  (is (not (schema/validate-message {:message/role :user
+                                     :message/content "Hello"
+                                     :message/contnet "typo"}))))
 
 (deftest test-usage-validation
   (is (schema/validate-usage {:usage/input-tokens 10
@@ -56,6 +70,25 @@
                                   :name "ok_response"
                                   :strict true
                                   :json-schema {:type "object"}}})))
+
+(deftest test-transcribe-and-speak-validation
+  (is (schema/validate-transcribe-request
+       {:transcribe/model "gpt-4o-transcribe"
+        :transcribe/file "audio.wav"
+        :transcribe/response-format :json}))
+  (is (not (schema/validate-transcribe-request
+            {:transcribe/file "audio.wav"})))
+  (is (schema/validate-transcribe-response
+       {:transcription/text "hello"}))
+  (is (schema/validate-speak-request
+       {:speak/model "gpt-4o-mini-tts"
+        :speak/input "hello"
+        :speak/format :mp3}))
+  (is (not (schema/validate-speak-request
+            {:speak/model "gpt-4o-mini-tts"})))
+  (is (schema/validate-speak-response
+       {:audio/bytes (.getBytes "bytes")
+        :audio/content-type "audio/mpeg"})))
 
 (deftest test-registered-provider-profiles-validate
   (doseq [provider-id (sdk/list-providers)

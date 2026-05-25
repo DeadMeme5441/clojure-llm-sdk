@@ -35,6 +35,18 @@
     (is (= ["base64bytes"] (:images msg))
         "Ollama native takes images as sibling :images, not as content parts")))
 
+(deftest test-chat-vision-data-uri-strips-header
+  (let [t (ollama/make-transport)
+        profile (provider/get-provider :ollama-native)
+        built (transport/build-request
+               t profile
+               {:request/model "llama3.2-vision"
+                :request/messages [{:message/role :user
+                                    :message/content
+                                    [{:part/type :image
+                                      :image/url "data:image/png;base64,abc123"}]}]})]
+    (is (= ["abc123"] (get-in built [:body :messages 0 :images])))))
+
 (deftest test-parse-response
   (let [t (ollama/make-transport)
         profile (provider/get-provider :ollama-native)
@@ -74,6 +86,28 @@
     (is (= :stream/usage (:event/type (first evs))))
     (is (= :stream/end (:event/type (last evs))))
     (is (= :stop (:event/finish-reason (last evs))))))
+
+(deftest test-stream-tool-calls-preserve-each-index
+  (let [t (ollama/make-transport)
+        profile (provider/get-provider :ollama-native)
+        line (json/generate-string
+              {:model "llama3.1"
+               :message {:role "assistant"
+                         :tool_calls [{:id "call_1"
+                                       :function {:name "a" :arguments {:x 1}}}
+                                      {:id "call_2"
+                                       :function {:name "b" :arguments {:y 2}}}]}
+               :done false})
+        events (transport/parse-stream-event t profile line)]
+    (is (= [:stream/tool-call-start
+            :stream/tool-call-delta
+            :stream/tool-call-end
+            :stream/tool-call-start
+            :stream/tool-call-delta
+            :stream/tool-call-end]
+           (mapv :event/type events)))
+    (is (= [0 0 0 1 1 1]
+           (mapv :tool-call/index events)))))
 
 (deftest test-embed-build-request
   (let [profile (provider/get-provider :ollama-native)

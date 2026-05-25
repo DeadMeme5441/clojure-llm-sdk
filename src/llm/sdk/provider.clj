@@ -36,10 +36,11 @@
 
 (defn resolve-auth-token
   "Resolve an auth token for a provider profile.
-   Checks env vars in order, returning first non-nil value."
+   Per-call/profile overrides win, then env vars are checked in order."
   [profile]
-  (let [env-vars (:profile/env-var-names profile)]
-    (some #(System/getenv %) env-vars)))
+  (or (:profile/auth-token profile)
+      (let [env-vars (:profile/env-var-names profile)]
+        (some #(System/getenv %) env-vars))))
 
 (defn auth-headers
   "Build auth headers for a provider profile given a token."
@@ -57,6 +58,54 @@
   [profile token]
   (merge (:profile/default-headers profile {})
          (auth-headers profile token)))
+
+(defn apply-runtime-config
+  "Apply per-call SDK runtime configuration to a provider profile.
+
+   Supported keys:
+     :api-key / :auth-token      auth token for this call
+     :base-url                   provider base URL override
+     :headers                    extra default headers
+     :http-client                hato Java HTTP client
+     :connect-timeout-ms         HTTP client connect timeout
+     :timeout-ms                 HTTP client request timeout
+
+   This returns a transient profile value; it does not mutate the
+   global provider registry."
+  [profile config]
+  (let [token (or (:auth-token config) (:api-key config))]
+    (cond-> profile
+      token
+      (assoc :profile/auth-token token)
+
+      (:base-url config)
+      (assoc :profile/base-url (:base-url config))
+
+      (:headers config)
+      (update :profile/default-headers merge (:headers config))
+
+      (:http-client config)
+      (assoc :profile/http-client (:http-client config))
+
+      (:connect-timeout-ms config)
+      (assoc :profile/connect-timeout-ms (:connect-timeout-ms config))
+
+      (:timeout-ms config)
+      (assoc :profile/timeout-ms (:timeout-ms config)))))
+
+(defn apply-http-options
+  "Copy runtime HTTP client/timeout options from a provider profile onto
+   a native request map consumed by llm.sdk.http or modality drivers."
+  [profile req]
+  (cond-> req
+    (:profile/http-client profile)
+    (assoc :http-client (:profile/http-client profile))
+
+    (:profile/connect-timeout-ms profile)
+    (assoc :connect-timeout-ms (:profile/connect-timeout-ms profile))
+
+    (:profile/timeout-ms profile)
+    (assoc :timeout-ms (:profile/timeout-ms profile))))
 
 ;; ---------------------------------------------------------------------------
 ;; Built-in providers
@@ -123,7 +172,7 @@
   (register-provider
    (mk-provider :anthropic :anthropic-messages "https://api.anthropic.com/v1" :api-key-header
                 :profile/auth-header-name "x-api-key"
-                :profile/env-var-names ["ANTHROPIC_API_KEY"]
+                :profile/env-var-names ["ANTHROPIC_API_KEY" "CLAUDE_OAT_TOKEN"]
                 :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning :cache :thinking-blocks}
                 :profile/default-headers {"anthropic-version" "2023-06-01"}))
   (register-provider
@@ -213,6 +262,7 @@
    (mk-provider :perplexity :perplexity-chat "https://api.perplexity.ai" :bearer
                 :profile/env-var-names ["PERPLEXITY_API_KEY"]
                 :profile/capabilities #{:chat :streaming :json-schema :web-search}
+                :profile/supports-model-listing false
                 ;; Perplexity's /chat/completions doesn't accept tools /
                 ;; tool_choice / reasoning / cache parameters — listing
                 ;; an explicit supported-params set means
@@ -290,7 +340,8 @@
                 ;; account at runtime by setting :profile/base-url.
                 "https://api.cloudflare.com/client/v4/accounts/REPLACE-WITH-ACCOUNT-ID/ai/v1" :bearer
                 :profile/env-var-names ["CLOUDFLARE_API_TOKEN"]
-                :profile/capabilities #{:chat :streaming :json-schema}))
+                :profile/capabilities #{:chat :streaming :json-schema}
+                :profile/supports-model-listing false))
   (register-provider
    (mk-provider :dashscope :openai-chat
                 "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" :bearer
