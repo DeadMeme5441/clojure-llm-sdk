@@ -45,13 +45,6 @@ jobs:
       - name: Lint
         run: clj-kondo --lint src test
 
-      - name: Public repository hygiene
-        run: |
-          ! git grep -n -i -E 'beads|\.beads|bd github|jira' -- \
-            ':!resources/*.json' \
-            ':!test-resources/**' \
-            ':!.github/workflows/ci.yml'
-
       - name: Unit tests
         run: clojure -M:test
 

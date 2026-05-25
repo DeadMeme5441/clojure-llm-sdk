@@ -151,7 +151,8 @@
         ev (transport/parse-stream-event t profile frame)]
     (is (= :stream/usage (:event/type ev)))
     (is (= 17 (get-in ev [:usage :usage/input-tokens])))
-    (is (= 9 (get-in ev [:usage :usage/output-tokens])))))
+    (is (= 9 (get-in ev [:usage :usage/output-tokens])))
+    (is (not (contains? (:usage ev) :usage/cached-input-tokens)))))
 
 (deftest test-parse-response-cache-tokens
   (let [t (bedrock/make-transport)
@@ -166,5 +167,6 @@
                      :cacheWriteInputTokens 2}}
         parsed (transport/parse-response t profile raw)]
     (is (= [{:part/type :text :text "hi back"}] (:response/parts parsed)))
+    (is (= 0 (get-in parsed [:response/usage :usage/input-tokens])))
     (is (= 8 (get-in parsed [:response/usage :usage/cached-input-tokens])))
     (is (= 2 (get-in parsed [:response/usage :usage/cache-write-tokens])))))

@@ -49,6 +49,22 @@
        (is (= 0.5 (double (:cache-read-cost-per-million p))))
        (is (= 6.25 (double (:cache-write-cost-per-million p))))))))
 
+(deftest get-pricing-for-codex-backend-reuses-openai-catalog
+  (offline
+   (fn []
+     (let [p (pricing/get-pricing :codex-backend "gpt-5-codex")]
+       (is (some? p))
+       (is (pos? (:input-cost-per-million p)))
+       (is (pos? (:output-cost-per-million p)))))))
+
+(deftest get-pricing-preserves-non-token-fields
+  (offline
+   (fn []
+     (let [image (pricing/get-pricing :openai "dall-e-2")
+           request (pricing/get-pricing :perplexity "pplx-7b-online")]
+       (is (pos? (:image-cost-per-image image)))
+       (is (pos? (:request-cost request)))))))
+
 (deftest get-pricing-returns-nil-for-unknown
   (offline
    (fn []
@@ -77,9 +93,20 @@
                :usage/cache-write-tokens 100}
         result (pricing/estimate-cost usage pe)]
     (is (= :actual (:cost/status result)))
+    ;; :usage/input-tokens is the uncached input count. Cached reads and
+    ;; writes are separate billable lines, not added back into input.
     ;; 1000*3.0 + 500*15.0 + 2000*0.3 + 100*3.75 = all /1M
     ;; = 0.003 + 0.0075 + 0.0006 + 0.000375 = 0.011475
     (is (bd≈ 0.011475M (:cost/amount-usd result)))))
+
+(deftest estimate-cost-handles-request-only-pricing
+  (let [pe (pricing/pricing-entry :request-cost 0.005)
+        usage {:usage/input-tokens 1000
+               :usage/output-tokens 500
+               :usage/request-count 3}
+        result (pricing/estimate-cost usage pe)]
+    (is (= :actual (:cost/status result)))
+    (is (bd≈ 0.015M (:cost/amount-usd result)))))
 
 (deftest estimate-cost-nil-pricing-returns-unknown
   (let [result (pricing/estimate-cost {:usage/input-tokens 1} nil)]
@@ -95,6 +122,14 @@
    (fn []
      (let [usage {:usage/input-tokens 1000 :usage/output-tokens 500}
            r (pricing/estimate-cost-for-model :openai "gpt-4o" usage)]
+       (is (= :actual (:cost/status r)))
+       (is (pos? (:cost/amount-usd r)))))))
+
+(deftest estimate-cost-for-codex-backend-resolves-from-registry
+  (offline
+   (fn []
+     (let [usage {:usage/input-tokens 1000 :usage/output-tokens 500}
+           r (pricing/estimate-cost-for-model :codex-backend "gpt-5-codex" usage)]
        (is (= :actual (:cost/status r)))
        (is (pos? (:cost/amount-usd r)))))))
 
@@ -136,6 +171,21 @@
      (let [p (pricing/get-pricing :custom-corp "magic-7")]
        (is (some? p))
        (is (= 0.001 (:input-cost-per-million p)))))))
+
+(deftest register-pricing-works-for-request-only-pricing
+  (offline
+   (fn []
+     (pricing/register-pricing :custom-corp "metered"
+                               {:request-cost 0.01})
+     (let [p (pricing/get-pricing :custom-corp "metered")
+           c (pricing/canonical-cost :custom-corp "metered"
+                                     {:usage/input-tokens 10
+                                      :usage/output-tokens 1
+                                      :usage/request-count 2})]
+       (is (= 0.01 (:request-cost p)))
+       (is (bd≈ 0.02M (:cost/usd c)))
+       (is (= 0.01 (get-in c [:cost/breakdown :request-cost])))
+       (is (= 2 (get-in c [:cost/breakdown :request-count])))))))
 
 ;; ---------------------------------------------------------------------------
 ;; fetch-pricing! — delegates to registry/refresh!

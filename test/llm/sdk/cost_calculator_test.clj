@@ -41,11 +41,10 @@
     (pricing/register-pricing :perplexity "sonar-pro"
                               {:input 3.0      ; $3 / M input
                                :output 15.0    ; $15 / M output
-                               :request-cost 0.005})
-    ;; The default calculator already handles token + request. To test
-    ;; the per-search-query addend we need :search-cost-per-call in the
-    ;; pricing entry. register-pricing doesn't ship that yet, so call
-    ;; the calculator directly with a hand-built pricing entry.
+                               :request-cost 0.005
+                               :search-per-call 0.005})
+    ;; The default calculator handles token + request. Perplexity adds
+    ;; a search-query line item on top when pricing carries it.
     (let [profile (provider/get-provider :perplexity)
           calc (:profile/cost-calculator profile)
           pricing (pricing/pricing-entry :input 3.0 :output 15.0
@@ -62,6 +61,21 @@
       (is (some? (:cost/amount-usd result)))
       (is (.contains ^String (str (:cost/notes result))
                      "Perplexity search queries: 4")))))
+
+(deftest test-perplexity-custom-calculator-search-only
+  (testing "known search pricing still produces a cost when token rates are absent"
+    (let [profile (provider/get-provider :perplexity)
+          calc (:profile/cost-calculator profile)
+          pricing (pricing/pricing-entry :search-per-call 0.005)
+          usage {:usage/input-tokens 0
+                 :usage/output-tokens 0
+                 :usage/search-queries 4}
+          result (calc {:provider :perplexity
+                        :model "search-metered"
+                        :usage usage
+                        :pricing pricing})]
+      (is (= :actual (:cost/status result)))
+      (is (= 0.020M (:cost/amount-usd result))))))
 
 (deftest test-default-calculator-no-search-cost
   (testing "Perplexity calc returns base token cost when no search-cost-per-call set"

@@ -199,14 +199,21 @@
         addend (if (and per-call (pos? search-queries))
                  (.multiply (bigdec search-queries) per-call)
                  0M)
+        search-only-cost? (and per-call
+                               (pos? (.signum ^java.math.BigDecimal addend))
+                               (nil? (:cost/amount-usd base)))
         amount (cond
                  (and (:cost/amount-usd base) (pos? (.signum ^java.math.BigDecimal addend)))
                  (.add ^java.math.BigDecimal (bigdec (:cost/amount-usd base)) addend)
                  (:cost/amount-usd base) (:cost/amount-usd base)
                  (pos? (.signum ^java.math.BigDecimal addend)) addend
-                 :else nil)]
+                 :else nil)
+        status (if (or (= :actual (:cost/status base)) search-only-cost?)
+                 :actual
+                 (:cost/status base))]
     (-> base
         (assoc :cost/amount-usd amount)
+        (assoc :cost/status status)
         (update :cost/notes (fnil conj [])
                 (str "Perplexity search queries: " search-queries
                      (when per-call

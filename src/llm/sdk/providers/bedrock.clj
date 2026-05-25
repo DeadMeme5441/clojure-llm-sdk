@@ -77,6 +77,36 @@
         model)))
 
 ;; ---------------------------------------------------------------------------
+;; Usage normalization
+;; ---------------------------------------------------------------------------
+
+(defn- ->int [x]
+  (cond
+    (int? x) x
+    (number? x) (int x)
+    :else 0))
+
+(defn- present-int [m k]
+  (when (contains? m k)
+    (->int (get m k))))
+
+(defn- normalize-bedrock-usage [u]
+  (let [input-total (->int (:inputTokens u))
+        output (->int (:outputTokens u))
+        total (present-int u :totalTokens)
+        cache-read (present-int u :cacheReadInputTokens)
+        cache-write (present-int u :cacheWriteInputTokens)
+        cr (or cache-read 0)
+        cw (or cache-write 0)]
+    (cond-> {:usage/input-tokens (max 0 (- input-total cr cw))
+             :usage/output-tokens output
+             :usage/total-tokens (or total (+ input-total output))
+             :usage/request-count 1
+             :usage/provider-raw u}
+      (some? cache-read) (assoc :usage/cached-input-tokens cache-read)
+      (some? cache-write) (assoc :usage/cache-write-tokens cache-write))))
+
+;; ---------------------------------------------------------------------------
 ;; Finish reason mapping
 ;; ---------------------------------------------------------------------------
 
@@ -285,14 +315,7 @@
      :response/parts parts
      :response/tool-calls (not-empty tool-calls)
      :response/finish-reason stop-reason
-     :response/usage (when usage-raw
-                       {:usage/input-tokens (:inputTokens usage-raw 0)
-                        :usage/output-tokens (:outputTokens usage-raw 0)
-                        :usage/total-tokens (:totalTokens usage-raw 0)
-                        :usage/cached-input-tokens (:cacheReadInputTokens usage-raw 0)
-                        :usage/cache-write-tokens (:cacheWriteInputTokens usage-raw 0)
-                        :usage/request-count 1
-                        :usage/provider-raw usage-raw})
+     :response/usage (when usage-raw (normalize-bedrock-usage usage-raw))
      :response/raw raw}))
 
 ;; ---------------------------------------------------------------------------
@@ -335,13 +358,7 @@
 
     "metadata"
     (when-let [u (:usage data)]
-      (stream/usage-event
-       {:usage/input-tokens (:inputTokens u 0)
-        :usage/output-tokens (:outputTokens u 0)
-        :usage/total-tokens (:totalTokens u 0)
-        :usage/cached-input-tokens (:cacheReadInputTokens u 0)
-        :usage/cache-write-tokens (:cacheWriteInputTokens u 0)
-        :usage/request-count 1}))
+      (stream/usage-event (normalize-bedrock-usage u)))
 
     nil))
 
@@ -392,13 +409,7 @@
     (parse-error-bedrock profile status body))
 
   (normalize-usage [_ _profile raw]
-    {:usage/input-tokens (:inputTokens raw 0)
-     :usage/output-tokens (:outputTokens raw 0)
-     :usage/total-tokens (:totalTokens raw 0)
-     :usage/cached-input-tokens (:cacheReadInputTokens raw 0)
-     :usage/cache-write-tokens (:cacheWriteInputTokens raw 0)
-     :usage/request-count 1
-     :usage/provider-raw raw})
+    (normalize-bedrock-usage raw))
 
   (request-capabilities [_]
     #{:chat :streaming :tools :guardrails :cache}))

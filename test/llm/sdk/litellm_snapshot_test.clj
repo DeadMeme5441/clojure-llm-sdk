@@ -25,6 +25,14 @@
     (is (pos? (:model/context-length e)))
     (is (pos? (get-in e [:model/cost :input-per-million])))))
 
+(deftest test-codex-aliases-openai-snapshot
+  (doseq [provider-id [:codex :codex-backend]]
+    (let [e (lsnap/lookup provider-id "gpt-5-codex")]
+      (is (some? e) (str provider-id " should reuse OpenAI snapshot pricing"))
+      (is (= provider-id (:model/provider e)))
+      (is (pos? (get-in e [:model/cost :input-per-million])))))
+  (is (seq (lsnap/list-models :codex-backend))))
+
 (deftest test-lookup-anthropic-with-cache-pricing
   (let [e (lsnap/lookup :anthropic "claude-opus-4-7")]
     (is (some? e))

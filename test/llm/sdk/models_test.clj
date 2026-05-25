@@ -84,6 +84,9 @@
       (is (= 15.0 (get-in sonnet [:model/cost :output-per-million])))
       (is (= 0.3 (get-in sonnet [:model/cost :cache-read-per-million])))
       (is (= 3.75 (get-in sonnet [:model/cost :cache-write-per-million]))))
+    (testing "request and image prices are preserved as direct USD fields"
+      (is (= 0.0 (get-in gpt4o [:model/cost :request-cost])))
+      (is (= 0.003613 (get-in gpt4o [:model/cost :image-per-image]))))
     (testing "no cache pricing on gpt-4o"
       (is (nil? (get-in gpt4o [:model/cost :cache-read-per-million])))
       (is (nil? (get-in gpt4o [:model/cost :cache-write-per-million]))))))

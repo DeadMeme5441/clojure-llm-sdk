@@ -47,7 +47,10 @@ Use overrides for private models, self-hosted endpoints, or pricing data that ha
    :model/max-output-tokens 4096
    :model/capabilities #{:chat :tools}
    :model/cost {:input-per-million 0.5
-                :output-per-million 2.0}})
+                :output-per-million 2.0
+                :cache-read-per-million 0.1
+                :cache-write-per-million 0.6
+                :request-cost 0.005}})
 ```
 
 Overrides are in-memory. Applications that need durable custom catalogs should register them during process startup.
@@ -71,7 +74,32 @@ Cost results are explicit about uncertainty:
  :cost/breakdown {...}}
 ```
 
-If pricing is unavailable or incomplete, `:cost/usd` is `:unknown`. The SDK never substitutes zero for unknown cost.
+If pricing is unavailable or incomplete for a reported billable dimension,
+`:cost/usd` is `:unknown`. The SDK never substitutes zero for unknown
+cost and never double counts cached tokens: normalized input tokens are
+uncached input, while cache reads and cache writes are priced from their
+own fields when the registry has those rates.
+
+The registry can carry token, cache, request, image, transcription,
+text-to-speech, and search-query price fields:
+
+```clojure
+{:input-per-million 2.5
+ :output-per-million 10.0
+ :cache-read-per-million 1.25
+ :cache-write-per-million 3.75
+ :request-cost 0.005
+ :image-per-image 0.04
+ :image-per-megapixel 0.02
+ :transcription-per-minute 0.006
+ :tts-per-million-chars 15.0
+ :search-per-call 0.005}
+```
+
+`sdk/estimate-cost` covers token, cache, and per-request chat costs.
+Use the modality helpers in `llm.sdk.pricing` for image, transcription,
+and text-to-speech attribution when the response path does not include
+chat-style usage.
 
 ## Cache Attribution
 

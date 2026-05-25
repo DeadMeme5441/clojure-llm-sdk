@@ -39,11 +39,24 @@
    where raw-entry has string keys (cost, capabilities, mode, …)."
   (delay (load-snapshot)))
 
-(defn- provider->string [k]
+(def ^:private provider-aliases
+  "SDK provider ids whose model catalog and pricing come from another
+   provider in the LiteLLM snapshot."
+  {:codex :openai
+   :codex-backend :openai})
+
+(defn- canonical-provider-key [k]
   (cond
-    (keyword? k) (name k)
-    (string? k) k
-    :else (str k)))
+    (keyword? k) (get provider-aliases k k)
+    (string? k) (get provider-aliases (keyword k) k)
+    :else k))
+
+(defn- provider->string [k]
+  (let [canonical (canonical-provider-key k)]
+    (cond
+      (keyword? canonical) (name canonical)
+      (string? canonical) canonical
+      :else (str canonical))))
 
 (defn- by-provider [provider-key]
   (some-> @cache (get (provider->string provider-key))))

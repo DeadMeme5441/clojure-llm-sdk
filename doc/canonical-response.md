@@ -26,7 +26,7 @@ The Malli schemas live in `llm.sdk.schema` (`Response`, `Usage`, `Cost`,
 
 ```clojure
 :response/usage
-{:usage/input-tokens     123
+{:usage/input-tokens     123       ; uncached input tokens billed at input rate
  :usage/output-tokens     45
  :usage/total-tokens     168
  :usage/cached-input-tokens 42       ; OPTIONAL — present iff provider reported it
@@ -53,10 +53,17 @@ fields is load-bearing — see "Honest unknown semantics" below.
                        :output-tokens 500
                        :cached-input-tokens 200      ; only if usage carried it
                        :cache-write-tokens 50        ; only if usage carried it
+                       :request-count 1
                        :input-cost-per-million 2.5
                        :output-cost-per-million 10.0
                        :cache-read-cost-per-million 1.25
-                       :cache-write-cost-per-million 3.75}
+                       :cache-write-cost-per-million 3.75
+                       :request-cost 0.005
+                       :image-cost-per-image 0.04
+                       :image-cost-per-megapixel 0.02
+                       :transcription-cost-per-minute 0.006
+                       :tts-cost-per-million-chars 15.0
+                       :search-cost-per-call 0.005}
  :cost/reason         "no pricing data for model"}  ; only when :cost/usd is :unknown
 ```
 
@@ -64,11 +71,19 @@ Honesty rule:
 
 - `:cost/usd` is the keyword `:unknown` (not `0`, not `0M`) when the
   registry has no pricing for `(provider, model)`, when usage is
-  missing, or when the pricing entry is incomplete.
+  missing, or when the pricing entry is incomplete for a reported
+  billable dimension. For example, if a provider reports cached-input
+  tokens but the registry has no cache-read rate, the SDK will not
+  silently charge those cached tokens as normal input or as zero.
 - `:cost/estimated?` is always `true`. The SDK does not bill users; it
   computes from token counts and listed per-million rates.
 - `:cost/pricing-source` names which tier of the registry produced the
   numbers. `nil` means no pricing at all was found.
+
+Usage normalizers keep cache math non-overlapping: `:usage/input-tokens`
+is the uncached input count, while `:usage/cached-input-tokens` and
+`:usage/cache-write-tokens` are separate billable lines when the provider
+reports them.
 
 ## Cache
 

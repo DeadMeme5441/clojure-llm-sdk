@@ -146,13 +146,18 @@
                 (seq caps) (assoc :model/capabilities caps))))
           entries)))
 
-(defn- parse-decimal-string
-  "OpenRouter encodes per-token pricing as decimal strings. Convert to
-   per-million (USD) - returns nil for nil/empty/malformed input."
+(defn- parse-decimal
+  "Parse a decimal string - returns nil for nil/empty/malformed input."
   [s]
   (when (and s (string? s) (seq s))
-    (try (* (Double/parseDouble s) 1000000.0)
+    (try (Double/parseDouble s)
          (catch Exception _ nil))))
+
+(defn- parse-decimal-string
+  "OpenRouter encodes per-token pricing as decimal strings. Convert to
+   per-million USD."
+  [s]
+  (some-> (parse-decimal s) (* 1000000.0)))
 
 (defn parse-openrouter-models
   "Shape: {data [{id, name, context_length,
@@ -180,7 +185,16 @@
                                 (parse-decimal-string (:cache_read pricing)))
                          (parse-decimal-string (:cache_write pricing))
                          (assoc :cache-write-per-million
-                                (parse-decimal-string (:cache_write pricing))))
+                                (parse-decimal-string (:cache_write pricing)))
+                         (parse-decimal (:request pricing))
+                         (assoc :request-cost
+                                (parse-decimal (:request pricing)))
+                         (parse-decimal (:image pricing))
+                         (assoc :image-per-image
+                                (parse-decimal (:image pricing)))
+                         (parse-decimal (:web_search pricing))
+                         (assoc :search-per-call
+                                (parse-decimal (:web_search pricing))))
                   base {:model/id (:id m)
                         :model/provider provider-id
                         :model/source :live-models-api
