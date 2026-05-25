@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.openai-aliases-test
-  "Coverage for the OpenAI-compat alias mechanism added under T2-03.
+  "Coverage for the OpenAI-compatible alias mechanism.
 
    build-alias-profile and register-alias! let us register a new
    OpenAI-compat host in one map literal. The tests below verify:
@@ -71,7 +71,7 @@
    {:id :cerebras    :base "https://api.cerebras.ai/v1"          :env "CEREBRAS_API_KEY"}
    {:id :together    :base "https://api.together.xyz/v1"         :env "TOGETHER_API_KEY"}
    {:id :xai         :base "https://api.x.ai/v1"                 :env "XAI_API_KEY"}
-   ;; T2-06 — HuggingFace Inference Router is a plain OpenAI-compat alias.
+   ;; HuggingFace Inference Router is a plain OpenAI-compat alias.
    ;; TGI / self-hosted endpoints register their own profile.
    {:id :huggingface :base "https://router.huggingface.co/v1"    :env "HF_TOKEN"}])
 
@@ -95,10 +95,10 @@
       (is (fn? (:profile/transport-constructor ds)))
       (is (= "https://api.moonshot.cn/v1" (:profile/base-url k)))
       (is (= ["MOONSHOT_API_KEY"] (:profile/env-var-names k)))
-      ;; This was a latent bug pre-T2-03 — the doseq attaching
+      ;; This was a latent bug: the doseq attaching
       ;; constructors only covered [:openai :openrouter :deepseek] and
-      ;; silently skipped :kimi. T2-03's compat-provider-ids list
-      ;; closes that gap.
+      ;; silently skipped :kimi. The compat-provider-ids list closes
+      ;; that gap.
       (is (fn? (:profile/transport-constructor k))
           ":kimi finally carries a transport-constructor")
       (is (= "https://api.kimi.com/coding/v1" (:profile/base-url kc)))
@@ -175,7 +175,7 @@
       (is (nil? (:presence_penalty body)))
       (is (nil? (get-in body [:extra_body :frequency_penalty])))
       (is (nil? (get-in body [:extra_body :presence_penalty])))
-      ;; :random_seed survives — it's not in the drop list and Mistral
+      ;; :random_seed survives - it's not in the drop list and Mistral
       ;; accepts it.
       (is (= 42 (get-in body [:extra_body :random_seed]))))))
 

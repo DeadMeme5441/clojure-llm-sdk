@@ -1,5 +1,5 @@
 (ns llm.sdk.request-test
-  "Coverage for the request preprocessor (T2-12): drop+warn for
+  "Coverage for the request preprocessor: drop+warn for
    canonical fields the provider doesn't support."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]

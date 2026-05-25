@@ -1,8 +1,8 @@
 (ns llm.sdk.live-embed-test
-  "Live smoke for the OpenAI embed adapter (T2-01).
+  "Live smoke for the OpenAI embed adapter.
 
    text-embedding-3-small bills at $0.02 / 1M tokens; a single 3-token
-   smoke is ~$0.00000006 per run — fractions of a cent. Still gated on
+   smoke is ~$0.00000006 per run - fractions of a cent. Still gated on
    OPENAI_API_KEY for the offline default.
 
    To run only this suite:
@@ -49,7 +49,7 @@
         (is (= 128 (count (first (:embed/vectors resp)))))))))
 
 ;; ---------------------------------------------------------------------------
-;; T2-07 — Cohere/Voyage/Mistral/Together/Jina
+;; Cohere/Voyage/Mistral/Together/Jina
 ;; ---------------------------------------------------------------------------
 
 (defn- smoke-embed

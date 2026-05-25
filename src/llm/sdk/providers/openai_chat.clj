@@ -351,7 +351,7 @@
                                  :thinking-explicit  send :thinking dict
      :supports-model-listing?  defaults true
      :supported-params         optional set (carried as
-                                 :profile/supported-params; T2-12
+                                 :profile/supported-params
                                  enforces drop+warn)"
   [spec]
   (cond-> {:profile/id (:id spec)
@@ -388,7 +388,7 @@
 (def ^:private compat-provider-ids
   [:openai :openrouter :deepseek :kimi :kimi-code
    :mistral :groq :cerebras :together :xai :huggingface
-   ;; T2-19 aggregator aliases — all share the OpenAI chat wire shape.
+   ;; Aggregator aliases all share the OpenAI chat wire shape.
    :sambanova :deepinfra :lambda :nebius :hyperbolic :novita
    :friendliai :featherless :cloudflare :dashscope :volcengine])
 
@@ -398,7 +398,7 @@
      (assoc p :profile/transport-constructor make-transport))))
 
 ;; ---------------------------------------------------------------------------
-;; Azure OpenAI deployment routing (T2-05)
+;; Azure OpenAI deployment routing
 ;;
 ;; Azure differs from openai.com on URL shape and (optionally) auth
 ;; header — body is identical. The URL builder pattern keeps the chat

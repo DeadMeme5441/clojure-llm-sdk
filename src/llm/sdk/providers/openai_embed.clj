@@ -4,9 +4,8 @@
    Same auth and base-url plumbing as the chat adapter; we share the
    profile, just register an additional :profile/embed-transport-
    constructor on it. Other OpenAI-compat hosts that offer embeddings
-   (DeepSeek, Together, NVIDIA NIM, etc.) can reuse this transport by
-   attaching the same constructor — that's the T2-07 scope. For T2-01
-   we ship the OpenAI registration only."
+   (Mistral, Together, Voyage, Jina, etc.) can reuse this transport by
+   attaching the same constructor."
   (:require [llm.sdk.transport.embed :as et]
             [llm.sdk.provider :as provider]
             [llm.sdk.usage :as usage]

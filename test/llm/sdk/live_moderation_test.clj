@@ -1,5 +1,5 @@
 (ns llm.sdk.live-moderation-test
-  "Live smoke for OpenAI Moderations (T2-13). The endpoint is free —
+  "Live smoke for OpenAI Moderations. The endpoint is free —
    OpenAI does not bill for moderation calls.
 
    To run only this suite:

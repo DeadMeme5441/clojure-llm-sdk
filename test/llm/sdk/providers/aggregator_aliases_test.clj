@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.aggregator-aliases-test
-  "Coverage for the T2-19 aggregator OpenAI-compat alias profiles.
+  "Coverage for aggregator OpenAI-compatible alias profiles.
 
    These are pure config additions — base-url + env-var + the openai-
    chat transport. Each profile is verified to register with the right

@@ -122,7 +122,7 @@
             (is (pos? (get-in gpt4o [:model/cost :input-per-million])))))))))
 
 ;; ---------------------------------------------------------------------------
-;; T2-03 OpenAI-compat aliases — all five share OpenAI /v1/models shape
+;; OpenAI-compatible alias model catalogs
 ;; ---------------------------------------------------------------------------
 
 (deftest ^:live live-mistral-models

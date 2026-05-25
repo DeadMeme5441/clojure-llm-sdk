@@ -1,5 +1,5 @@
 (ns llm.sdk.live-cohere-chat-test
-  "Live smoke for the native Cohere /v2/chat adapter (T2-02).
+  "Live smoke for the native Cohere /v2/chat adapter.
    Env-gated on COHERE_API_KEY. Hits command-r-08-2024 (cheaper than
    command-r-plus) with a single-sentence prompt to keep cost minimal.
 

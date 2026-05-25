@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.voyage-rerank-test
-  "Adapter-level coverage for the Voyage rerank transport (T2-16).
+  "Adapter-level coverage for the Voyage rerank transport.
    Voyage diverges from Cohere/Jina on field names: top_k / data."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.io :as io]

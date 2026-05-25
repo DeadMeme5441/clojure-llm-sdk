@@ -1,5 +1,5 @@
 (ns llm.sdk.embed-test
-  "Driver + schema coverage for sdk/embed (T2-01).
+  "Driver + schema coverage for sdk/embed.
 
    Tests here cover the protocol contract and driver error paths.
    Adapter-specific request/response shape lives in
@@ -56,7 +56,7 @@
 
 (deftest test-embed-provider-without-embed-support
   (testing "non-embed provider throws a clear error"
-    ;; :anthropic has no embed-transport-constructor; T2-01 only wires :openai.
+    ;; :anthropic has no embed-transport-constructor.
     (is (thrown-with-msg? Exception #"Embedding not supported"
           (sdk/embed :anthropic
                      {:embed/model "x" :embed/inputs ["a"]})))))

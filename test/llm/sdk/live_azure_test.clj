@@ -1,5 +1,5 @@
 (ns llm.sdk.live-azure-test
-  "Live smoke for Azure OpenAI deployment routing (T2-05).
+  "Live smoke for Azure OpenAI deployment routing.
 
    Needs three env vars: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT,
    and AZURE_OPENAI_DEPLOYMENT. Optional: AZURE_OPENAI_API_VERSION

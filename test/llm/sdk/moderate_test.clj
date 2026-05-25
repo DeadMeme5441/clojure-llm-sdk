@@ -1,5 +1,5 @@
 (ns llm.sdk.moderate-test
-  "Driver + schema coverage for sdk/moderate (T2-13). Adapter-specific
+  "Driver + schema coverage for sdk/moderate. Adapter-specific
    request/response shape lives in
    providers/openai-moderation-test."
   (:require [clojure.test :refer [deftest is testing]]

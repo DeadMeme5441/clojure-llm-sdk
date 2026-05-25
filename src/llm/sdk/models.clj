@@ -10,7 +10,7 @@
    one unified view per (provider, model).
 
    Providers without a public /models endpoint (Codex, Codex-backend,
-   Bedrock, Fake) throw :error :unsupported on fetch — callers should
+   Bedrock, Fake) throw :error :unsupported on fetch - callers should
    route those through models.dev / snapshot layers only."
   (:require [clojure.string :as str]
             [malli.core :as m]
@@ -69,12 +69,12 @@
                       {:status status :url url :body (:body resp)})))))
 
 ;; ---------------------------------------------------------------------------
-;; Parsers (per wire shape) — public so tests can drive them with fixtures
+;; Parsers (per wire shape) - public so tests can drive them with fixtures
 ;; ---------------------------------------------------------------------------
 
 (defn parse-openai-style
   "Shape: {object 'list', data [{id, object, created, owned_by}]}.
-   Used by OpenAI, DeepSeek, Kimi — none surface context length or
+   Used by OpenAI, DeepSeek, Kimi - none surface context length or
    pricing via /models, so entries are id-only."
   [body provider-id source-url]
   (let [ts (now)]
@@ -118,8 +118,8 @@
 
 (defn parse-gemini-models
   "Shape (Gemini Native + Vertex):
-     Native — {models [{name 'models/gemini-2.5-pro', ...}]}
-     Vertex — {publisherModels [{name 'publishers/google/models/...', ...}]}
+     Native - {models [{name 'models/gemini-2.5-pro', ...}]}
+     Vertex - {publisherModels [{name 'publishers/google/models/...', ...}]}
    Each entry carries displayName, inputTokenLimit, outputTokenLimit,
    supportedGenerationMethods (mapped to capability keywords)."
   [body provider-id source-url]
@@ -143,7 +143,7 @@
 
 (defn- parse-decimal-string
   "OpenRouter encodes per-token pricing as decimal strings. Convert to
-   per-million (USD) — returns nil for nil/empty/malformed input."
+   per-million (USD) - returns nil for nil/empty/malformed input."
   [s]
   (when (and s (string? s) (seq s))
     (try (* (Double/parseDouble s) 1000000.0)
@@ -190,7 +190,7 @@
           (:data body))))
 
 ;; ---------------------------------------------------------------------------
-;; Vertex auth — full ADC chain, same code path as sdk/complete uses
+;; Vertex auth - full ADC chain, same code path as sdk/complete uses
 ;; for actual chat requests. See llm.sdk.gcp-auth for the resolution
 ;; order (provider-opts > env bearer > SA JSON > authorized_user
 ;; well-known file > GCE metadata server).
@@ -199,7 +199,7 @@
 (defn- vertex-auth-token
   "Resolve a Vertex OAuth token via the same ADC chain that sdk/complete
    uses for chat requests. /models fetches don't carry a request map,
-   so we pass an empty one — every layer of the chain still gets a
+   so we pass an empty one - every layer of the chain still gets a
    chance via env, well-known file, or metadata server.
 
    Falls back to a synthetic profile when get-provider returns nil
@@ -241,7 +241,7 @@
 (defmethod fetch-models :together [_] (openai-style-fetch :together))
 (defmethod fetch-models :xai [_] (openai-style-fetch :xai))
 (defmethod fetch-models :huggingface [_] (openai-style-fetch :huggingface))
-;; T2-19 — aggregators expose OpenAI-style /v1/models, though some
+;; Aggregators expose OpenAI-style /v1/models, though some
 ;; (e.g. Cloudflare with its per-account URL) require correctly
 ;; configured base-urls before a fetch will succeed.
 (defmethod fetch-models :sambanova [_] (openai-style-fetch :sambanova))
@@ -283,7 +283,7 @@
                          (System/getenv "GOOGLE_CLOUD_LOCATION"))
         ;; The Vertex /publishers/google/models catalog endpoint does
         ;; NOT serve location=global (returns 404). Fall back to a
-        ;; regional host for the catalog probe only — chat completion
+        ;; regional host for the catalog probe only - chat completion
         ;; elsewhere keeps honouring whatever the user configured.
         location (cond
                    (nil? raw-location) "us-central1"
@@ -298,7 +298,7 @@
                       {:provider :vertex-gemini :error :missing-config})))
     (let [;; The catalog is at /v1beta1/publishers/google/models on the
           ;; regional aiplatform host. It's NOT project-scoped in the
-          ;; path — the project is supplied via the X-Goog-User-Project
+          ;; path - the project is supplied via the X-Goog-User-Project
           ;; quota header instead.
           url (str "https://" location "-aiplatform.googleapis.com/v1beta1/publishers/google/models")
           token (vertex-auth-token)

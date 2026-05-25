@@ -1,6 +1,6 @@
 (ns llm.sdk.transport.moderate
   "Sibling protocol to llm.sdk.transport/Transport, scoped to
-   moderation endpoints (T2-13).
+   moderation endpoints.
 
    Moderation doesn't stream, doesn't take tools, and returns boolean
    flags + per-category scores. We keep the protocol narrow on

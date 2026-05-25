@@ -3,10 +3,10 @@
 
    Cohere is OpenAI-compat-ish but differs enough to need its own
    adapter: it has a typed message-content array, a documents field,
-   a citation_options control, citations on the response (mapped to
-   :part/type :citation introduced in T2-04), and a streaming event
-   taxonomy with separate content-start / content-delta / content-end
-   plus tool-plan-delta and citation-* events.
+   a citation_options control, citations on the response, and a
+   streaming event taxonomy with separate content-start /
+   content-delta / content-end plus tool-plan-delta and citation-*
+   events.
 
    Reference: litellm-ref/llms/cohere/chat/v2_transformation.py."
   (:require [clojure.string :as str]

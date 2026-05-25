@@ -1,6 +1,6 @@
 (ns llm.sdk.litellm-snapshot
   "Read-only loader for the LiteLLM-derived pricing/capability snapshot
-   bundled at resources/litellm-snapshot.json (T2-17).
+   bundled at resources/litellm-snapshot.json.
 
    LiteLLM maintains an actively-curated catalog of ~2.7k model entries
    keyed by their provider's model id. The bundled snapshot is a

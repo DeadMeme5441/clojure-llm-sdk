@@ -198,8 +198,8 @@
   ;; partners internally — the SDK just talks one wire shape.
   ;;
   ;; TGI / self-hosted users register their own profile with a custom
-  ;; base-url; the :profile/url-builder hook from T2-05 is available
-  ;; for fancier URL shapes.
+  ;; base-url; the :profile/url-builder hook is available for fancier
+  ;; URL shapes.
   (register-provider
    (mk-provider :huggingface :openai-chat "https://router.huggingface.co/v1" :bearer
                 :profile/env-var-names ["HF_TOKEN"]
@@ -221,10 +221,10 @@
                 :profile/supported-params #{:request/temperature :request/top-p
                                             :request/max-tokens :request/stop
                                             :request/response-format}))
-  ;; --- Embedding-first providers (T2-07) ---
+  ;; --- Embedding-first providers ---
   ;; Cohere has its own embed wire shape (texts, input_type,
   ;; embedding_types) and its own embed transport — chat support
-  ;; lands separately under T2-02.
+  ;; lands separately.
   (register-provider
    (mk-provider :cohere :cohere-chat "https://api.cohere.com/v1" :bearer
                 :profile/env-var-names ["COHERE_API_KEY"]
@@ -243,7 +243,7 @@
                 :profile/env-var-names ["JINA_API_KEY"]
                 :profile/capabilities #{:embedding :rerank}
                 :profile/supports-model-listing false))
-  ;; --- Aggregator OpenAI-compat aliases (T2-19) ---
+  ;; --- Aggregator OpenAI-compat aliases ---
   ;; Long-tail inference aggregators. Each is identical to :openai
   ;; in wire shape — only the base-url and env-var differ — so the
   ;; openai-chat transport handles them via the same compat-provider-

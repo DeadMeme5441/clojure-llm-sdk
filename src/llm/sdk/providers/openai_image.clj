@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.openai-image
-  "OpenAI image generation adapter (T2-10).
+  "OpenAI image generation adapter.
 
    POST {base}/images/generations. Covers DALL-E 3, DALL-E 2, and
    the gpt-image-1 family. The wire body differs subtly across them

@@ -1,5 +1,5 @@
 (ns llm.sdk.image-test
-  "Driver + schema coverage for sdk/generate-image (T2-10). Adapter-
+  "Driver + schema coverage for sdk/generate-image. Adapter-
    specific shape lives in providers/openai-image-test."
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk :as sdk]

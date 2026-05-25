@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.perplexity-test
-  "Coverage for the Perplexity adapter (T2-04) and the CitationPart /
+  "Coverage for the Perplexity adapter and the CitationPart /
    stream/citation schema additions.
 
    Live smoke lives in llm.sdk.live-perplexity-test."

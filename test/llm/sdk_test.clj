@@ -1,7 +1,7 @@
 (ns llm.sdk-test
   "Tests for the public llm.sdk surface — specifically the
    registry-backed list-models / model-capabilities / model-info /
-   refresh-models! API added by Task 1."
+   refresh-models! API."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [llm.sdk :as sdk]
             [llm.sdk.http :as http]
