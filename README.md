@@ -1,10 +1,12 @@
 # clojure-llm-sdk
 
+[![CI](https://github.com/DeadMeme5441/clojure-llm-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/DeadMeme5441/clojure-llm-sdk/actions/workflows/ci.yml)
+
 A production-quality Clojure SDK for LLM providers — LiteLLM-style canonicalization, but stricter, less lossy, and with first-class support for provider-specific replay state (thinking signatures, encrypted reasoning, assistant phases).
 
 > **This is a provider SDK, not an agent framework.** It owns provider weirdness so your application doesn't have to. It does not import credential pools, CLI runtimes, plugin scanning, observability sinks, secret managers, or proxy/router/budget machinery — those are app concerns.
 
-The SDK ships **35 registered provider profiles** across **seven canonical modalities** (chat, embeddings, moderation, rerank, image generation, audio transcription, text-to-speech), plus a `with-fallbacks` helper for sequential provider fallback. See [doc/litellm-parity-survey.md](doc/litellm-parity-survey.md) for the full design rationale and what was deliberately left out.
+The SDK ships **36 registered provider profiles** across **seven canonical modalities** (chat, embeddings, moderation, rerank, image generation, audio transcription, text-to-speech), plus a `with-fallbacks` helper for sequential provider fallback. See [doc/litellm-parity-survey.md](doc/litellm-parity-survey.md) for the full design rationale and what was deliberately left out.
 
 ## Installation
 
@@ -14,6 +16,19 @@ Add to `deps.edn`:
 com.deadmeme5441/clojure-llm-sdk {:git/url "https://github.com/DeadMeme5441/clojure-llm-sdk"
                                    :git/sha "LATEST_SHA"}
 ```
+
+## Documentation
+
+Start with the library docs:
+
+- [Getting started](doc/getting-started.md) - install the library, make the first request, stream responses, and run a tool-call turn.
+- [API reference](doc/api-reference.md) - public functions and canonical request shapes by modality.
+- [Provider configuration](doc/provider-configuration.md) - credentials, provider ids, Kimi Code, Azure deployments, custom aliases, and live model listing.
+- [Canonical response contract](doc/canonical-response.md) - response, usage, cost, cache, provider-data, and streaming semantics.
+- [Model registry and pricing](doc/model-registry.md) - offline snapshots, live model refresh, overrides, and cost estimation.
+- [LiteLLM parity survey](doc/litellm-parity-survey.md) - design rationale, provider coverage, and explicit non-goals.
+
+Project process docs live in [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick Start
 
@@ -257,6 +272,8 @@ ANTHROPIC_API_KEY=sk-ant-api03-...
 GEMINI_API_KEY=AIza...
 OPENROUTER_API_KEY=sk-or-...
 ```
+
+Use [.env.example](.env.example) as the non-secret template for local live smoke tests.
 
 ## Architecture
 
@@ -769,10 +786,16 @@ Tests run with the cache dir bound to a sandbox so they never touch
 # paid call into a default run.
 clj -M:test
 
+# Lint. CI runs this before tests.
+clj-kondo --lint src test
+
 # Opt-in live runner. Narrows to live_*.clj namespaces AND requires
 # ^:live metadata, so a stray non-live deftest in a live_* file
 # still wouldn't trigger a paid call.
 source .env && clj -M:live-test
+
+# Build the distributable jar and generated POM.
+clojure -T:build jar
 ```
 
 Live tests are tagged `^:live` (or `^:integration` for the historical
