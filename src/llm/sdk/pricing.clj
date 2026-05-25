@@ -74,9 +74,11 @@
     (when (or (:input-per-million c)
               (:output-per-million c)
               (:image-per-image c)
+              (:image-per-megapixel c)
               (:transcription-per-minute c)
               (:tts-per-million-chars c)
-              (:search-per-call c))
+              (:search-per-call c)
+              (:request-cost c))
       (pricing-entry
        :input (:input-per-million c)
        :output (:output-per-million c)
@@ -200,30 +202,76 @@
     (number? x) (try (bigdec x) (catch Exception _ 0M))
     :else 0M))
 
+(defn- positive-count? [x]
+  (and (number? x) (pos? x)))
+
+(defn- token-pricing-present? [pricing]
+  (some some?
+        [(:input-cost-per-million pricing)
+         (:output-cost-per-million pricing)
+         (:cache-read-cost-per-million pricing)
+         (:cache-write-cost-per-million pricing)]))
+
+(defn- missing-token-rate-fields [usage pricing]
+  (when (token-pricing-present? pricing)
+    (cond-> []
+      (and (positive-count? (:usage/input-tokens usage))
+           (nil? (:input-cost-per-million pricing)))
+      (conj :input-cost-per-million)
+      (and (positive-count? (:usage/output-tokens usage))
+           (nil? (:output-cost-per-million pricing)))
+      (conj :output-cost-per-million)
+      (and (positive-count? (:usage/cached-input-tokens usage))
+           (nil? (:cache-read-cost-per-million pricing)))
+      (conj :cache-read-cost-per-million)
+      (and (positive-count? (:usage/cache-write-tokens usage))
+           (nil? (:cache-write-cost-per-million pricing)))
+      (conj :cache-write-cost-per-million))))
+
+(defn- request-cost-amount [usage request-cost]
+  (when (some? request-cost)
+    (let [request-count (or (:usage/request-count usage) 1)]
+      (.multiply (safe-bigdec request-cost)
+                 (safe-bigdec request-count)))))
+
 (defn estimate-cost
   "Compute cost from canonical Usage and a pricing-entry. Returns a
    cost-result map. Pure — no registry lookup."
   [usage pricing]
   (if-not pricing
     (cost-result nil :unknown :none "No pricing data")
-    (let [{:keys [input-cost-per-million
-                  output-cost-per-million
-                  cache-read-cost-per-million
-                  cache-write-cost-per-million
+    (let [{:keys [input-cost-per-million output-cost-per-million
+                  cache-read-cost-per-million cache-write-cost-per-million
                   request-cost]} pricing
           input-tokens (:usage/input-tokens usage 0)
           output-tokens (:usage/output-tokens usage 0)
           cache-read (:usage/cached-input-tokens usage 0)
-          cache-write (:usage/cache-write-tokens usage 0)]
-      (if (and input-cost-per-million output-cost-per-million)
-        (let [amount (reduce + 0M
-                             [(per-million input-tokens input-cost-per-million)
-                              (per-million output-tokens output-cost-per-million)
-                              (per-million cache-read cache-read-cost-per-million)
-                              (per-million cache-write cache-write-cost-per-million)
-                              (safe-bigdec request-cost)])]
+          cache-write (:usage/cache-write-tokens usage 0)
+          missing (missing-token-rate-fields usage pricing)
+          pieces (cond-> []
+                   (some? input-cost-per-million)
+                   (conj (per-million input-tokens input-cost-per-million))
+                   (some? output-cost-per-million)
+                   (conj (per-million output-tokens output-cost-per-million))
+                   (some? cache-read-cost-per-million)
+                   (conj (per-million cache-read cache-read-cost-per-million))
+                   (some? cache-write-cost-per-million)
+                   (conj (per-million cache-write cache-write-cost-per-million))
+                   (some? request-cost)
+                   (conj (request-cost-amount usage request-cost)))
+          amount (when (seq pieces) (reduce + 0M pieces))]
+      (cond
+        (seq missing)
+        (cost-result amount :estimated (:source pricing)
+                     "Incomplete token pricing data"
+                     :notes [(str "Missing pricing fields: "
+                                  (str/join ", " (map name missing)))])
+        (some? amount)
+        (let [request-count (or (:usage/request-count usage) 1)]
           (cost-result amount :actual (:source pricing)
-                       (str "Tokens: " input-tokens " in / " output-tokens " out")))
+                       (str "Usage: " input-tokens " in / " output-tokens
+                            " out / " request-count " request(s)")))
+        :else
         (cost-result nil :estimated (:source pricing)
                      "Incomplete pricing data")))))
 
@@ -279,6 +327,8 @@
          :cost/breakdown
          (cond-> {:input-tokens (:usage/input-tokens usage 0)
                   :output-tokens (:usage/output-tokens usage 0)}
+           (some? (:usage/request-count usage))
+           (assoc :request-count (:usage/request-count usage))
            (some? (:usage/cached-input-tokens usage))
            (assoc :cached-input-tokens (:usage/cached-input-tokens usage))
            (some? (:usage/cache-write-tokens usage))
@@ -290,7 +340,19 @@
            (:cache-read-cost-per-million pricing)
            (assoc :cache-read-cost-per-million (:cache-read-cost-per-million pricing))
            (:cache-write-cost-per-million pricing)
-           (assoc :cache-write-cost-per-million (:cache-write-cost-per-million pricing)))}
+           (assoc :cache-write-cost-per-million (:cache-write-cost-per-million pricing))
+           (:request-cost pricing)
+           (assoc :request-cost (:request-cost pricing))
+           (:image-cost-per-image pricing)
+           (assoc :image-cost-per-image (:image-cost-per-image pricing))
+           (:image-cost-per-megapixel pricing)
+           (assoc :image-cost-per-megapixel (:image-cost-per-megapixel pricing))
+           (:transcription-cost-per-minute pricing)
+           (assoc :transcription-cost-per-minute (:transcription-cost-per-minute pricing))
+           (:tts-cost-per-million-chars pricing)
+           (assoc :tts-cost-per-million-chars (:tts-cost-per-million-chars pricing))
+           (:search-cost-per-call pricing)
+           (assoc :search-cost-per-call (:search-cost-per-call pricing)))}
 
         :else
         {:cost/usd :unknown

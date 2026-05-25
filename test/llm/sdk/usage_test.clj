@@ -36,6 +36,18 @@
     (is (= 100 (:usage/output-tokens u)))
     (is (= 50 (:usage/cached-input-tokens u)))))
 
+(deftest test-normalize-codex-usage
+  (let [u (usage/normalize-codex-usage
+           {:input_tokens 1000
+            :output_tokens 500
+            :total_tokens 1500
+            :input_tokens_details {:cached_tokens 200
+                                   :cache_creation_tokens 50}})]
+    (is (= 750 (:usage/input-tokens u)))
+    (is (= 500 (:usage/output-tokens u)))
+    (is (= 200 (:usage/cached-input-tokens u)))
+    (is (= 50 (:usage/cache-write-tokens u)))))
+
 (deftest test-normalize-usage-dispatch
   (is (= 10 (:usage/input-tokens (usage/normalize-usage :openai {:prompt_tokens 10}))))
   (is (= 10 (:usage/input-tokens (usage/normalize-usage :anthropic {:input_tokens 10}))))
