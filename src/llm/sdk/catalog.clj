@@ -24,7 +24,7 @@
    OpenAI catalog; :vertex-gemini reuses Google's via models.dev's
    `google-vertex` entry). Single-arg lookups walk this order so
    ambiguous ids resolve to the native provider first."
-  [:openai :anthropic :gemini-native :openrouter :deepseek :kimi
+  [:openai :anthropic :gemini-native :openrouter :deepseek :kimi :kimi-code
    :mistral :groq :cerebras :together :xai :perplexity :huggingface
    :cohere :voyage :jina
    :sambanova :deepinfra :lambda :nebius :hyperbolic :novita

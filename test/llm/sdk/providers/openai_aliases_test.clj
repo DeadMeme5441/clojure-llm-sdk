@@ -6,7 +6,7 @@
      - every shipped alias resolves to the right base-url, env-vars,
        capabilities, and transport constructor
      - the :drops quirk strips body keys for Mistral
-     - existing aliases (:deepseek :kimi) still work after the move out
+     - existing aliases (:deepseek :kimi :kimi-code) still work after the move out
        of provider.clj's built-ins
      - models/supported-providers + catalog provider-preference-order
        know about the new ids
@@ -87,18 +87,44 @@
         (is (contains? (:profile/capabilities p) :chat) (str id " can chat"))))))
 
 (deftest test-deepseek-kimi-carry-transport-constructor
-  (testing "deepseek and kimi (and everything else under :openai-chat) get a constructor"
+  (testing "deepseek, kimi, and kimi-code get a constructor"
     (let [ds (provider/get-provider :deepseek)
-          k (provider/get-provider :kimi)]
+          k (provider/get-provider :kimi)
+          kc (provider/get-provider :kimi-code)]
       (is (= "https://api.deepseek.com/v1" (:profile/base-url ds)))
       (is (fn? (:profile/transport-constructor ds)))
       (is (= "https://api.moonshot.cn/v1" (:profile/base-url k)))
+      (is (= ["MOONSHOT_API_KEY"] (:profile/env-var-names k)))
       ;; This was a latent bug pre-T2-03 — the doseq attaching
       ;; constructors only covered [:openai :openrouter :deepseek] and
       ;; silently skipped :kimi. T2-03's compat-provider-ids list
       ;; closes that gap.
       (is (fn? (:profile/transport-constructor k))
-          ":kimi finally carries a transport-constructor"))))
+          ":kimi finally carries a transport-constructor")
+      (is (= "https://api.kimi.com/coding/v1" (:profile/base-url kc)))
+      (is (= ["KIMI_API_KEY"] (:profile/env-var-names kc)))
+      (is (false? (:profile/supports-model-listing kc)))
+      (is (fn? (:profile/transport-constructor kc))
+          ":kimi-code carries a transport-constructor"))))
+
+(deftest test-kimi-code-build-request-url-auth-and-client-headers
+  (testing "Kimi Code uses the coding endpoint plus KimiCLI identity headers"
+    (let [t (openai/make-transport)
+          profile (provider/get-provider :kimi-code)
+          built (with-redefs [provider/resolve-auth-token (constantly "stub-token")]
+                  (transport/build-request
+                   t profile
+                   {:request/model "kimi-for-coding"
+                    :request/messages [{:message/role :user
+                                        :message/content "Hi"}]}))
+          headers (:headers built)]
+      (is (= "https://api.kimi.com/coding/v1/chat/completions" (:url built)))
+      (is (= "Bearer stub-token" (get headers "Authorization")))
+      (is (= "kimi_cli" (get headers "X-Msh-Platform")))
+      (is (string? (get headers "X-Msh-Version")))
+      (is (string? (get headers "X-Msh-Device-Id")))
+      (is (string? (get headers "User-Agent")))
+      (is (= "kimi-for-coding" (get-in built [:body :model]))))))
 
 ;; ---------------------------------------------------------------------------
 ;; build-request goes to the right URL with the right header
@@ -194,5 +220,5 @@
     (is (contains? ids :cerebras))
     (is (contains? ids :together))
     (is (contains? ids :xai))
-    (is (contains? ids :huggingface))))
-
+    (is (contains? ids :huggingface))
+    (is (contains? ids :kimi-code))))

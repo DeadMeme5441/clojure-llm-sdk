@@ -163,7 +163,19 @@
                  (when (seq (:message/content msg))
                    [{:type "message" :role "assistant"
                      :status "completed"
-                     :content [{:type "output_text" :text (t/content->string (:message/content msg))}]}]))]
+                     :content [{:type "output_text" :text (t/content->string (:message/content msg))}]}])
+                 ;; Replay tool calls as function_call input items so the
+                 ;; matching function_call_output (from a later :tool
+                 ;; message) can be linked. Required by the Responses
+                 ;; API on multi-turn conversations that lack
+                 ;; previous_response_id continuity.
+                 (when-let [tcs (seq (:message/tool-calls msg))]
+                   (mapv (fn [tc]
+                           {:type "function_call"
+                            :call_id (:tool-call/id tc)
+                            :name    (:tool-call/name tc)
+                            :arguments (or (:tool-call/arguments tc) "")})
+                         tcs)))]
       (if (seq items)
         items
         {:role "assistant" :content ""}))

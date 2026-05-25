@@ -1,5 +1,8 @@
 (ns llm.sdk.provider
-  "Provider profile registry and lookup.")
+  "Provider profile registry and lookup."
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str])
+  (:import [java.net InetAddress]))
 
 ;; ---------------------------------------------------------------------------
 ;; Registry
@@ -73,6 +76,43 @@
     :profile/quirks {}}
    opts))
 
+(defn- trimmed-file-content [path]
+  (try
+    (let [f (io/file path)]
+      (when (.isFile f)
+        (not-empty (str/trim (slurp f)))))
+    (catch Throwable _ nil)))
+
+(defn- local-host-name []
+  (try
+    (not-empty (.getHostName (InetAddress/getLocalHost)))
+    (catch Throwable _ nil)))
+
+(defn- kimi-code-headers
+  "Non-secret client identity headers required by Kimi Code's coding
+   endpoint. Auth still comes from KIMI_API_KEY."
+  []
+  (let [home (System/getProperty "user.home")
+        version (or (not-empty (System/getenv "KIMI_CLI_VERSION"))
+                    (trimmed-file-content (str home "/.kimi/latest_version.txt"))
+                    "1.37.0")
+        device-id (or (not-empty (System/getenv "KIMI_DEVICE_ID"))
+                      (trimmed-file-content (str home "/.kimi/device_id"))
+                      "clojure-llm-sdk")]
+    {"User-Agent" (or (not-empty (System/getenv "KIMI_USER_AGENT"))
+                      (str "KimiCLI/" version))
+     "X-Msh-Platform" "kimi_cli"
+     "X-Msh-Version" version
+     "X-Msh-Device-Id" device-id
+     "X-Msh-Device-Name" (or (not-empty (System/getenv "KIMI_DEVICE_NAME"))
+                             (local-host-name)
+                             "clojure-llm-sdk")
+     "X-Msh-Device-Model" (or (not-empty (System/getenv "KIMI_DEVICE_MODEL"))
+                              (str (System/getProperty "os.name") " "
+                                   (System/getProperty "os.arch")))
+     "X-Msh-Os-Version" (or (not-empty (System/getenv "KIMI_OS_VERSION"))
+                            (System/getProperty "os.version"))}))
+
 (defn register-built-in-providers
   "Register the built-in provider profiles."
   []
@@ -116,8 +156,15 @@
                                  :reasoning-content-echo true}))
   (register-provider
    (mk-provider :kimi :openai-chat "https://api.moonshot.cn/v1" :bearer
+                :profile/env-var-names ["MOONSHOT_API_KEY"]
+                :profile/capabilities #{:chat :streaming :tools :reasoning}
+                :profile/quirks {:thinking-explicit true}))
+  (register-provider
+   (mk-provider :kimi-code :openai-chat "https://api.kimi.com/coding/v1" :bearer
                 :profile/env-var-names ["KIMI_API_KEY"]
                 :profile/capabilities #{:chat :streaming :tools :reasoning}
+                :profile/default-headers (kimi-code-headers)
+                :profile/supports-model-listing false
                 :profile/quirks {:thinking-explicit true}))
   (register-provider
    (mk-provider :mistral :openai-chat "https://api.mistral.ai/v1" :bearer
