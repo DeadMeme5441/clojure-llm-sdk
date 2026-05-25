@@ -1,8 +1,7 @@
 (ns llm.sdk.transport
   "Transport protocol definition. A transport owns the translation between
    canonical SDK shapes and provider-native wire formats."
-  (:require [clojure.string :as str]
-            [llm.sdk.schema :as schema]))
+  (:require [clojure.string :as str]))
 
 ;; ---------------------------------------------------------------------------
 ;; Protocol

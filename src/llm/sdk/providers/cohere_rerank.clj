@@ -8,7 +8,6 @@
    through the canonical :response/usage where possible."
   (:require [llm.sdk.transport.rerank :as rt]
             [llm.sdk.provider :as provider]
-            [llm.sdk.usage :as usage]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------

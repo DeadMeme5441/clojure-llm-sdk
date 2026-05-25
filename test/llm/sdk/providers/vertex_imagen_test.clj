@@ -1,17 +1,8 @@
 (ns llm.sdk.providers.vertex-imagen-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.image :as it]
             [llm.sdk.providers.vertex-imagen :as imagen]))
-
-(defn- with-env [bindings f]
-  (let [orig (into {} (map (fn [k] [k (System/getenv k)]) (keys bindings)))]
-    (try
-      ;; We can't actually set env vars from JVM; emulate by passing
-      ;; provider-options instead. This helper exists so the tests
-      ;; document the env-var path even though they hand-feed values.
-      (f orig)
-      (finally nil))))
 
 (deftest test-build-request-defaults
   (let [t (imagen/make-transport)

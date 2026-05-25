@@ -9,7 +9,6 @@
             [llm.sdk.transport :as t]
             [llm.sdk.provider :as provider]
             [llm.sdk.providers.openai-chat :as openai]
-            [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
             [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]))
@@ -101,7 +100,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-error-openrouter
-  [profile status body]
+  [_profile status body]
   (errors/classify-error (Exception. "OpenRouter API error")
                          :status status
                          :body body
@@ -113,19 +112,19 @@
 
 (defrecord OpenRouterTransport []
   t/Transport
-  (build-request [this profile request]
+  (build-request [_this profile request]
     (build-request-openrouter profile request))
 
-  (parse-response [this profile raw]
+  (parse-response [_this profile raw]
     (parse-response-openrouter profile raw))
 
-  (parse-stream-event [this profile line]
+  (parse-stream-event [_this profile line]
     (parse-stream-event-openrouter profile line))
 
-  (parse-error [this profile status body]
+  (parse-error [_this profile status body]
     (parse-error-openrouter profile status body))
 
-  (normalize-usage [this profile raw]
+  (normalize-usage [_this _profile raw]
     (usage/normalize-usage :openrouter raw))
 
   (request-capabilities [_]

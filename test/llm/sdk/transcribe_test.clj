@@ -1,6 +1,5 @@
 (ns llm.sdk.transcribe-test
-  (:require [clojure.test :refer [deftest is testing]]
-            [clojure.java.io :as io]
+  (:require [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.transcribe :as tt]
             [llm.sdk.providers.openai-transcribe :as openai-tx]))

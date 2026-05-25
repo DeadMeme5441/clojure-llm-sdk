@@ -18,6 +18,24 @@
     (is (= "user" (get-in built [:body :contents 0 :role])))
     (is (= "Sys" (get-in built [:body :systemInstruction :parts 0 :text])))))
 
+(deftest test-build-request-generation-config-preserves-all-options
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        req {:request/model "gemini-2.5-flash"
+             :request/messages [{:message/role :user :message/content "Hi"}]
+             :request/temperature 0.2
+             :request/top-p 0.9
+             :request/max-tokens 7
+             :request/stop ["END"]
+             :request/reasoning {:enabled true}}
+        built (transport/build-request t profile req)]
+    (is (= {:temperature 0.2
+            :topP 0.9
+            :maxOutputTokens 7
+            :stopSequences ["END"]
+            :thinkingConfig {:includeThoughts true}}
+           (get-in built [:body :generationConfig])))))
+
 (deftest test-build-request-stream-uses-stream-endpoint
   (testing "streaming flips the URL suffix to :streamGenerateContent?alt=sse"
     (let [t (gemini/make-transport)

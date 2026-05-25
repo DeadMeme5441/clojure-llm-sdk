@@ -3,8 +3,7 @@
             [clojure.string :as str]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.codex :as codex]
-            [llm.sdk.stream :as stream]))
+            [llm.sdk.providers.codex :as codex]))
 
 (deftest test-build-request-basic
   (let [t (codex/make-transport)
@@ -101,38 +100,38 @@
     (is (= "fc_123" (get-in resp [:response/tool-calls 0 :tool-call/provider-data :response_item_id])))))
 
 (deftest test-parse-response-empty-output
-  "When output is empty but output_text exists, synthesize a message item."
-  (let [t (codex/make-transport)
-        profile (provider/get-provider :codex)
-        raw {:id "resp_4"
-             :model "o3"
-             :output []
-             :output_text "Fallback text"
-             :status "completed"
-             :usage {:input_tokens 10 :output_tokens 5}}
-        resp (transport/parse-response t profile raw)]
-    (is (= :stop (:response/finish-reason resp)))
-    (is (= [{:part/type :text :text "Fallback text"}] (:response/parts resp)))))
+  (testing "empty output with output_text synthesizes a message item"
+    (let [t (codex/make-transport)
+          profile (provider/get-provider :codex)
+          raw {:id "resp_4"
+               :model "o3"
+               :output []
+               :output_text "Fallback text"
+               :status "completed"
+               :usage {:input_tokens 10 :output_tokens 5}}
+          resp (transport/parse-response t profile raw)]
+      (is (= :stop (:response/finish-reason resp)))
+      (is (= [{:part/type :text :text "Fallback text"}] (:response/parts resp))))))
 
 (deftest test-parse-response-incomplete-function
-  "Queued/in_progress function_call items should be skipped."
-  (let [t (codex/make-transport)
-        profile (provider/get-provider :codex)
-        raw {:id "resp_5"
-             :model "o3"
-             :output [{:type "function_call"
-                       :call_id "call_1"
-                       :name "get_weather"
-                       :arguments "{}"
-                       :status "in_progress"}
-                      {:type "message" :role "assistant" :status "completed"
-                       :content [{:type "output_text" :text "Done!"}]}]
-             :status "completed"
-             :usage {:input_tokens 10 :output_tokens 5}}
-        resp (transport/parse-response t profile raw)]
-    (is (= :stop (:response/finish-reason resp)))
-    (is (empty? (:response/tool-calls resp)))
-    (is (= 1 (count (:response/parts resp))))))
+  (testing "queued/in_progress function_call items are skipped"
+    (let [t (codex/make-transport)
+          profile (provider/get-provider :codex)
+          raw {:id "resp_5"
+               :model "o3"
+               :output [{:type "function_call"
+                         :call_id "call_1"
+                         :name "get_weather"
+                         :arguments "{}"
+                         :status "in_progress"}
+                        {:type "message" :role "assistant" :status "completed"
+                         :content [{:type "output_text" :text "Done!"}]}]
+               :status "completed"
+               :usage {:input_tokens 10 :output_tokens 5}}
+          resp (transport/parse-response t profile raw)]
+      (is (= :stop (:response/finish-reason resp)))
+      (is (empty? (:response/tool-calls resp)))
+      (is (= 1 (count (:response/parts resp)))))))
 
 (deftest test-parse-stream-content-delta
   (let [t (codex/make-transport)

@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.bedrock-image-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.image :as it]
             [llm.sdk.providers.bedrock-image :as bimage]))

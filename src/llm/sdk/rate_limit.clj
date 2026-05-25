@@ -1,4 +1,4 @@
-(ns llm.sdk.rate_limit
+(ns llm.sdk.rate-limit
   "Rate-limit header parsing and tracking."
   (:require [clojure.string :as str]))
 

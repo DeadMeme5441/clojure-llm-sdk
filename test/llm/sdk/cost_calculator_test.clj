@@ -2,7 +2,6 @@
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.pricing :as pricing]
             [llm.sdk.provider :as provider]
-            [llm.sdk.registry :as registry]
             ;; Ensure :perplexity is registered
             [llm.sdk.providers.perplexity]))
 

@@ -49,9 +49,9 @@
                 :int32 (.readInt in)
                 :int64 (.readLong in)
                 (:bytes :string)
-                (let [len (.readUnsignedShort in)]
-                  (let [bs (read-fully in len)]
-                    (if (= t :string) (String. bs StandardCharsets/UTF_8) bs)))
+                (let [len (.readUnsignedShort in)
+                      bs (read-fully in len)]
+                  (if (= t :string) (String. bs StandardCharsets/UTF_8) bs))
                 :timestamp (.readLong in)
                 :uuid (read-fully in 16)
                 (read-fully in 0))]
@@ -60,16 +60,15 @@
 (defn- read-headers [headers-bytes]
   (let [in (-> headers-bytes
                java.io.ByteArrayInputStream.
-               DataInputStream.)
-        out (transient {})]
+               DataInputStream.)]
     (try
-      (loop []
-        (when (pos? (.available in))
+      (loop [out (transient {})]
+        (if (pos? (.available in))
           (let [[k v] (read-header in)]
-            (assoc! out k v)
-            (recur))))
-      (catch EOFException _ nil))
-    (persistent! out)))
+            (recur (assoc! out k v)))
+          (persistent! out)))
+      (catch EOFException _
+        {}))))
 
 (defn read-frame
   "Read one frame from a DataInputStream. Returns

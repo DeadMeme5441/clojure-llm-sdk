@@ -128,24 +128,6 @@
   (boolean (read-codex-auth)))
 
 ;; ---------------------------------------------------------------------------
-;; Message status normalization
-;; ---------------------------------------------------------------------------
-
-(def ^:private valid-message-statuses #{"completed" "incomplete" "in_progress"})
-
-(defn- normalize-message-status
-  "Normalize a Responses assistant message status for replay.
-   The API accepts completed/incomplete/in_progress on replayed
-   assistant output messages."
-  [value]
-  (let [normalized (some-> value str str/lower-case
-                           (str/replace #"[- ]" "_")
-                           str/trim)]
-    (if (valid-message-statuses normalized)
-      normalized
-      "completed")))
-
-;; ---------------------------------------------------------------------------
 ;; Message conversion
 ;; ---------------------------------------------------------------------------
 
@@ -431,7 +413,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-stream-event-codex
-  [profile line]
+  [_profile line]
   (when-let [data (parse-sse-line line)]
     (let [t (:type data)]
       (cond
@@ -496,7 +478,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-error-codex
-  [profile status body]
+  [_profile status body]
   (errors/classify-error (Exception. "Codex API error")
                          :status status
                          :body body
@@ -508,19 +490,19 @@
 
 (defrecord CodexTransport []
   t/Transport
-  (build-request [this profile request]
+  (build-request [_this profile request]
     (build-request-codex profile request))
 
-  (parse-response [this profile raw]
+  (parse-response [_this profile raw]
     (parse-response-codex profile raw))
 
-  (parse-stream-event [this profile line]
+  (parse-stream-event [_this profile line]
     (parse-stream-event-codex profile line))
 
-  (parse-error [this profile status body]
+  (parse-error [_this profile status body]
     (parse-error-codex profile status body))
 
-  (normalize-usage [this profile raw]
+  (normalize-usage [_this _profile raw]
     (usage/normalize-usage :codex raw))
 
   (request-capabilities [_]
