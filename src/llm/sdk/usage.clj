@@ -137,7 +137,7 @@
   "Dispatch to the correct normalizer based on provider keyword."
   [provider raw-usage]
   (case provider
-    (:openai :openrouter :deepseek :kimi
+    (:openai :openrouter :deepseek :kimi :kimi-code
      :mistral :groq :cerebras :together :xai :perplexity :huggingface
      :sambanova :deepinfra :lambda :nebius :hyperbolic :novita
      :friendliai :featherless :cloudflare :dashscope :volcengine)

@@ -33,6 +33,7 @@
    :openrouter "openrouter"
    :deepseek "deepseek"
    :kimi "kimi-for-coding"
+   :kimi-code "kimi-for-coding"
    :mistral "mistral"
    :groq "groq"
    :cerebras "cerebras"
