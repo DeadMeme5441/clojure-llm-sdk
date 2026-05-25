@@ -279,15 +279,15 @@
                   :safety/category "gemini-safety"
                   :safety/severity (str (:safetyRatings candidate))
                   :safety/blocked (= finish-reason :content-filter)})]
-    {:response/provider (or (:profile/id profile) :gemini-native)
-     :response/model (:modelVersion raw)
-     :response/parts (cond-> canonical-parts safety (conj safety))
-     :response/tool-calls (not-empty tool-calls)
-     :response/finish-reason finish-reason
-     :response/usage (when usage-raw
-                       (usage/normalize-usage :gemini-native usage-raw))
-     :response/provider-data {:gemini/candidates (:candidates raw)}
-     :response/raw raw}))
+    (cond-> {:response/provider (or (:profile/id profile) :gemini-native)
+             :response/model (:modelVersion raw)
+             :response/parts (cond-> canonical-parts safety (conj safety))
+             :response/finish-reason finish-reason
+             :response/provider-data {:gemini/candidates (:candidates raw)}
+             :response/raw raw}
+      (seq tool-calls) (assoc :response/tool-calls tool-calls)
+      usage-raw (assoc :response/usage
+                       (usage/normalize-usage :gemini-native usage-raw)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing

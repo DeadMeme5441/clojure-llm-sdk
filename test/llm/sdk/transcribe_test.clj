@@ -1,6 +1,7 @@
 (ns llm.sdk.transcribe-test
   (:require [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
+            [llm.sdk.schema :as schema]
             [llm.sdk.transport.transcribe :as tt]
             [llm.sdk.providers.openai-transcribe :as openai-tx]))
 
@@ -47,7 +48,8 @@
         profile (provider/get-provider :openai)
         raw {:text "Hello there."}
         parsed (tt/parse-transcribe-response t profile raw)]
-    (is (= "Hello there." (:transcription/text parsed)))))
+    (is (= "Hello there." (:transcription/text parsed)))
+    (is (schema/validate-transcribe-response parsed))))
 
 (deftest test-parse-response-verbose-json
   (let [t (openai-tx/make-transport)
@@ -63,10 +65,12 @@
     (is (= "english" (:transcription/language parsed)))
     (is (= 1.42 (:transcription/duration-seconds parsed)))
     (is (= 1 (count (:transcription/segments parsed))))
-    (is (= 2 (count (:transcription/words parsed))))))
+    (is (= 2 (count (:transcription/words parsed))))
+    (is (schema/validate-transcribe-response parsed))))
 
 (deftest test-parse-response-plain-text
   (let [t (openai-tx/make-transport)
         profile (provider/get-provider :openai)
         parsed (tt/parse-transcribe-response t profile "plain transcript")]
-    (is (= "plain transcript" (:transcription/text parsed)))))
+    (is (= "plain transcript" (:transcription/text parsed)))
+    (is (schema/validate-transcribe-response parsed))))

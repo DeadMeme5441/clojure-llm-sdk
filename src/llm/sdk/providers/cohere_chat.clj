@@ -147,8 +147,8 @@
     (assoc :citation/url (or (:url c) (some :url (:sources c))))
     (:title c) (assoc :citation/title (:title c))
     (:text c) (assoc :citation/snippet (:text c))
-    (or (:start c) (:end c))
-    (assoc :citation/start (:start c) :citation/end (:end c))))
+    (and (int? (:start c)) (int? (:end c)))
+    (assoc :citation/text-range [(:start c) (:end c)])))
 
 (defn parse-response-cohere
   [_profile raw]
@@ -165,14 +165,14 @@
                           (:tool_calls msg)))
         citations (mapv citation->part (:citations msg))
         finish (or (get finish-reason-map (:finish_reason raw)) :stop)]
-    {:response/id (:id raw)
-     :response/provider :cohere
-     :response/model (or (:model raw) (:model raw))
-     :response/parts (into [] (concat text-parts tool-calls citations))
-     :response/tool-calls (not-empty tool-calls)
-     :response/finish-reason finish
-     :response/usage (usage->canonical (:usage raw))
-     :response/raw raw}))
+    (cond-> {:response/id (:id raw)
+             :response/provider :cohere
+             :response/model (:model raw)
+             :response/parts (into [] (concat text-parts tool-calls citations))
+             :response/finish-reason finish
+             :response/raw raw}
+      (seq tool-calls) (assoc :response/tool-calls tool-calls)
+      (:usage raw) (assoc :response/usage (usage->canonical (:usage raw))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Streaming

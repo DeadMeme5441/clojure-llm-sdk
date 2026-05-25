@@ -2,7 +2,8 @@
   "Public API for clojure-llm-sdk.
    Complete, embed, stream, list-models, capabilities, normalize-usage,
    estimate-cost, provider registration."
-  (:require [llm.sdk.provider :as provider]
+  (:require [clojure.string :as str]
+            [llm.sdk.provider :as provider]
             [llm.sdk.schema :as schema]
             [llm.sdk.transport :as transport]
             [llm.sdk.http :as http]
@@ -47,7 +48,8 @@
             [llm.sdk.providers.perplexity]
             [llm.sdk.providers.bedrock]
             [llm.sdk.providers.ollama-native]
-            [llm.sdk.providers.fake]))
+            [llm.sdk.providers.fake])
+  (:import [java.io BufferedReader InputStreamReader]))
 
 ;; ---------------------------------------------------------------------------
 ;; Provider discovery
@@ -119,6 +121,8 @@
 ;; Complete
 ;; ---------------------------------------------------------------------------
 
+(declare stamp)
+
 (defn- sign-if-needed [profile req] (aws-sigv4/maybe-sign profile req))
 
 (defn- validate-chat-request! [request]
@@ -143,15 +147,79 @@
     (->> (aws-eventstream/frame-seq body)
          (map aws-eventstream/frame->json)
          (mapcat (fn [frame]
-                   (let [ev (transport/parse-stream-event transport profile frame)]
-                     (cond
-                       (nil? ev) nil
-                       (sequential? ev) ev
-                       :else [ev])))))))
+                 (let [ev (transport/parse-stream-event transport profile frame)]
+                   (cond
+                     (nil? ev) nil
+                     (sequential? ev) ev
+                     :else [ev])))))))
+
+(defn- event->seq [ev]
+  (cond
+    (nil? ev) nil
+    (sequential? ev) ev
+    :else [ev]))
+
+(defn- collect-sse-events-until-end
+  "Read an SSE InputStream eagerly until EOF or the provider emits a
+   terminal :stream/end event, then close it. This is used by providers
+   that return SSE even for the public non-streaming complete path."
+  [transport profile body]
+  (with-open [reader (BufferedReader. (InputStreamReader. body))]
+    (loop [events []
+           lines []]
+      (if-let [line (.readLine reader)]
+        (let [parsed (vec (event->seq
+                           (transport/parse-stream-event transport profile line)))
+              events' (into events parsed)
+              lines' (conj lines line)]
+          (if (some #(= :stream/end (:event/type %)) parsed)
+            {:events events'
+             :raw (str (str/join "\n" lines') "\n")}
+            (recur events' lines')))
+        {:events events
+         :raw (str (str/join "\n" lines) "\n")}))))
+
+(defn- complete-sse-non-streaming
+  [transport profile req provider-id model]
+  (let [{:keys [status body]} (http/sse-response req)]
+    (if (and (number? status) (>= status 400))
+      (let [classified (transport/parse-error transport profile status body)]
+        (throw (ex-info "Provider API error"
+                        {:error classified
+                         :status status
+                         :body body
+                         :provider provider-id
+                         :attempts 1})))
+      (let [{:keys [events raw]} (collect-sse-events-until-end transport profile body)
+            has-end? (some #(= :stream/end (:event/type %)) events)
+            parsed-events (concat [(stream/start-event)]
+                                  events
+                                  (when-not has-end? [(stream/end-event)]))
+            parsed (try
+                     (transport/parse-response transport profile raw)
+                     (catch Throwable _
+                       (stream/events->response parsed-events provider-id model)))]
+        (stamp parsed
+               provider-id model)))))
+
+(defn- canonicalize-chat-response [resp provider-id model]
+  (let [resp (cond-> resp
+               (nil? (:response/provider resp)) (assoc :response/provider provider-id)
+               (nil? (:response/model resp)) (assoc :response/model model))]
+    (cond-> resp
+      (nil? (:response/id resp)) (dissoc :response/id)
+      (nil? (:response/tool-calls resp)) (dissoc :response/tool-calls)
+      (nil? (:response/usage resp)) (dissoc :response/usage)
+      (nil? (:response/cost resp)) (dissoc :response/cost)
+      (nil? (:response/cache resp)) (dissoc :response/cache)
+      (nil? (:response/provider-data resp)) (dissoc :response/provider-data))))
 
 (defn- stamp [resp provider-id model]
   (when resp
-    (pricing/stamp-response-cost-and-cache resp provider-id model)))
+    (-> resp
+        (canonicalize-chat-response provider-id model)
+        (pricing/stamp-response-cost-and-cache provider-id model)
+        (canonicalize-chat-response provider-id model))))
 
 (defn- normalize-retry-policy
   "Translate the :retry kwarg into either nil (one-shot) or a policy map.
@@ -184,51 +252,53 @@
   "Run the non-streaming request path, with optional retry. `policy`
    is nil (one-shot) or a normalized policy map."
   [transport profile req provider-id model policy]
-  (loop [attempt 1]
-    (let [outcome
-          (try
-            (let [resp (http/request req)
-                  status (:status resp)
-                  body (:body resp)]
-              (if (and (number? status) (>= status 400))
-                {:tag :http-error
-                 :err (transport/parse-error transport profile status body)
-                 :status status :body body :resp resp}
-                {:tag :ok
-                 :response (transport/parse-response transport profile body)}))
-            (catch Exception e
-              {:tag :exception :ex e}))]
-      (case (:tag outcome)
-        :ok
-        (stamp (:response outcome) provider-id model)
+  (if (true? (get-in req [:body :stream]))
+    (complete-sse-non-streaming transport profile req provider-id model)
+    (loop [attempt 1]
+      (let [outcome
+            (try
+              (let [resp (http/request req)
+                    status (:status resp)
+                    body (:body resp)]
+                (if (and (number? status) (>= status 400))
+                  {:tag :http-error
+                   :err (transport/parse-error transport profile status body)
+                   :status status :body body :resp resp}
+                  {:tag :ok
+                   :response (transport/parse-response transport profile body)}))
+              (catch Exception e
+                {:tag :exception :ex e}))]
+        (case (:tag outcome)
+          :ok
+          (stamp (:response outcome) provider-id model)
 
-        :http-error
-        (let [classified (:err outcome)
-              decision (when policy (retry/should-retry? classified policy attempt))]
-          (if (:retry? decision)
-            (let [wait (max (or (retry-after-ms-from (:resp outcome)) 0)
-                            (:delay-ms decision))]
-              (*retry-sleep-fn* wait)
-              (recur (inc attempt)))
-            (throw (ex-info "Provider API error"
-                            {:error classified
-                             :status (:status outcome)
-                             :body (:body outcome)
-                             :provider provider-id
-                             :attempts attempt}))))
-
-        :exception
-        (let [e (:ex outcome)
-              classified (errors/classify-error e :provider provider-id)
-              decision (when policy (retry/should-retry? classified policy attempt))]
-          (if (:retry? decision)
-            (do (*retry-sleep-fn* (:delay-ms decision))
+          :http-error
+          (let [classified (:err outcome)
+                decision (when policy (retry/should-retry? classified policy attempt))]
+            (if (:retry? decision)
+              (let [wait (max (or (retry-after-ms-from (:resp outcome)) 0)
+                              (:delay-ms decision))]
+                (*retry-sleep-fn* wait)
                 (recur (inc attempt)))
-            (throw (ex-info "Provider transport error"
-                            {:error classified
-                             :provider provider-id
-                             :attempts attempt}
-                            e))))))))
+              (throw (ex-info "Provider API error"
+                              {:error classified
+                               :status (:status outcome)
+                               :body (:body outcome)
+                               :provider provider-id
+                               :attempts attempt}))))
+
+          :exception
+          (let [e (:ex outcome)
+                classified (errors/classify-error e :provider provider-id)
+                decision (when policy (retry/should-retry? classified policy attempt))]
+            (if (:retry? decision)
+              (do (*retry-sleep-fn* (:delay-ms decision))
+                  (recur (inc attempt)))
+              (throw (ex-info "Provider transport error"
+                              {:error classified
+                               :provider provider-id
+                               :attempts attempt}
+                              e)))))))))
 
 (defn complete
   "Send a canonical request and return a canonical response.

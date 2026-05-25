@@ -44,8 +44,9 @@
                                     {:message/role :user
                                      :message/content "Say exactly 'pong' and nothing else."}]}
             resp (sdk/complete :codex-backend req)]
-        (is (= :codex (:response/provider resp)))
+        (is (= :codex-backend (:response/provider resp)))
         (is (= :stop (:response/finish-reason resp)))
+        (is (pos? (get-in resp [:response/usage :usage/input-tokens] 0)))
         (is (some #(= "pong" (str/lower-case (:text %)))
                   (:response/parts resp))
             (str "Expected 'pong' in parts: " (:response/parts resp)))))))

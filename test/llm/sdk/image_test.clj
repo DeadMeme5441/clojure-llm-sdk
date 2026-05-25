@@ -71,7 +71,8 @@
       (is (= :openai (:image/provider resp)))
       (is (= 1 (count (:image/images resp))))
       (is (= "https://example.com/img.png"
-             (:image/url (first (:image/images resp))))))))
+             (:image/url (first (:image/images resp)))))
+      (is (schema/validate-image-gen-response resp)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API surface

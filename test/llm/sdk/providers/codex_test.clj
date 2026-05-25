@@ -13,12 +13,16 @@
         file (java.io.File. dir "auth.json")]
     [dir file]))
 
-(defn- write-auth! [file access-token refresh-token]
-  (spit file
-        (json/generate-string
-         {:auth_mode "chatgpt"
-          :tokens {:access_token access-token
-                   :refresh_token refresh-token}})))
+(defn- write-auth!
+  ([file access-token refresh-token]
+   (write-auth! file access-token refresh-token nil))
+  ([file access-token refresh-token account-id]
+   (spit file
+         (json/generate-string
+          {:auth_mode "chatgpt"
+           :tokens (cond-> {:access_token access-token
+                            :refresh_token refresh-token}
+                     account-id (assoc :account_id account-id))}))))
 
 (deftest test-build-request-basic
   (let [t (codex/make-transport)
@@ -81,6 +85,24 @@
           (.setLastModified file (+ 5000 (.lastModified file)))
           (is (= "tok-2" (:access-token (codex/read-codex-auth))))
           (is (= 2 @reads) "auth file should be reread after mtime/length changes")))
+      (finally
+        (reset! @#'codex/codex-auth-cache nil)
+        (.delete file)
+        (.delete dir)))))
+
+(deftest test-codex-backend-auth-headers-include-account-id
+  (let [[dir file] (temp-auth-file)
+        path (.getPath file)]
+    (try
+      (reset! @#'codex/codex-auth-cache nil)
+      (write-auth! file "tok-1" "ref-1" "acct-123")
+      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)}
+        (fn []
+          (let [auth (codex/read-codex-auth)
+                headers (codex/codex-backend-auth-headers)]
+            (is (= "acct-123" (:account-id auth)))
+            (is (= "Bearer tok-1" (get headers "Authorization")))
+            (is (= "acct-123" (get headers "ChatGPT-Account-ID"))))))
       (finally
         (reset! @#'codex/codex-auth-cache nil)
         (.delete file)
@@ -152,6 +174,43 @@
           resp (transport/parse-response t profile raw)]
       (is (= :stop (:response/finish-reason resp)))
       (is (= [{:part/type :text :text "Fallback text"}] (:response/parts resp))))))
+
+(deftest test-parse-sse-response-completed-usage
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex-backend)
+        raw (str "data: "
+                 (json/generate-string
+                  {:type "response.created"
+                   :response {:id "resp_sse" :model "gpt-5.5"}})
+                 "\n\n"
+                 "data: "
+                 (json/generate-string
+                  {:type "response.output_text.delta"
+                   :delta "pong"})
+                 "\n\n"
+                 "data: "
+                 (json/generate-string
+                  {:type "response.completed"
+                   :response {:id "resp_sse"
+                              :model "gpt-5.5"
+                              :usage {:input_tokens 23
+                                      :input_tokens_details {:cached_tokens 3}
+                                      :output_tokens 16
+                                      :output_tokens_details {:reasoning_tokens 9}
+                                      :total_tokens 39}}})
+                 "\n\n")
+        resp (transport/parse-response t profile raw)
+        usage (:response/usage resp)]
+    (is (= "resp_sse" (:response/id resp)))
+    (is (= :codex-backend (:response/provider resp)))
+    (is (= "gpt-5.5" (:response/model resp)))
+    (is (= [{:part/type :text :text "pong"}] (:response/parts resp)))
+    (is (= :stop (:response/finish-reason resp)))
+    (is (= 20 (:usage/input-tokens usage)))
+    (is (= 3 (:usage/cached-input-tokens usage)))
+    (is (= 16 (:usage/output-tokens usage)))
+    (is (= 9 (:usage/reasoning-tokens usage)))
+    (is (= 39 (:usage/total-tokens usage)))))
 
 (deftest test-parse-response-incomplete-function
   (testing "queued/in_progress function_call items are skipped"
@@ -226,6 +285,25 @@
         ev (transport/parse-stream-event t profile line)]
     (is (= :stream/end (:event/type ev)))
     (is (= :stop (:event/finish-reason ev)))))
+
+(deftest test-parse-stream-completed-emits-usage-before-end
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex-backend)
+        line (str "data: "
+                  (json/generate-string
+                   {:type "response.completed"
+                    :response {:usage {:input_tokens 23
+                                       :input_tokens_details {:cached_tokens 3}
+                                       :output_tokens 16
+                                       :output_tokens_details {:reasoning_tokens 9}
+                                       :total_tokens 39}}}))
+        events (transport/parse-stream-event t profile line)]
+    (is (= [:stream/usage :stream/end] (mapv :event/type events)))
+    (is (= 20 (get-in (first events) [:usage :usage/input-tokens])))
+    (is (= 3 (get-in (first events) [:usage :usage/cached-input-tokens])))
+    (is (= 16 (get-in (first events) [:usage :usage/output-tokens])))
+    (is (= 9 (get-in (first events) [:usage :usage/reasoning-tokens])))
+    (is (= :stop (:event/finish-reason (second events))))))
 
 (deftest test-deterministic-call-id
   (let [id1 (#'codex/deterministic-call-id "get_weather" "{}" 0)

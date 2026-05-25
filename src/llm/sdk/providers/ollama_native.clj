@@ -146,16 +146,17 @@
                              (let [a (get-in tc [:function :arguments])]
                                (if (string? a) a (json/generate-string a)))})
                           (:tool_calls msg)))
-        finish (get finish-reason-map (:done_reason raw) :stop)]
-    {:response/provider :ollama-native
-     :response/model (:model raw)
-     :response/parts (cond-> []
-                       (seq text) (conj {:part/type :text :text text})
-                       (seq tool-calls) (into tool-calls))
-     :response/tool-calls (not-empty tool-calls)
-     :response/finish-reason finish
-     :response/usage (usage-from raw)
-     :response/raw raw}))
+        finish (get finish-reason-map (:done_reason raw) :stop)
+        usage (usage-from raw)]
+    (cond-> {:response/provider :ollama-native
+             :response/model (:model raw)
+             :response/parts (cond-> []
+                               (seq text) (conj {:part/type :text :text text})
+                               (seq tool-calls) (into tool-calls))
+             :response/finish-reason finish
+             :response/raw raw}
+      (seq tool-calls) (assoc :response/tool-calls tool-calls)
+      usage (assoc :response/usage usage))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing — Ollama emits NDJSON (one JSON per line).

@@ -51,7 +51,12 @@
 (deftest test-normalize-usage-dispatch
   (is (= 10 (:usage/input-tokens (usage/normalize-usage :openai {:prompt_tokens 10}))))
   (is (= 10 (:usage/input-tokens (usage/normalize-usage :anthropic {:input_tokens 10}))))
-  (is (= 10 (:usage/input-tokens (usage/normalize-usage :deepseek {:prompt_tokens 10})))))
+  (is (= 10 (:usage/input-tokens (usage/normalize-usage :deepseek {:prompt_tokens 10}))))
+  (is (= 7 (:usage/input-tokens
+            (usage/normalize-usage :codex-backend
+                                   {:input_tokens 10
+                                    :input_tokens_details {:cached_tokens 3}
+                                    :output_tokens 2})))))
 
 (deftest test-normalize-openai-usage-openrouter-toplevel-cache-fallback
   (testing "OpenRouter Claude proxies surface Anthropic cache fields at top level (cline/cline#10266)"

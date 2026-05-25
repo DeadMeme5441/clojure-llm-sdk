@@ -1,6 +1,7 @@
 (ns llm.sdk.speak-test
   (:require [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
+            [llm.sdk.schema :as schema]
             [llm.sdk.transport.speak :as st]
             [llm.sdk.providers.openai-speak :as openai-spk]
             [llm.sdk.providers.elevenlabs :as eleven]))
@@ -59,4 +60,5 @@
               :body (byte-array [1 2 3])}
         parsed (st/parse-speak-response t profile resp)]
     (is (= "audio/mpeg" (:audio/content-type parsed)))
-    (is (= 3 (count (:audio/bytes parsed))))))
+    (is (= 3 (count (:audio/bytes parsed))))
+    (is (schema/validate-speak-response parsed))))

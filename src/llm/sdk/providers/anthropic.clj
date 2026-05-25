@@ -375,16 +375,16 @@
         provider-data (cond-> {}
                       (seq reasoning-details)
                       (assoc :reasoning_details reasoning-details))]
-    {:response/id (:id raw)
-     :response/provider :anthropic
-     :response/model (:model raw)
-     :response/parts parts
-     :response/tool-calls (not-empty tool-calls)
-     :response/finish-reason finish-reason
-     :response/usage (when usage-raw
+    (cond-> {:response/id (:id raw)
+             :response/provider :anthropic
+             :response/model (:model raw)
+             :response/parts parts
+             :response/finish-reason finish-reason
+             :response/raw raw}
+      (seq tool-calls) (assoc :response/tool-calls tool-calls)
+      usage-raw (assoc :response/usage
                        (usage/normalize-usage :anthropic usage-raw))
-     :response/provider-data (not-empty provider-data)
-     :response/raw raw}))
+      (seq provider-data) (assoc :response/provider-data provider-data))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing

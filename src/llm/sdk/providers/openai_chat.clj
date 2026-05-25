@@ -230,19 +230,19 @@
         provider-data (cond-> {}
                       reasoning-content (assoc :reasoning_content reasoning-content)
                       (:reasoning_details msg) (assoc :reasoning_details (:reasoning_details msg)))]
-    {:response/id (:id raw)
-     :response/provider (:profile/id profile)
-     :response/model (:model raw)
-     :response/parts (cond-> []
-                       (seq content) (conj {:part/type :text :text content})
-                       (seq reasoning) (conj {:part/type :reasoning :reasoning/text reasoning})
-                       (seq tool-calls) (into tool-calls))
-     :response/tool-calls (not-empty tool-calls)
-     :response/finish-reason finish-reason
-     :response/usage (when usage-raw
+    (cond-> {:response/id (:id raw)
+             :response/provider (:profile/id profile)
+             :response/model (:model raw)
+             :response/parts (cond-> []
+                               (seq content) (conj {:part/type :text :text content})
+                               (seq reasoning) (conj {:part/type :reasoning :reasoning/text reasoning})
+                               (seq tool-calls) (into tool-calls))
+             :response/finish-reason finish-reason
+             :response/raw raw}
+      (seq tool-calls) (assoc :response/tool-calls tool-calls)
+      usage-raw (assoc :response/usage
                        (usage/normalize-usage (:profile/id profile) usage-raw))
-     :response/provider-data (not-empty provider-data)
-     :response/raw raw}))
+      (seq provider-data) (assoc :response/provider-data provider-data))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing

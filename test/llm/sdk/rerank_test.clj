@@ -82,7 +82,8 @@
                             :rerank/documents ["a"]})]
       (is (= :cohere (:rerank/provider resp)))
       (is (= 1 (count (:rerank/results resp))))
-      (is (= 0.9 (:rerank/score (first (:rerank/results resp))))))))
+      (is (= 0.9 (:rerank/score (first (:rerank/results resp)))))
+      (is (schema/validate-rerank-response resp)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API surface
