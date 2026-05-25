@@ -160,7 +160,8 @@ com.deadmeme5441/clojure-llm-sdk {:git/url "https://github.com/DeadMeme5441/cloj
 | **OpenAI Codex (Standard)** | `:codex` | `codex` | `OPENAI_API_KEY` | ✅ Full |
 | **OpenAI Codex (Backend)** | `:codex-backend` | `codex` | `~/.codex/auth.json`² | ✅ Full |
 | **DeepSeek** | `:deepseek` | `openai-chat` | `DEEPSEEK_API_KEY` | ✅ Full |
-| **Kimi / Moonshot** | `:kimi` | `openai-chat` | `KIMI_API_KEY` | ✅ Full |
+| **Kimi / Moonshot** | `:kimi` | `openai-chat` | `MOONSHOT_API_KEY` | ✅ Full |
+| **Kimi Code** | `:kimi-code` | `openai-chat` | `KIMI_API_KEY` | ✅ Full |
 | **Mistral** | `:mistral` | `openai-chat` | `MISTRAL_API_KEY` | ✅ Full |
 | **Groq** | `:groq` | `openai-chat` | `GROQ_API_KEY` | ✅ Full |
 | **Cerebras** | `:cerebras` | `openai-chat` | `CEREBRAS_API_KEY` | ✅ Full |
@@ -232,7 +233,8 @@ com.deadmeme5441/clojure-llm-sdk {:git/url "https://github.com/DeadMeme5441/cloj
 | `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION` | Vertex Gemini — project + region (`us-central1`, `global`, …) |
 | `OPENROUTER_API_KEY` | OpenRouter |
 | `DEEPSEEK_API_KEY` | DeepSeek |
-| `KIMI_API_KEY` | Kimi / Moonshot |
+| `MOONSHOT_API_KEY` | Kimi / Moonshot |
+| `KIMI_API_KEY` | Kimi Code |
 | `MISTRAL_API_KEY` | Mistral (chat + embed) |
 | `GROQ_API_KEY` | Groq |
 | `CEREBRAS_API_KEY` | Cerebras |
@@ -585,6 +587,10 @@ The underlying `:profile/url-builder` hook is profile-driven — Azure today, Hu
 ### HuggingFace Router
 
 The Inference Router at `router.huggingface.co/v1` is plain OpenAI-compat — model name lives in the request body (e.g. `"meta-llama/Llama-3.3-70B-Instruct"`) and HF dispatches to inference partners internally. TGI / self-hosted users register their own profile with a custom base-url.
+
+### Kimi Code
+
+`:kimi` is the public Moonshot OpenAI-compatible API at `api.moonshot.cn/v1` and reads `MOONSHOT_API_KEY`. `:kimi-code` is the coding-plan endpoint at `api.kimi.com/coding/v1`, reads `KIMI_API_KEY`, and uses the `kimi-for-coding` model. It also sends the KimiCLI-style non-secret identity headers (`User-Agent`, `X-Msh-*`) required by the coding endpoint.
 
 ### Aggregator aliases
 

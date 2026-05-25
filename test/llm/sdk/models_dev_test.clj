@@ -153,6 +153,14 @@
        (is (some? (mdev/lookup :codex "gpt-4o")))
        (is (= :codex (:model/provider (mdev/lookup :codex "gpt-4o"))))))))
 
+(deftest lookup-honours-kimi-code-provider
+  (offline
+   (fn []
+     (testing ":kimi-code routes through the Kimi coding catalog"
+       (is (some? (mdev/lookup :kimi-code "k2p6")))
+       (is (= :kimi-code
+              (:model/provider (mdev/lookup :kimi-code "k2p6"))))))))
+
 (deftest list-models-returns-many
   (offline
    (fn []

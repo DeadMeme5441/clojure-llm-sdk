@@ -121,6 +121,7 @@
   (is (true? (models/supports-models-listing? :openrouter)))
   (is (true? (models/supports-models-listing? :deepseek)))
   (is (true? (models/supports-models-listing? :kimi)))
+  (is (false? (models/supports-models-listing? :kimi-code)))
   (is (false? (models/supports-models-listing? :codex)))
   (is (false? (models/supports-models-listing? :bedrock)))
   (is (false? (models/supports-models-listing? :fake))))

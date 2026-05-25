@@ -26,19 +26,26 @@
 
 (defn- smoke-chat
   "Send 'Reply with the single word: ok' and verify the response shape."
-  [provider-id model]
-  (let [resp (sdk/complete
-              provider-id
-              {:request/model model
-               :request/messages [{:message/role :user
-                                   :message/content "Reply with the single word: ok"}]
-               :request/max-tokens 8})]
-    (is (= provider-id (:response/provider resp))
-        (str provider-id " response carries provider id"))
-    (is (string? (:text (text-part resp)))
-        (str provider-id " returned at least one text part"))
-    (is (contains? #{:stop :length} (:response/finish-reason resp))
-        (str provider-id " finished cleanly"))))
+  ([provider-id model]
+   (smoke-chat provider-id model 8))
+  ([provider-id model max-tokens]
+   (let [resp (sdk/complete
+               provider-id
+               {:request/model model
+                :request/messages [{:message/role :user
+                                    :message/content "Reply with the single word: ok"}]
+                :request/max-tokens max-tokens})]
+     (is (= provider-id (:response/provider resp))
+         (str provider-id " response carries provider id"))
+     (is (string? (:text (text-part resp)))
+         (str provider-id " returned at least one text part"))
+     (is (contains? #{:stop :length} (:response/finish-reason resp))
+         (str provider-id " finished cleanly")))))
+
+(deftest ^:live live-kimi-code-chat
+  (when (has-creds? "KIMI_API_KEY")
+    (testing "Kimi Code chat live"
+      (smoke-chat :kimi-code "kimi-for-coding" 128))))
 
 (deftest ^:live live-mistral-chat
   (when (has-creds? "MISTRAL_API_KEY")

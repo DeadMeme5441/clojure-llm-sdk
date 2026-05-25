@@ -57,7 +57,7 @@
       (smoke-fetch :deepseek))))
 
 (deftest ^:live live-kimi-models
-  (when (has-creds? "KIMI_API_KEY")
+  (when (has-creds? "MOONSHOT_API_KEY")
     (testing "Kimi /v1/models live"
       (smoke-fetch :kimi))))
 

@@ -14,26 +14,45 @@
 ;; Request building
 ;; ---------------------------------------------------------------------------
 
+(defn- assistant-tool-calls [msg]
+  (when-let [tcs (seq (:message/tool-calls msg))]
+    (mapv (fn [tc]
+            {:id        (:tool-call/id tc)
+             :type      "function"
+             :function  {:name      (:tool-call/name tc)
+                         :arguments (or (:tool-call/arguments tc) "")}})
+          tcs)))
+
 (defn- message->openai [msg]
   (let [role (name (:message/role msg))
-        content (:message/content msg)]
-    (cond
-      (string? content)
-      {:role role :content content}
-
-      (sequential? content)
-      {:role role
-       :content (mapv (fn [part]
-                        (case (:part/type part)
-                          :text {:type "text" :text (:text part)}
-                          :image {:type "image_url"
-                                  :image_url {:url (:image/url part)
-                                              :detail (name (get part :image/detail :auto))}}
-                          {:type "text" :text (str part)}))
-                      content)}
-
-      :else
-      {:role role :content (str content)})))
+        content (:message/content msg)
+        tool-calls (assistant-tool-calls msg)
+        ;; Tool result messages must carry tool_call_id (per OpenAI/
+        ;; DeepSeek/Kimi/etc. chat-completions schema). The canonical
+        ;; Message carries it on :message/tool-call-id; surface it here.
+        tool-call-id (:message/tool-call-id msg)
+        text-content (cond
+                       (string? content) content
+                       (sequential? content)
+                       (mapv (fn [part]
+                               (case (:part/type part)
+                                 :text  {:type "text" :text (:text part)}
+                                 :image {:type "image_url"
+                                         :image_url {:url (:image/url part)
+                                                     :detail (name (get part :image/detail :auto))}}
+                                 ;; tool-call parts are surfaced via :tool_calls below,
+                                 ;; not as a content fragment.
+                                 :tool-call nil
+                                 {:type "text" :text (str part)}))
+                             content)
+                       :else (str content))
+        text-content (if (sequential? text-content)
+                       (vec (remove nil? text-content))
+                       text-content)]
+    (cond-> {:role role}
+      (some? text-content)            (assoc :content text-content)
+      (seq tool-calls)                (assoc :tool_calls tool-calls)
+      tool-call-id                    (assoc :tool_call_id tool-call-id))))
 
 (defn- tool->openai [tool]
   tool)
@@ -367,7 +386,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def ^:private compat-provider-ids
-  [:openai :openrouter :deepseek :kimi
+  [:openai :openrouter :deepseek :kimi :kimi-code
    :mistral :groq :cerebras :together :xai :huggingface
    ;; T2-19 aggregator aliases — all share the OpenAI chat wire shape.
    :sambanova :deepinfra :lambda :nebius :hyperbolic :novita
