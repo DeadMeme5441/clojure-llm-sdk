@@ -1,5 +1,5 @@
 (ns llm.sdk.errors-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [llm.sdk.errors :as errors]))
 
 (deftest test-auth-classification

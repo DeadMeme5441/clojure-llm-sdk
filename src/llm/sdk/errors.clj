@@ -96,7 +96,7 @@
      :provider   Provider keyword
      :model      Model string
      :error-type Exception type name string"
-  [e & {:keys [status body provider model error-type]}]
+  [e & {:keys [status body error-type]}]
   (let [msg (str/lower-case (str e " " (error-body->msg body)))
         type-name (or error-type (type e))]
 

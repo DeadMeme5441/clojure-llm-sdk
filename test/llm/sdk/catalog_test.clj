@@ -1,5 +1,5 @@
 (ns llm.sdk.catalog-test
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [clojure.test :refer [deftest is use-fixtures]]
             [llm.sdk.catalog :as catalog]
             [llm.sdk.http :as http]
             [llm.sdk.models-dev :as mdev]

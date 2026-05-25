@@ -7,7 +7,7 @@
    These tests exercise the full sdk/complete code path (no live
    network) by stubbing llm.sdk.http/request with canned raw payloads
    shaped like the real provider responses."
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [clojure.test :refer [deftest is use-fixtures]]
             [llm.sdk :as sdk]
             [llm.sdk.gcp-auth :as gcp-auth]
             [llm.sdk.http :as http]

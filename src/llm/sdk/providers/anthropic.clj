@@ -151,7 +151,7 @@
   "Prefix tool names in message history (tool_use blocks)."
   [messages]
   (mapv (fn [msg]
-          (if-let [content (:content msg)]
+          (if (:content msg)
             (update msg :content
                     (fn [blocks]
                       (mapv (fn [block]
@@ -295,7 +295,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-response-anthropic
-  [profile raw]
+  [_profile raw]
   (let [text-parts (vec (keep #(when (= (:type %) "text") (:text %)) (:content raw)))
         thinking-parts (vec (keep #(when (= (:type %) "thinking") (:thinking %)) (:content raw)))
         reasoning-details (vec (keep #(when (= (:type %) "thinking") %) (:content raw)))
@@ -338,7 +338,7 @@
              (catch Exception _ nil))))))
 
 (defn parse-stream-event-anthropic
-  [profile line]
+  [_profile line]
   (when-let [data (parse-sse-line line)]
     (let [t (:type data)]
       (cond
@@ -371,7 +371,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-error-anthropic
-  [profile status body]
+  [_profile status body]
   (errors/classify-error (Exception. "Anthropic API error")
                          :status status
                          :body body
@@ -383,19 +383,19 @@
 
 (defrecord AnthropicTransport []
   t/Transport
-  (build-request [this profile request]
+  (build-request [_ profile request]
     (build-request-anthropic profile request))
 
-  (parse-response [this profile raw]
+  (parse-response [_ profile raw]
     (parse-response-anthropic profile raw))
 
-  (parse-stream-event [this profile line]
+  (parse-stream-event [_ profile line]
     (parse-stream-event-anthropic profile line))
 
-  (parse-error [this profile status body]
+  (parse-error [_ profile status body]
     (parse-error-anthropic profile status body))
 
-  (normalize-usage [this profile raw]
+  (normalize-usage [_ _profile raw]
     (usage/normalize-usage :anthropic raw))
 
   (request-capabilities [_]

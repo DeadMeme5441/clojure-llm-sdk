@@ -159,7 +159,7 @@
   "Refresh pricing for a billing-route by hitting the provider's live
    /models endpoint via registry/refresh!. Returns the number of
    entries fetched, or 0 when the provider lacks /models support."
-  [billing-route & {:keys [api-key]}]
+  [billing-route & {:keys [_api-key]}]
   ;; api-key is forwarded only via the provider profile's env var path —
   ;; the SDK doesn't accept per-call key injection for /models fetches.
   ;; Reserved for future use.

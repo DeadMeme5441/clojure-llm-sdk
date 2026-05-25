@@ -1,7 +1,7 @@
 (ns llm.sdk.aws-sigv4-test
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.aws-sigv4 :as sigv4])
-  (:import [java.util Date TimeZone Calendar]
+  (:import [java.util Date TimeZone]
            [java.text SimpleDateFormat]))
 
 (defn- fixed-date

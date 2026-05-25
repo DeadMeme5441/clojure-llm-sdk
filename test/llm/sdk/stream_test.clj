@@ -1,5 +1,5 @@
 (ns llm.sdk.stream-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [llm.sdk.stream :as stream]))
 
 (deftest test-reduce-content-deltas

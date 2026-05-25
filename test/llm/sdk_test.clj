@@ -30,6 +30,34 @@
   (with-redefs [http/request (fn [_] {:status 500 :body {:error "offline"}})]
     (f)))
 
+(deftest complete-validates-canonical-request-before-network
+  (let [ex (try
+             (sdk/complete :openai {:request/model "gpt-4o-mini"})
+             nil
+             (catch clojure.lang.ExceptionInfo e e))]
+    (is (some? ex))
+    (is (= :schema/invalid-request
+           (get-in (ex-data ex) [:error/type])))))
+
+(deftest complete-streaming-classifies-http-errors
+  (with-redefs [http/sse-response
+                (fn [_]
+                  {:status 401
+                   :headers {}
+                   :body {:error {:message "Invalid API key"
+                                  :type "invalid_request_error"}}})]
+    (let [ex (try
+               (sdk/complete :openai
+                             {:request/model "gpt-4o-mini"
+                              :request/messages [{:message/role :user
+                                                  :message/content "hi"}]}
+                             :stream? true)
+               nil
+               (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex))
+      (is (= 401 (:status (ex-data ex))))
+      (is (= :auth (get-in (ex-data ex) [:error :error/reason]))))))
+
 ;; ---------------------------------------------------------------------------
 ;; list-models
 ;; ---------------------------------------------------------------------------

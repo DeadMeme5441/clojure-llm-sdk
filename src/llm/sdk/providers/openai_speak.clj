@@ -5,14 +5,6 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.errors :as errors]))
 
-(def ^:private format-content-type
-  {"mp3"  "audio/mpeg"
-   "opus" "audio/ogg"
-   "aac"  "audio/aac"
-   "flac" "audio/flac"
-   "wav"  "audio/wav"
-   "pcm"  "audio/pcm"})
-
 (defn build-request
   [profile request]
   (let [model (:speak/model request)

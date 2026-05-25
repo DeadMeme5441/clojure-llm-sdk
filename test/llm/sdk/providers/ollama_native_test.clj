@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.ollama-native-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [cheshire.core :as json]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]

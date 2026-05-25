@@ -1,5 +1,6 @@
 (ns llm.sdk.schema-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
+            [llm.sdk :as sdk]
             [llm.sdk.schema :as schema]))
 
 (deftest test-request-validation
@@ -46,3 +47,18 @@
   (is (schema/validate-stream-event {:event/type :stream/start}))
   (is (schema/validate-stream-event {:event/type :stream/content-delta
                                      :event/delta "hello"})))
+
+(deftest test-json-schema-response-format-validation
+  (is (schema/validate-request
+       {:request/model "gpt-4o-mini"
+        :request/messages [{:message/role :user :message/content "json"}]
+        :request/response-format {:type :json_schema
+                                  :name "ok_response"
+                                  :strict true
+                                  :json-schema {:type "object"}}})))
+
+(deftest test-registered-provider-profiles-validate
+  (doseq [provider-id (sdk/list-providers)
+          :let [profile (sdk/provider-profile provider-id)]]
+    (is (schema/validate-provider-profile profile)
+        (str "profile should validate: " provider-id))))

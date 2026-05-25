@@ -7,8 +7,6 @@
             [llm.sdk :as sdk]
             [llm.sdk.provider :as provider]))
 
-(defn- env [k] (System/getenv k))
-
 (defn- has-creds? [provider-id]
   (boolean (provider/resolve-auth-token (provider/get-provider provider-id))))
 

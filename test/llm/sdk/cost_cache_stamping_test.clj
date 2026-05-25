@@ -3,9 +3,7 @@
    sdk/complete applies after parse-response. The honesty rule under
    test: never substitute 0 for unknown cache, never substitute $0 for
    unknown cost."
-  (:require [cheshire.core :as json]
-            [clojure.java.io :as io]
-            [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [llm.sdk :as sdk]
             [llm.sdk.http :as http]
             [llm.sdk.models-dev :as mdev]

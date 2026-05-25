@@ -3,6 +3,7 @@
    canonical fields the provider doesn't support."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
+            [llm.sdk.provider :as provider]
             [llm.sdk.request :as request]))
 
 (defn- with-captured-warn
@@ -96,7 +97,7 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-perplexity-profile-supports-restricted-set
-  (let [profile (llm.sdk.provider/get-provider :perplexity)
+  (let [profile (provider/get-provider :perplexity)
         supported (:profile/supported-params profile)]
     (is (set? supported))
     (is (contains? supported :request/temperature))

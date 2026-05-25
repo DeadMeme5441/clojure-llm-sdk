@@ -1,5 +1,5 @@
 (ns llm.sdk.speak-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.speak :as st]
             [llm.sdk.providers.openai-speak :as openai-spk]

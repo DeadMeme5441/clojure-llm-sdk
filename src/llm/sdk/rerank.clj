@@ -7,6 +7,7 @@
    returns a canonical RerankResponse. Providers without rerank
    support throw a clear ex-info."
   (:require [llm.sdk.provider :as provider]
+            [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
             [llm.sdk.transport.rerank :as rt]))
 
@@ -21,6 +22,10 @@
   (let [profile (or (provider/get-provider provider-id)
                     (throw (ex-info "Unknown provider"
                                     {:provider provider-id})))
+        _ (when-not (schema/validate-rerank-request request)
+            (throw (ex-info "Invalid llm.sdk rerank request"
+                            {:error/type :schema/invalid-rerank-request
+                             :schema/explain (schema/explain-rerank-request request)})))
         ctor (:profile/rerank-transport-constructor profile)
         _ (when-not ctor
             (throw (ex-info "Rerank not supported by provider"

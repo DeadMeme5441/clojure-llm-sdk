@@ -19,7 +19,6 @@
             [llm.sdk.transport :as t]
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
-            [llm.sdk.usage :as usage]
             [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]))
 
@@ -194,7 +193,7 @@
     messages))
 
 (defn build-request-bedrock
-  [profile request]
+  [_profile request]
   (let [stream? (boolean (:request/stream? request))
         canonical-model (:request/model request)
         model (resolve-model-id canonical-model)
@@ -251,7 +250,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-response-bedrock
-  [profile raw]
+  [_profile raw]
   (let [output (:output raw)
         msg (:message output)
         content (:content msg)
@@ -367,19 +366,19 @@
 
 (defrecord BedrockTransport []
   t/Transport
-  (build-request [this profile request]
+  (build-request [_ profile request]
     (build-request-bedrock profile request))
 
-  (parse-response [this profile raw]
+  (parse-response [_ profile raw]
     (parse-response-bedrock profile raw))
 
-  (parse-stream-event [this profile input]
+  (parse-stream-event [_ profile input]
     (parse-stream-event-bedrock profile input))
 
-  (parse-error [this profile status body]
+  (parse-error [_ profile status body]
     (parse-error-bedrock profile status body))
 
-  (normalize-usage [this profile raw]
+  (normalize-usage [_ _profile raw]
     {:usage/input-tokens (:inputTokens raw 0)
      :usage/output-tokens (:outputTokens raw 0)
      :usage/total-tokens (:totalTokens raw 0)

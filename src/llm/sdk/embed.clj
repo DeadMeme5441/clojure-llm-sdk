@@ -8,6 +8,7 @@
    than returning nil — surfacing missing capability at the call site
    is friendlier than letting a downstream NullPointer explode."
   (:require [llm.sdk.provider :as provider]
+            [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
             [llm.sdk.transport.embed :as et]))
 
@@ -22,6 +23,10 @@
   (let [profile (or (provider/get-provider provider-id)
                     (throw (ex-info "Unknown provider"
                                     {:provider provider-id})))
+        _ (when-not (schema/validate-embed-request request)
+            (throw (ex-info "Invalid llm.sdk embed request"
+                            {:error/type :schema/invalid-embed-request
+                             :schema/explain (schema/explain-embed-request request)})))
         ctor (:profile/embed-transport-constructor profile)
         _ (when-not ctor
             (throw (ex-info "Embedding not supported by provider"

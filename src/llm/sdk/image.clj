@@ -7,6 +7,7 @@
    returns a canonical ImageGenResponse. Providers without image
    support throw a clear ex-info."
   (:require [llm.sdk.provider :as provider]
+            [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
             [llm.sdk.aws-sigv4 :as aws-sigv4]
             [llm.sdk.transport.image :as it]))
@@ -25,6 +26,10 @@
   (let [profile (or (provider/get-provider provider-id)
                     (throw (ex-info "Unknown provider"
                                     {:provider provider-id})))
+        _ (when-not (schema/validate-image-gen-request request)
+            (throw (ex-info "Invalid llm.sdk image generation request"
+                            {:error/type :schema/invalid-image-request
+                             :schema/explain (schema/explain-image-gen-request request)})))
         ctor (:profile/image-transport-constructor profile)
         _ (when-not ctor
             (throw (ex-info "Image generation not supported by provider"

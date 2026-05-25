@@ -10,7 +10,8 @@
      source .env && clj -M:live-test -n llm.sdk.live-perplexity-test"
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk :as sdk]
-            [llm.sdk.schema :as schema]))
+            [llm.sdk.schema :as schema]
+            [llm.sdk.stream :as stream]))
 
 (defn- has-creds? [env-var]
   (boolean (System/getenv env-var)))
@@ -46,7 +47,7 @@
                        :message/content "What's the latest Clojure version? One short answer."}]
                      :request/max-tokens 80}
                     :stream? true)
-            resp (llm.sdk.stream/events->response events :perplexity "sonar")
+            resp (stream/events->response events :perplexity "sonar")
             citation-parts (filter #(= :citation (:part/type %)) (:response/parts resp))]
         (is (seq citation-parts)
             "stream-mode citations should land in Response.parts via the reducer")))))

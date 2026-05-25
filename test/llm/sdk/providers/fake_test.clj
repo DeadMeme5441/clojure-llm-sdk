@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.fake-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
             [llm.sdk.providers.fake :as fake]))

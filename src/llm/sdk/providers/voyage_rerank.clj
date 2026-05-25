@@ -42,7 +42,7 @@
                            :else nil)))))
 
 (defn parse-rerank-response-voyage
-  [profile raw]
+  [_profile raw]
   (let [results (mapv result->canonical (:data raw))
         total (->int (get-in raw [:usage :total_tokens]))]
     (cond-> {:rerank/provider :voyage
@@ -61,7 +61,7 @@
                            :usage/provider-raw (:usage raw)}))))
 
 (defn parse-rerank-error-voyage
-  [profile status body]
+  [_profile status body]
   (errors/classify-error (Exception. "Voyage rerank API error")
                          :status status
                          :body body

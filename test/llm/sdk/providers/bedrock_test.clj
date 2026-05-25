@@ -1,9 +1,7 @@
 (ns llm.sdk.providers.bedrock-test
   (:require [clojure.test :refer [deftest is testing]]
-            [cheshire.core :as json]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.stream :as stream]
             [llm.sdk.providers.bedrock :as bedrock]))
 
 (deftest test-resolve-model-id-known-short

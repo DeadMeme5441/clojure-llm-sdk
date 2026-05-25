@@ -1,5 +1,5 @@
 (ns llm.sdk.aws-eventstream-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [cheshire.core :as json]
             [llm.sdk.aws-eventstream :as es])
   (:import [java.io ByteArrayOutputStream DataOutputStream

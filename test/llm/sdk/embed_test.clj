@@ -7,9 +7,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk :as sdk]
             [llm.sdk.schema :as schema]
-            [llm.sdk.embed :as embed]
             [llm.sdk.provider :as provider]
-            [llm.sdk.transport.embed :as et]
             [llm.sdk.http :as http]
             [llm.sdk.usage :as usage]))
 

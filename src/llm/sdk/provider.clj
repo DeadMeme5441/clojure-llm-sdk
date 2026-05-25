@@ -1,6 +1,5 @@
 (ns llm.sdk.provider
-  "Provider profile registry and lookup."
-  (:require [clojure.string :as str]))
+  "Provider profile registry and lookup.")
 
 ;; ---------------------------------------------------------------------------
 ;; Registry

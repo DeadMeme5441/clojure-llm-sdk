@@ -2,8 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.openai-chat :as openai]
-            [llm.sdk.stream :as stream]))
+            [llm.sdk.providers.openai-chat :as openai]))
 
 (deftest test-build-request-basic
   (let [t (openai/make-transport)
@@ -32,6 +31,43 @@
                                                       :properties {:location {:type :string}}}}}]}
         built (transport/build-request t profile req)]
     (is (= 1 (count (get-in built [:body :tools]))))))
+
+(deftest test-build-request-json-schema-response-format
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        req {:request/model "gpt-4o-mini"
+             :request/messages [{:message/role :user
+                                 :message/content "Return JSON."}]
+             :request/response-format
+             {:type :json_schema
+              :name "ok_response"
+              :description "Boolean ok envelope"
+              :strict true
+              :json-schema {:type "object"
+                            :properties {:ok {:type "boolean"}}
+                            :required ["ok"]
+                            :additionalProperties false}}}
+        built (transport/build-request t profile req)]
+    (is (= {:type "json_schema"
+            :json_schema {:name "ok_response"
+                          :description "Boolean ok envelope"
+                          :strict true
+                          :schema {:type "object"
+                                   :properties {:ok {:type "boolean"}}
+                                   :required ["ok"]
+                                   :additionalProperties false}}}
+           (get-in built [:body :response_format])))))
+
+(deftest test-build-request-json-schema-response-format-default-name
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        req {:request/model "gpt-4o-mini"
+             :request/messages [{:message/role :user :message/content "Return JSON."}]
+             :request/response-format {:type :json_schema
+                                       :json-schema {:type "object"}}}
+        built (transport/build-request t profile req)]
+    (is (= "response"
+           (get-in built [:body :response_format :json_schema :name])))))
 
 (deftest test-build-request-developer-role
   (let [t (openai/make-transport)

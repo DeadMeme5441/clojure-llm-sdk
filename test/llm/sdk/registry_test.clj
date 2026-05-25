@@ -1,7 +1,5 @@
 (ns llm.sdk.registry-test
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
-            [clojure.java.io :as io]
-            [cheshire.core :as json]
+  (:require [clojure.test :refer [deftest is use-fixtures]]
             [llm.sdk.http :as http]
             [llm.sdk.models :as models]
             [llm.sdk.models-dev :as mdev]

@@ -2,12 +2,11 @@
   "Live smoke tests for Codex, Anthropic OAuth, and OpenRouter.
    Gated by presence of respective API keys/tokens in environment."
   (:require [clojure.string :as str]
-            [clojure.test :refer [deftest is testing use-fixtures]]
+            [cheshire.core :as json]
+            [clojure.test :refer [deftest is testing]]
             [llm.sdk :as sdk]
             [llm.sdk.provider :as provider]
-            [llm.sdk.transport :as transport]
-            [llm.sdk.providers.codex :as codex]
-            [llm.sdk.providers.anthropic :as anthropic]))
+            [llm.sdk.providers.codex :as codex]))
 
 (defn- has-creds? [env-var]
   (boolean (System/getenv env-var)))
@@ -85,7 +84,7 @@
                              body (:body data)
                              ;; Body may be a string if JSON parse failed
                              body-map (if (string? body)
-                                        (try (cheshire.core/parse-string body true)
+                                        (try (json/parse-string body true)
                                              (catch Exception _ {}))
                                         body)]
                          {:ok false :status status :body body-map :error e})))]

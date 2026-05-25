@@ -1,8 +1,7 @@
 (ns llm.sdk.stream
   "Streaming event taxonomy and reducer.
    Stream events → final canonical response.
-   Preserves event order in output parts."
-  (:require [clojure.string :as str]))
+   Preserves event order in output parts.")
 
 ;; ---------------------------------------------------------------------------
 ;; Event constructors

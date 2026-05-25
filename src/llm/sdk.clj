@@ -3,6 +3,7 @@
    Complete, embed, stream, list-models, capabilities, normalize-usage,
    estimate-cost, provider registration."
   (:require [llm.sdk.provider :as provider]
+            [llm.sdk.schema :as schema]
             [llm.sdk.transport :as transport]
             [llm.sdk.http :as http]
             [llm.sdk.stream :as stream]
@@ -13,7 +14,6 @@
             [llm.sdk.errors :as errors]
             [llm.sdk.retry :as retry]
             [llm.sdk.registry :as registry]
-            [llm.sdk.models :as models]
             [llm.sdk.embed :as embed-driver]
             [llm.sdk.moderate :as moderate-driver]
             [llm.sdk.rerank :as rerank-driver]
@@ -121,14 +121,25 @@
 
 (defn- sign-if-needed [profile req] (aws-sigv4/maybe-sign profile req))
 
+(defn- validate-chat-request! [request]
+  (when-not (schema/validate-request request)
+    (throw (ex-info "Invalid llm.sdk chat request"
+                    {:error/type :schema/invalid-request
+                     :schema/explain (schema/explain-request request)}))))
+
 (defn- binary-stream-events
   "Bedrock-style streaming: open a binary connection, decode AWS event-
    stream frames, hand each parsed frame to parse-stream-event."
   [transport profile req]
   (let [{:keys [body status]} (http/binary-stream-request req)]
     (when (and status (>= status 400))
-      (throw (ex-info "Provider streaming API error"
-                      {:status status :provider (:profile/id profile)})))
+      (let [parsed-body (http/decode-body body)
+            classified (transport/parse-error transport profile status parsed-body)]
+        (throw (ex-info "Provider streaming API error"
+                        {:error classified
+                         :status status
+                         :body parsed-body
+                         :provider (:profile/id profile)}))))
     (->> (aws-eventstream/frame-seq body)
          (map aws-eventstream/frame->json)
          (mapcat (fn [frame]
@@ -239,6 +250,7 @@
   [provider-id request & {:keys [stream? on-event retry]}]
   (let [profile (or (provider/get-provider provider-id)
                     (throw (ex-info "Unknown provider" {:provider provider-id})))
+        _ (validate-chat-request! request)
         transport ((:profile/transport-constructor profile))
         ;; T2-12 — strip canonical fields the provider doesn't support
         ;; (and warn) when the profile opts in via :profile/supported-params.
@@ -256,7 +268,15 @@
       ;; if you need it.
       (let [events (if binary-stream?
                      (binary-stream-events transport profile req)
-                     (let [ev-seq (http/sse-request req)]
+                     (let [{:keys [status body]} (http/sse-response req)
+                           _ (when (and (number? status) (>= status 400))
+                               (let [classified (transport/parse-error transport profile status body)]
+                                 (throw (ex-info "Provider streaming API error"
+                                                 {:error classified
+                                                  :status status
+                                                  :body body
+                                                  :provider provider-id}))))
+                           ev-seq (http/line-seq-closeable body)]
                        (mapcat (fn [line]
                                  (let [ev (transport/parse-stream-event
                                            transport profile line)]

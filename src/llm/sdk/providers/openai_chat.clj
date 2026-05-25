@@ -47,6 +47,20 @@
       {:type "function"
        :function {:name (get-in tc [:function :name])}})))
 
+(defn- response-format->openai [fmt]
+  (case (:type fmt)
+    :json_schema
+    {:type "json_schema"
+     :json_schema (cond-> {:name (or (:name fmt) "response")
+                           :schema (:json-schema fmt)}
+                    (:description fmt)
+                    (assoc :description (:description fmt))
+                    (contains? fmt :strict)
+                    (assoc :strict (:strict fmt)))}
+
+    :json_object {:type "json_object"}
+    {:type "text"}))
+
 (defn- build-extra-body [profile request]
   (let [reasoning (:request/reasoning request)
         provider-id (:profile/id profile)
@@ -151,12 +165,7 @@
                 {:stop (:request/stop request)})
               (when (:request/response-format request)
                 {:response_format
-                 (let [fmt (:request/response-format request)]
-                   (case (:type fmt)
-                     :json_schema {:type "json_schema"
-                                   :json_schema {:schema (:json-schema fmt)}}
-                     :json_object {:type "json_object"}
-                     {:type "text"}))})
+                 (response-format->openai (:request/response-format request))})
               (when (seq extra-body)
                 {:extra_body extra-body}))
         body (apply-drops body (get-in profile [:profile/quirks :drops]))]
@@ -282,19 +291,19 @@
 
 (defrecord OpenAIChatTransport []
   t/Transport
-  (build-request [this profile request]
+  (build-request [_this profile request]
     (build-request-openai profile request))
 
-  (parse-response [this profile raw]
+  (parse-response [_this profile raw]
     (parse-response-openai profile raw))
 
-  (parse-stream-event [this profile line]
+  (parse-stream-event [_this profile line]
     (parse-stream-event-openai profile line))
 
-  (parse-error [this profile status body]
+  (parse-error [_this profile status body]
     (parse-error-openai profile status body))
 
-  (normalize-usage [this profile raw]
+  (normalize-usage [_this profile raw]
     (usage/normalize-usage (:profile/id profile) raw))
 
   (request-capabilities [_]
