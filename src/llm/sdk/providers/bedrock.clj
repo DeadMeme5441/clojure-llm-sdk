@@ -310,13 +310,13 @@
         tool-calls (vec (filter #(= (:part/type %) :tool-call) parts))
         stop-reason (get stop-reason-map (:stopReason raw) :stop)
         usage-raw (:usage raw)]
-    {:response/provider :bedrock
-     :response/model (:modelId raw)
-     :response/parts parts
-     :response/tool-calls (not-empty tool-calls)
-     :response/finish-reason stop-reason
-     :response/usage (when usage-raw (normalize-bedrock-usage usage-raw))
-     :response/raw raw}))
+    (cond-> {:response/provider :bedrock
+             :response/model (:modelId raw)
+             :response/parts parts
+             :response/finish-reason stop-reason
+             :response/raw raw}
+      (seq tool-calls) (assoc :response/tool-calls tool-calls)
+      usage-raw (assoc :response/usage (normalize-bedrock-usage usage-raw)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing — handles either an eventstream frame map

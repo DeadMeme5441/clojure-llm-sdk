@@ -196,13 +196,13 @@
   (let [tool-calls (->> (:tool-calls-indexed acc)
                         (sort-by key)
                         (mapv (fn [[_ tc]] (tool-call-part tc))))]
-    {:response/provider provider
-     :response/model model
-     :response/parts (:parts acc)
-     :response/tool-calls (not-empty tool-calls)
-     :response/finish-reason (or (:finish-reason acc) :unknown)
-     :response/usage (:usage acc)
-     :response/provider-data (:provider-data acc)}))
+    (cond-> {:response/provider provider
+             :response/model model
+             :response/parts (:parts acc)
+             :response/finish-reason (or (:finish-reason acc) :unknown)}
+      (seq tool-calls) (assoc :response/tool-calls tool-calls)
+      (:usage acc) (assoc :response/usage (:usage acc))
+      (seq (:provider-data acc)) (assoc :response/provider-data (:provider-data acc)))))
 
 (defn events->response
   "Convenience: reduce events and convert to response in one step."

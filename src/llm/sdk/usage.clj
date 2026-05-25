@@ -146,6 +146,6 @@
     :gemini-native (normalize-gemini-usage raw-usage)
     :gemini-cloudcode (normalize-gemini-usage raw-usage)
     :vertex-gemini (normalize-gemini-usage raw-usage)
-    :codex (normalize-codex-usage raw-usage)
+    (:codex :codex-backend) (normalize-codex-usage raw-usage)
     ;; fallback: try OpenAI shape
     (normalize-openai-usage raw-usage)))

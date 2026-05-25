@@ -95,7 +95,8 @@
         (is (= "text-embedding-3-small" (:embed/model resp)))
         (is (= [[0.1 0.2]] (:embed/vectors resp)))
         (is (= 2 (:embed/dimensions resp)))
-        (is (= 3 (get-in resp [:response/usage :usage/input-tokens])))))))
+        (is (= 3 (get-in resp [:response/usage :usage/input-tokens])))
+        (is (schema/validate-embed-response resp))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Usage normalization

@@ -77,7 +77,8 @@
       (is (= :openai (:moderation/provider resp)))
       (is (= 1 (count (:moderation/results resp))))
       (is (false? (:moderation/flagged?
-                   (first (:moderation/results resp))))))))
+                   (first (:moderation/results resp)))))
+      (is (schema/validate-moderation-response resp)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API surface

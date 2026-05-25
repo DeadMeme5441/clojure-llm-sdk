@@ -101,28 +101,45 @@
          :length (.length f)}))
     (catch Exception _ nil)))
 
-(defn- jwt-account-id [access-token]
-  (when (string? access-token)
+(defn- jwt-claims [token]
+  (when (string? token)
     (try
-      (let [parts (str/split access-token #"\.")
+      (let [parts (str/split token #"\.")
             payload-b64 (when (> (count parts) 1)
                           (let [p (nth parts 1)
                                 pad (mod (- 4 (mod (count p) 4)) 4)]
                             (str p (apply str (repeat pad "=")))))
             payload (when payload-b64
                       (String. (.decode (Base64/getUrlDecoder) payload-b64) "UTF-8"))
-            claims (when payload (json/parse-string payload true))]
-        (get-in claims ["https://api.openai.com/auth" "chatgpt_account_id"]))
+            claims (when payload (json/parse-string payload false))]
+        claims)
       (catch Exception _ nil))))
+
+(defn- jwt-account-id [token]
+  (let [claims (jwt-claims token)]
+    (or (get-in claims ["https://api.openai.com/auth" "chatgpt_account_id"])
+        (get claims "chatgpt_account_id"))))
+
+(defn- jwt-fedramp? [token]
+  (let [claims (jwt-claims token)]
+    (true? (get-in claims ["https://api.openai.com/auth" "chatgpt_account_is_fedramp"]))))
 
 (defn- parse-codex-auth-file [path]
   (when-let [data (try (json/parse-string (slurp path) true)
                        (catch Exception _ nil))]
     (when-let [tokens (:tokens data)]
-      (let [access-token (:access_token tokens)]
+      (let [access-token (:access_token tokens)
+            id-token (:id_token tokens)]
         {:access-token access-token
          :refresh-token (:refresh_token tokens)
-         :account-id (jwt-account-id access-token)
+         :account-id (or (:account_id tokens)
+                         (when (map? id-token) (:chatgpt_account_id id-token))
+                         (jwt-account-id id-token)
+                         (jwt-account-id access-token))
+         :account-is-fedramp? (or (when (map? id-token)
+                                    (true? (:chatgpt_account_is_fedramp id-token)))
+                                  (jwt-fedramp? id-token)
+                                  (jwt-fedramp? access-token))
          :auth-mode (:auth_mode data)}))))
 
 (defn read-codex-auth
@@ -155,7 +172,8 @@
     (cond-> {"Authorization" (str "Bearer " (:access-token auth))
              "User-Agent" "codex_cli_rs/0.0.0 (clojure-llm-sdk)"
              "originator" "codex_cli_rs"}
-      (:account-id auth) (assoc "ChatGPT-Account-ID" (:account-id auth)))))
+      (:account-id auth) (assoc "ChatGPT-Account-ID" (:account-id auth))
+      (:account-is-fedramp? auth) (assoc "X-OpenAI-Fedramp" "true"))))
 
 (defn codex-backend-available?
   "Return true if valid Codex backend credentials are available."
@@ -400,21 +418,42 @@
       (get-in data [:item :index])
       0))
 
+(defn- event->seq [ev]
+  (cond
+    (nil? ev) []
+    (sequential? ev) ev
+    :else [ev]))
+
+(defn- maybe-many [events]
+  (let [events (vec (remove nil? events))]
+    (case (count events)
+      0 nil
+      1 (first events)
+      events)))
+
+(defn- response-completion-events [data finish-reason]
+  (let [response (:response data)]
+    (maybe-many
+     [(when-let [u (:usage response)]
+        (stream/usage-event (usage/normalize-usage :codex u)))
+      (stream/end-event :finish-reason finish-reason)])))
+
 (defn parse-response-codex
   [profile raw]
   ;; Handle SSE text responses (Codex backend returns SSE even for non-streaming)
-  (if (string? raw)
+  (let [provider-id (or (:profile/id profile) :codex)]
+    (if (string? raw)
     (let [data-maps (parse-sse-text raw)
           ;; Convert each data map to a faux SSE line and parse it
           lines (map #(str "data: " (json/generate-string %)) data-maps)
-          events (keep #(parse-stream-event-codex profile %) lines)
+          events (mapcat #(event->seq (parse-stream-event-codex profile %)) lines)
           ;; Only add a fallback end-event if the SSE didn't already include one
           has-end? (some #(= (:event/type %) :stream/end) events)
           events (concat [(stream/start-event)] events (when-not has-end? [(stream/end-event)]))
           model (some #(get-in % [:response :model]) data-maps)
           resp-id (some #(get-in % [:response :id]) data-maps)]
       (-> (stream/reduce-events events)
-          (stream/acc->response :codex model)
+          (stream/acc->response provider-id model)
           (assoc :response/id resp-id)
           (assoc :response/raw raw)))
     ;; Standard JSON response
@@ -443,24 +482,24 @@
           status (:status raw)
           finish-reason (if (seq tool-calls)
                           :tool-calls
-                          (get status-map status :unknown))]
-      {:response/id (:id raw)
-       :response/provider :codex
-       :response/model (:model raw)
-       :response/parts (into []
-                             (concat
-                              (map #(hash-map :part/type :text :text %) text-parts)
-                              (map #(hash-map :part/type :reasoning :reasoning/text %) reasoning-parts)
-                              tool-calls))
-       :response/tool-calls (not-empty tool-calls)
-       :response/finish-reason finish-reason
-       :response/usage (when-let [u (:usage raw)]
-                         (usage/normalize-usage :codex u))
-       :response/provider-data (not-empty
-                                (cond-> {}
-                                  (seq reasoning-details) (assoc :codex_reasoning_items reasoning-details)
-                                  (seq message-items) (assoc :codex_message_items message-items)))
-       :response/raw raw})))
+                          (get status-map status :unknown))
+          provider-data (cond-> {}
+                          (seq reasoning-details) (assoc :codex_reasoning_items reasoning-details)
+                          (seq message-items) (assoc :codex_message_items message-items))]
+      (cond-> {:response/id (:id raw)
+               :response/provider provider-id
+               :response/model (:model raw)
+               :response/parts (into []
+                                      (concat
+                                       (map #(hash-map :part/type :text :text %) text-parts)
+                                       (map #(hash-map :part/type :reasoning :reasoning/text %) reasoning-parts)
+                                       tool-calls))
+               :response/finish-reason finish-reason
+               :response/raw raw}
+        (seq tool-calls) (assoc :response/tool-calls tool-calls)
+        (:usage raw) (assoc :response/usage
+                            (usage/normalize-usage :codex (:usage raw)))
+        (seq provider-data) (assoc :response/provider-data provider-data))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing
@@ -521,13 +560,13 @@
 
         ;; Completion events
         (= t "response.completed")
-        (stream/end-event :finish-reason :stop)
+        (response-completion-events data :stop)
 
         (= t "response.incomplete")
-        (stream/end-event :finish-reason :incomplete)
+        (response-completion-events data :incomplete)
 
         (= t "response.failed")
-        (stream/end-event :finish-reason :unknown)
+        (response-completion-events data :unknown)
 
         :else nil))))
 
@@ -536,11 +575,11 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-error-codex
-  [_profile status body]
+  [profile status body]
   (errors/classify-error (Exception. "Codex API error")
                          :status status
                          :body body
-                         :provider :codex))
+                         :provider (or (:profile/id profile) :codex)))
 
 ;; ---------------------------------------------------------------------------
 ;; Transport record
