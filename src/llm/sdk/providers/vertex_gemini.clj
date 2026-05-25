@@ -81,15 +81,15 @@
                            {"Authorization" (str "Bearer " token)}))))
 
 (defn parse-response-vertex
-  [profile raw]
-  (gemini/parse-response-gemini profile raw))
+  [_profile raw]
+  (gemini/parse-response-gemini _profile raw))
 
 (defn parse-stream-event-vertex
-  [profile line]
-  (gemini/parse-stream-event-gemini profile line))
+  [_profile line]
+  (gemini/parse-stream-event-gemini _profile line))
 
 (defn parse-error-vertex
-  [profile status body]
+  [_profile status body]
   (errors/classify-error (Exception. "Vertex Gemini API error")
                          :status status
                          :body body
@@ -97,19 +97,19 @@
 
 (defrecord VertexGeminiTransport []
   t/Transport
-  (build-request [this profile request]
+  (build-request [_this profile request]
     (build-request-vertex profile request))
 
-  (parse-response [this profile raw]
+  (parse-response [_this profile raw]
     (parse-response-vertex profile raw))
 
-  (parse-stream-event [this profile line]
+  (parse-stream-event [_this profile line]
     (parse-stream-event-vertex profile line))
 
-  (parse-error [this profile status body]
+  (parse-error [_this profile status body]
     (parse-error-vertex profile status body))
 
-  (normalize-usage [this profile raw]
+  (normalize-usage [_this _profile raw]
     (usage/normalize-usage :gemini-native raw))
 
   (request-capabilities [_]

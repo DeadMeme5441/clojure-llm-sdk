@@ -120,10 +120,10 @@
   (let [model-lower (str/lower-case (or model ""))]
     (when (and reasoning (str/starts-with? model-lower "gemini"))
       (if (= (:enabled reasoning) false)
-        {:thinkingConfig {:includeThoughts false}}
+        {:includeThoughts false}
         (cond
           (str/starts-with? model-lower "gemini-2.5-")
-          {:thinkingConfig {:includeThoughts true}}
+          {:includeThoughts true}
 
           (or (str/starts-with? model-lower "gemini-3")
               (str/starts-with? model-lower "gemini-3.1"))
@@ -131,10 +131,10 @@
                 level (if (str/includes? model-lower "flash")
                         (case effort ("minimal" "low") "low" ("high" "xhigh") "high" "medium")
                         (case effort ("high" "xhigh") "high" "low"))]
-            {:thinkingConfig {:includeThoughts true :thinkingLevel level}})
+            {:includeThoughts true :thinkingLevel level})
 
           :else
-          {:thinkingConfig {:includeThoughts true}})))))
+          {:includeThoughts true})))))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
@@ -152,6 +152,20 @@
         tools (when (seq (:request/tools request))
                 [{:functionDeclarations (mapv tool->gemini (:request/tools request))}])
         thinking (build-thinking-config model (:request/reasoning request))
+        generation-config
+        (cond-> {}
+          (:request/temperature request)
+          (assoc :temperature (:request/temperature request))
+          (:request/top-p request)
+          (assoc :topP (:request/top-p request))
+          (:request/max-tokens request)
+          (assoc :maxOutputTokens (:request/max-tokens request))
+          (:request/stop request)
+          (assoc :stopSequences (if (string? (:request/stop request))
+                                  [(:request/stop request)]
+                                  (:request/stop request)))
+          thinking
+          (assoc :thinkingConfig thinking))
         ;; Gemini caching is "explicit only" from the SDK's
         ;; perspective: the caller pre-creates a CachedContent
         ;; resource (via cachedContents.create or the genai SDK) and
@@ -180,17 +194,8 @@
                      {:functionCallingConfig
                       {:mode "ANY"
                        :allowedFunctionNames [(get-in (:request/tool-choice request) [:function :name])]}}))})
-              (when (:request/temperature request)
-                {:generationConfig {:temperature (:request/temperature request)}})
-              (when (:request/top-p request)
-                {:generationConfig {:topP (:request/top-p request)}})
-              (when (:request/max-tokens request)
-                {:generationConfig {:maxOutputTokens (:request/max-tokens request)}})
-              (when (:request/stop request)
-                {:generationConfig {:stopSequences (if (string? (:request/stop request))
-                                                     [(:request/stop request)]
-                                                     (:request/stop request))}})
-              thinking)
+              (when (seq generation-config)
+                {:generationConfig generation-config}))
         ;; Gemini uses a different endpoint suffix + ?alt=sse for
         ;; SSE-formatted streams. Without alt=sse the streaming
         ;; endpoint returns a JSON array of chunks instead, which the
@@ -267,7 +272,7 @@
    via `(sequential? ev)` — keeps every event from a single chunk
    addressable, instead of losing usage and finish to a `cond` that
    only picks the first match."
-  [profile line]
+  [_profile line]
   (when-let [data (parse-sse-line line)]
     (let [candidate (first (:candidates data))
           parts (:parts (:content candidate))
@@ -303,7 +308,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-error-gemini
-  [profile status body]
+  [_profile status body]
   (errors/classify-error (Exception. "Gemini API error")
                          :status status
                          :body body
@@ -315,19 +320,19 @@
 
 (defrecord GeminiNativeTransport []
   t/Transport
-  (build-request [this profile request]
+  (build-request [_this profile request]
     (build-request-gemini profile request))
 
-  (parse-response [this profile raw]
+  (parse-response [_this profile raw]
     (parse-response-gemini profile raw))
 
-  (parse-stream-event [this profile line]
+  (parse-stream-event [_this profile line]
     (parse-stream-event-gemini profile line))
 
-  (parse-error [this profile status body]
+  (parse-error [_this profile status body]
     (parse-error-gemini profile status body))
 
-  (normalize-usage [this profile raw]
+  (normalize-usage [_this _profile raw]
     (usage/normalize-usage :gemini-native raw))
 
   (request-capabilities [_]

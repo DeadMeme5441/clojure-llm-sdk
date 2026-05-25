@@ -6,9 +6,9 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.io :as io]
             [cheshire.core :as json]
-            [llm.sdk :as sdk]
             [llm.sdk.schema :as schema]
             [llm.sdk.provider :as provider]
+            [llm.sdk.stream :as stream]
             [llm.sdk.transport :as transport]
             [llm.sdk.usage :as usage]
             [llm.sdk.providers.perplexity :as ppx]))
@@ -222,7 +222,7 @@
                  :citation/url "https://example.com"
                  :citation/title "Example"}
                 {:event/type :stream/end :event/finish-reason :stop}]
-        resp (llm.sdk.stream/events->response events :perplexity "sonar")
+        resp (stream/events->response events :perplexity "sonar")
         citation-parts (filter #(= :citation (:part/type %)) (:response/parts resp))]
     (is (= 1 (count citation-parts)))
     (is (= "https://example.com" (:citation/url (first citation-parts))))

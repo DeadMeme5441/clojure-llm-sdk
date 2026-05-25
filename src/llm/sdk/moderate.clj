@@ -9,6 +9,7 @@
    Providers without a moderation transport throw ex-info rather
    than NullPointer."
   (:require [llm.sdk.provider :as provider]
+            [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
             [llm.sdk.transport.moderate :as mt]))
 
@@ -23,6 +24,10 @@
   (let [profile (or (provider/get-provider provider-id)
                     (throw (ex-info "Unknown provider"
                                     {:provider provider-id})))
+        _ (when-not (schema/validate-moderation-request request)
+            (throw (ex-info "Invalid llm.sdk moderation request"
+                            {:error/type :schema/invalid-moderation-request
+                             :schema/explain (schema/explain-moderation-request request)})))
         ctor (:profile/moderation-transport-constructor profile)
         _ (when-not ctor
             (throw (ex-info "Moderation not supported by provider"

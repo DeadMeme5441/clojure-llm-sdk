@@ -75,7 +75,7 @@
                      (str/replace #"\s+" ""))]
     (.decode std-decoder stripped)))
 
-(defn- ^java.security.PrivateKey load-rsa-private-key [pem-string]
+(defn- load-rsa-private-key ^java.security.PrivateKey [pem-string]
   (let [kf (KeyFactory/getInstance "RSA")
         spec (PKCS8EncodedKeySpec. (pem->pkcs8-bytes pem-string))]
     (.generatePrivate kf spec)))

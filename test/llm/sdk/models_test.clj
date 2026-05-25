@@ -1,8 +1,8 @@
 (ns llm.sdk.models-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [clojure.java.io :as io]
             [cheshire.core :as json]
-            [malli.core :as m]
             [llm.sdk.models :as models]
             [llm.sdk.http :as http]))
 
@@ -52,7 +52,7 @@
         embed (first (filter #(= "text-embedding-004" (:model/id %)) entries))]
     (is (= 4 (count entries)))
     (testing "models/ prefix stripped"
-      (is (every? #(not (clojure.string/starts-with? (:model/id %) "models/"))
+      (is (every? #(not (str/starts-with? (:model/id %) "models/"))
                   entries)))
     (testing "context + max-output extracted"
       (is (= 1048576 (:model/context-length pro)))

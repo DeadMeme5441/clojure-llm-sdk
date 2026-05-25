@@ -2,7 +2,7 @@
   "Coverage for the opt-in :retry kwarg on sdk/complete. No live
    network, no real sleeping — http/request is stubbed and the sleep
    indirection is replaced so retry loops complete instantly."
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [clojure.test :refer [deftest is use-fixtures]]
             [llm.sdk :as sdk]
             [llm.sdk.http :as http]
             [llm.sdk.models-dev :as mdev]

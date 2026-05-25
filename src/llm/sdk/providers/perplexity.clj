@@ -110,7 +110,7 @@
    The final chunk packs citations, usage, and finish_reason together,
    so this returns a vector of events for that line (and a single
    event for the rest)."
-  [profile line]
+  [_profile line]
   (when-let [data (parse-sse-line line)]
     (let [choice (first (:choices data))
           delta (:delta choice)
@@ -147,7 +147,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-error-perplexity
-  [profile status body]
+  [_profile status body]
   (errors/classify-error (Exception. "Perplexity API error")
                          :status status
                          :body body
@@ -159,15 +159,15 @@
 
 (defrecord PerplexityTransport []
   t/Transport
-  (build-request [this profile request]
+  (build-request [_this profile request]
     (build-request-perplexity profile request))
-  (parse-response [this profile raw]
+  (parse-response [_this profile raw]
     (parse-response-perplexity profile raw))
-  (parse-stream-event [this profile line]
+  (parse-stream-event [_this profile line]
     (parse-stream-event-perplexity profile line))
-  (parse-error [this profile status body]
+  (parse-error [_this profile status body]
     (parse-error-perplexity profile status body))
-  (normalize-usage [this profile raw]
+  (normalize-usage [_this _profile raw]
     (usage/normalize-usage :perplexity raw))
   (request-capabilities [_]
     #{:chat :streaming :json-schema :web-search}))

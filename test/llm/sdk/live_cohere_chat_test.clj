@@ -79,7 +79,7 @@
                    [{:message/role :user
                      :message/content "What's the weather in NYC? Use the tool."}]
                    :request/tools
-                   [{:type "function"
+                   [{:type :function
                      :function {:name "get_weather"
                                 :description "Get the current weather for a city"
                                 :parameters {:type "object"

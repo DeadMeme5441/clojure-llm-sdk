@@ -1,8 +1,7 @@
 (ns llm.sdk.providers.fake
   "Fake/test provider that returns deterministic responses.
    Conforms to the Transport protocol."
-  (:require [llm.sdk.transport :as t]
-            [llm.sdk.stream :as stream]))
+  (:require [llm.sdk.transport :as t]))
 
 (defrecord FakeTransport [response-fn]
   t/Transport
@@ -20,14 +19,14 @@
        :response/parts [{:part/type :text :text "Hello from fake provider."}]
        :response/finish-reason :stop}))
 
-  (parse-stream-event [_ profile line]
+  (parse-stream-event [_ _profile _line]
     nil)
 
-  (parse-error [_ profile status body]
+  (parse-error [_ _profile _status _body]
     {:error/reason :unknown
      :error/retryable false})
 
-  (normalize-usage [_ profile raw]
+  (normalize-usage [_ _profile _raw]
     {:usage/input-tokens 10
      :usage/output-tokens 5
      :usage/total-tokens 15

@@ -87,44 +87,34 @@
         ;; Temporarily override the provider to simulate an OAuth token
         profile (assoc (provider/get-provider :anthropic)
                        :profile/auth-strategy :bearer
-                       :profile/env-var-names ["ANTHROPIC_OAUTH_TEST"])]
-    ;; We can't easily mock env vars, but we can test the header construction
-    ;; by calling build-request with a profile that has a bearer token
-    (let [req {:request/model "claude-sonnet-4-6"
-               :request/messages [{:message/role :user :message/content "Hello"}]}
-          ;; Simulate what happens when oauth-token? detects an OAuth token:
-          ;; the transport uses Bearer auth and adds beta headers
-          built (transport/build-request t profile req)]
-      ;; The request should build without errors
-      (is (map? built))
-      (is (string? (:url built))))))
+                       :profile/env-var-names ["ANTHROPIC_OAUTH_TEST"])
+        req {:request/model "claude-sonnet-4-6"
+             :request/messages [{:message/role :user :message/content "Hello"}]}
+        built (transport/build-request t profile req)]
+    ;; The request should build without errors.
+    (is (map? built))
+    (is (string? (:url built)))))
 
 (deftest test-build-request-oauth-system-prefix
-  "When OAuth mode is active, system prompt gets Claude Code prefix and sanitization."
-  (let [t (anthropic/make-transport)
-        profile (provider/get-provider :anthropic)
-        req {:request/model "claude-sonnet-4-6"
-             :request/messages [{:message/role :system :message/content "You are Hermes Agent"}
-                                {:message/role :user :message/content "Hello"}]}
-        ;; Manually invoke the internal helpers to verify behavior
-        sanitized (#'anthropic/sanitize-system-for-oauth
-                   [{:type "text" :text "You are Hermes Agent"}])]
-    (is (= "You are Claude Code" (get-in sanitized [0 :text])))))
+  (testing "OAuth mode sanitizes system prompt product references"
+    (let [sanitized (#'anthropic/sanitize-system-for-oauth
+                     [{:type "text" :text "You are Hermes Agent"}])]
+      (is (= "You are Claude Code" (get-in sanitized [0 :text]))))))
 
 (deftest test-mcp-prefix-tools
-  "OAuth mode prefixes tool names with mcp_."
-  (let [tools [{:type :function :function {:name "get_weather" :description "Weather"}}]
-        prefixed (#'anthropic/mcp-prefix-tools tools)]
-    (is (= "mcp_get_weather" (get-in prefixed [0 :function :name])))
-    ;; Already-prefixed names should not be double-prefixed
-    (is (= "mcp_get_weather" (get-in (#'anthropic/mcp-prefix-tools prefixed) [0 :function :name])))))
+  (testing "OAuth mode prefixes tool names with mcp_"
+    (let [tools [{:type :function :function {:name "get_weather" :description "Weather"}}]
+          prefixed (#'anthropic/mcp-prefix-tools tools)]
+      (is (= "mcp_get_weather" (get-in prefixed [0 :function :name])))
+      ;; Already-prefixed names should not be double-prefixed
+      (is (= "mcp_get_weather" (get-in (#'anthropic/mcp-prefix-tools prefixed) [0 :function :name]))))))
 
 (deftest test-mcp-prefix-tool-names-in-messages
-  "OAuth mode prefixes tool names in message history."
-  (let [messages [{:role "assistant"
-                   :content [{:type "tool_use" :name "get_weather" :id "tu_1"}]}]
-        prefixed (#'anthropic/mcp-prefix-tool-names-in-messages messages)]
-    (is (= "mcp_get_weather" (get-in prefixed [0 :content 0 :name])))))
+  (testing "OAuth mode prefixes tool names in message history"
+    (let [messages [{:role "assistant"
+                     :content [{:type "tool_use" :name "get_weather" :id "tu_1"}]}]
+          prefixed (#'anthropic/mcp-prefix-tool-names-in-messages messages)]
+      (is (= "mcp_get_weather" (get-in prefixed [0 :content 0 :name]))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Caching

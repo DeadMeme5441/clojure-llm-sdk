@@ -4,8 +4,7 @@
    Uses a stub :complete-fn to drive deterministic outcomes per
    provider; no real network calls."
   (:require [clojure.test :refer [deftest is testing]]
-            [llm.sdk :as sdk]
-            [llm.sdk.fallbacks :as fb]))
+            [llm.sdk :as sdk]))
 
 (defn- stub-complete
   "Return a stub completion fn driven by a map of {provider-id outcome}.

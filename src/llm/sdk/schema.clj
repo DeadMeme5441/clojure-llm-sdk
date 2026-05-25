@@ -138,6 +138,9 @@
    [:request/response-format {:optional true}
     [:map
      [:type [:enum :text :json_schema :json_object]]
+     [:name {:optional true} string?]
+     [:description {:optional true} string?]
+     [:strict {:optional true} boolean?]
      [:json-schema {:optional true} map?]]]
    [:request/reasoning {:optional true}
     [:map
@@ -366,7 +369,8 @@
 ;; ---------------------------------------------------------------------------
 
 (def AuthStrategy
-  [:enum :bearer :api-key-header :api-key-query :oauth :gcp-oauth :aws-sigv4 :none])
+  [:enum :bearer :api-key-header :api-key-query :oauth :oauth-external
+   :gcp-oauth :aws-sigv4 :none])
 
 (def ProviderProfile
   [:map
@@ -383,12 +387,14 @@
    [:profile/capabilities {:optional true} [:set keyword?]]
    [:profile/env-var-names {:optional true} [:vector string?]]
    [:profile/quirks {:optional true} map?]
-   [:profile/transport-constructor ifn?]
+   [:profile/transport-constructor {:optional true} ifn?]
    ;; Optional adapter hooks
    [:profile/embed-transport-constructor {:optional true} ifn?]
    [:profile/moderation-transport-constructor {:optional true} ifn?]
    [:profile/rerank-transport-constructor {:optional true} ifn?]
    [:profile/image-transport-constructor {:optional true} ifn?]
+   [:profile/transcribe-transport-constructor {:optional true} ifn?]
+   [:profile/speak-transport-constructor {:optional true} ifn?]
    [:profile/url-builder {:optional true} ifn?]
    [:profile/supported-params {:optional true} [:set keyword?]]])
 
@@ -418,3 +424,7 @@
 (defn explain-embed-response [x] (m/explain EmbedResponse x))
 (defn explain-moderation-request [x] (m/explain ModerationRequest x))
 (defn explain-moderation-response [x] (m/explain ModerationResponse x))
+(defn explain-rerank-request [x] (m/explain RerankRequest x))
+(defn explain-rerank-response [x] (m/explain RerankResponse x))
+(defn explain-image-gen-request [x] (m/explain ImageGenRequest x))
+(defn explain-image-gen-response [x] (m/explain ImageGenResponse x))

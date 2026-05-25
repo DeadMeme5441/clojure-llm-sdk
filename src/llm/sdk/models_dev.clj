@@ -15,8 +15,7 @@
   (:require [cheshire.core :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [llm.sdk.http :as http]
-            [llm.sdk.models :as models]))
+            [llm.sdk.http :as http]))
 
 ;; ---------------------------------------------------------------------------
 ;; SDK provider keyword ↔ models.dev provider id
