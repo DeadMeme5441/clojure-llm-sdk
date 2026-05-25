@@ -1,5 +1,5 @@
 (ns llm.sdk.litellm-snapshot-test
-  "Coverage for llm.sdk.litellm-snapshot (T2-17)."
+  "Coverage for llm.sdk.litellm-snapshot."
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.litellm-snapshot :as lsnap]))
 

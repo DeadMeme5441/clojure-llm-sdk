@@ -1,5 +1,5 @@
 (ns llm.sdk.rerank-test
-  "Driver + schema coverage for sdk/rerank (T2-16). Provider-specific
+  "Driver + schema coverage for sdk/rerank. Provider-specific
    request/response shape lives in
    providers/cohere-rerank-test and providers/voyage-rerank-test."
   (:require [clojure.test :refer [deftest is testing]]

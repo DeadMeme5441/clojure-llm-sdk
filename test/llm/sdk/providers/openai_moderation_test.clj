@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.openai-moderation-test
-  "Adapter-level coverage for the OpenAI Moderations transport (T2-13)."
+  "Adapter-level coverage for the OpenAI Moderations transport."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.io :as io]
             [cheshire.core :as json]

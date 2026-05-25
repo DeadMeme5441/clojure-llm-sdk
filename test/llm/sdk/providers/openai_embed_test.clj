@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.openai-embed-test
-  "Adapter-level coverage for the OpenAI embed transport (T2-01).
+  "Adapter-level coverage for the OpenAI embed transport.
 
    Verifies request body shape (single vs multi input), URL, auth
    header, response parsing against a golden fixture, and the
@@ -134,7 +134,7 @@
     (is (true? (:error/retryable err)))))
 
 ;; ---------------------------------------------------------------------------
-;; T2-07: extra OpenAI-shape embed providers attached to the same transport
+;; OpenAI-shape embed providers
 ;; ---------------------------------------------------------------------------
 
 (def ^:private openai-shape-embed-providers

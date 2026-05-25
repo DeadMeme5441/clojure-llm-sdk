@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.openai-moderation
-  "OpenAI Moderations adapter (T2-13).
+  "OpenAI Moderations adapter.
 
    POST {base}/moderations. omni-moderation-latest (the default since
    Nov 2024) accepts multi-modal input — a vector of {:type :text|:image_url}

@@ -8,15 +8,14 @@
    re-raise, surface to UI, etc.
 
    What this is NOT:
-     - Credential pools / multi-key load balancing
-     - Cooldown caches / weighted shuffle
-     - TPM/RPM enforcement / budget routing
-     - Latency-aware routing / complexity routing
+  - Credential pools / multi-key load balancing
+  - Cooldown caches / weighted shuffle
+  - TPM/RPM enforcement / budget routing
+  - Latency-aware routing / complexity routing
 
-   All of those are explicitly out of scope for the SDK per the
-   Task 2 design philosophy — they're credential-pool plumbing, the
-   exact kind of work LiteLLM's router.py exists for and that we
-   delegate back to the calling application.
+   All of those are explicitly out of scope for the SDK. They are
+   credential-pool plumbing, the exact kind of work LiteLLM's router.py
+   exists for and that we delegate back to the calling application.
 
    Reference: litellm-ref/router_utils/fallback_event_handlers.py:85
    run_async_fallback (shape only — do NOT port the pool plumbing)."

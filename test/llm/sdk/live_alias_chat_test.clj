@@ -1,5 +1,5 @@
 (ns llm.sdk.live-alias-chat-test
-  "Live chat smokes for the T2-03 OpenAI-compat aliases.
+  "Live chat smokes for OpenAI-compatible aliases.
 
    Each test issues one tiny request (≤8 max-tokens) against the
    cheapest available model on each provider, then asserts the canonical

@@ -5,9 +5,9 @@
    Request building is identical to openai-chat. Response parsing
    extends the OpenAI parser with two extractions:
 
-     - :search_results [{:url :title :snippet}, ...] → richer
+  - :search_results [{:url :title :snippet}, ...] → richer
        CitationPart per result
-     - :citations [\"url\", ...]                       → URL-only
+  - :citations [\"url\", ...]                       → URL-only
        CitationPart when search_results isn't present
 
    Usage normalization delegates to normalize-openai-usage, which
@@ -175,7 +175,7 @@
 (defn make-transport [] (->PerplexityTransport))
 
 ;; ---------------------------------------------------------------------------
-;; Custom cost calculator (T2-18)
+;; Custom cost calculator
 ;;
 ;; Perplexity's Sonar models charge token-style + per-search-query (the
 ;; \"Sonar Pro\" tier is the canonical case). The default token math

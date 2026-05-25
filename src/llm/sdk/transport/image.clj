@@ -1,6 +1,6 @@
 (ns llm.sdk.transport.image
   "Sibling protocol to llm.sdk.transport/Transport, scoped to image
-   generation endpoints (T2-10).
+   generation endpoints.
 
    Image generation is per-request: no streaming, no tools, no
    reasoning. The protocol is narrow on purpose, matching the

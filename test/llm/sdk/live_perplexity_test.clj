@@ -1,5 +1,5 @@
 (ns llm.sdk.live-perplexity-test
-  "Live smoke for the Perplexity adapter (T2-04).
+  "Live smoke for the Perplexity adapter.
 
    Verifies the adapter surfaces citation parts on a real
    web-search-backed response. Sonar is the cheapest search model

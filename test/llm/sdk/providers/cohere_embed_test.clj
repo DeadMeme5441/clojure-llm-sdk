@@ -1,8 +1,7 @@
 (ns llm.sdk.providers.cohere-embed-test
-  "Cohere /embed adapter coverage (T2-07). Cohere is the only embed
-   provider in the T2-07 batch with a divergent wire shape; the other
-   four (Voyage, Mistral, Together, Jina) ride the OpenAI embed
-   adapter and are covered alongside it under
+  "Cohere /embed adapter coverage. Cohere is the only embed
+   provider in this set with a divergent wire shape; Voyage, Mistral,
+   Together, and Jina ride the OpenAI embed adapter and are covered in
    openai_embed_aliases_test."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.io :as io]

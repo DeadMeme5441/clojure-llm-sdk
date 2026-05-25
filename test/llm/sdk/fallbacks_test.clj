@@ -1,5 +1,5 @@
 (ns llm.sdk.fallbacks-test
-  "Coverage for the sequential fallback helper (T2-08).
+  "Coverage for the sequential fallback helper.
 
    Uses a stub :complete-fn to drive deterministic outcomes per
    provider; no real network calls."

@@ -1,6 +1,6 @@
 (ns llm.sdk.providers.cohere-rerank-test
   "Adapter-level coverage for the Cohere/Jina shared rerank
-   transport (T2-16)."
+   transport."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.io :as io]
             [cheshire.core :as json]

@@ -2,7 +2,7 @@
   "Native Ollama adapter — /api/chat (chat) and /api/embed (embeddings).
 
    Ollama also exposes an OpenAI-compat /v1/chat/completions endpoint
-   that the existing :ollama profile (registered under T2-03) targets.
+   that the existing :ollama profile (registered) targets.
    This namespace registers a sibling :ollama-native profile for callers
    who want the native shape — older Ollama versions, vision input via
    the native :images field, or workflows that need the native

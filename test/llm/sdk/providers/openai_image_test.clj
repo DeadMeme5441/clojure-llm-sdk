@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.openai-image-test
-  "Adapter-level coverage for the OpenAI image generation transport (T2-10)."
+  "Adapter-level coverage for the OpenAI image generation transport."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.io :as io]
             [cheshire.core :as json]

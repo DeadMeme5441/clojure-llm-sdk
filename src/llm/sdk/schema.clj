@@ -59,7 +59,7 @@
 (def CitationPart
   "A search-result / cited-source surfaced by a provider. Perplexity
    emits these inline; Anthropic web-search and Cohere documents will
-   reuse the same shape under T2-02 + later issues."
+   reuse the same shape when those surfaces are added."
   [:map
    [:part/type [:= :citation]]
    [:citation/url string?]
@@ -204,7 +204,7 @@
    [:embed/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
-;; Image generation request / response (T2-10)
+;; Image generation request / response
 ;; ---------------------------------------------------------------------------
 
 (def ImageGenRequest
@@ -236,7 +236,7 @@
    [:image/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
-;; Rerank request / response (T2-16)
+;; Rerank request / response
 ;; ---------------------------------------------------------------------------
 
 (def RerankRequest
@@ -264,7 +264,7 @@
    [:rerank/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
-;; Moderation request / response (T2-13)
+;; Moderation request / response
 ;; ---------------------------------------------------------------------------
 
 (def ModerationRequest

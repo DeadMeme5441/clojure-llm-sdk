@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.azure-test
-  "Coverage for the Azure OpenAI deployment-routing helper (T2-05).
+  "Coverage for the Azure OpenAI deployment-routing helper.
 
    Azure shares OpenAI's body shape but differs in URL construction
    ({endpoint}/openai/deployments/{deployment}/chat/completions
@@ -149,7 +149,7 @@
     (is (not= (:profile/base-url p1) (:profile/base-url p2)))))
 
 ;; ---------------------------------------------------------------------------
-;; URL-builder hook also lets non-Azure profiles plug in (sets up T2-06)
+;; URL-builder hook also lets non-Azure profiles plug in.
 ;; ---------------------------------------------------------------------------
 
 (deftest test-url-builder-hook-honoured

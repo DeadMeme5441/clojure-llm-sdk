@@ -64,7 +64,7 @@
   (provider/get-provider provider-id))
 
 ;; ---------------------------------------------------------------------------
-;; Model catalog — registry-backed lookups
+;; Model catalog - registry-backed lookups
 ;; ---------------------------------------------------------------------------
 
 (defn list-models
@@ -167,7 +167,7 @@
 (defn- retry-after-ms-from
   "Read the Retry-After header off a hato response and convert to ms.
    Header lookup is case-insensitive at the source but hato returns a
-   keyword-or-string map — we try both spellings."
+   keyword-or-string map - we try both spellings."
   [resp]
   (let [headers (:headers resp)
         v (or (get headers "retry-after")
@@ -176,7 +176,7 @@
     (retry/parse-retry-after v)))
 
 (def ^:dynamic *retry-sleep-fn*
-  "Indirection for tests — replace to drive retry without actually
+  "Indirection for tests - replace to drive retry without actually
    sleeping. Default is Thread/sleep."
   (fn [ms] (Thread/sleep (long ms))))
 
@@ -234,7 +234,7 @@
    The returned response is stamped with :response/cost and
    :response/cache derived from its :response/usage. When pricing or
    cache stats are unknown, those fields carry honest :unknown markers
-   — never substituted 0/$0.
+   - never substituted 0/$0.
 
    Options:
      :stream?   If true, returns a lazy seq of stream events
@@ -245,14 +245,14 @@
                 true → use llm.sdk.retry/default-policy. A map → merged
                 into the default policy; supply only the keys you want
                 to override (e.g. {:retry/max-attempts 5}).
-                Streaming requests are not retried — partial streams
+                Streaming requests are not retried - partial streams
                 can't be safely resumed by the SDK."
   [provider-id request & {:keys [stream? on-event retry]}]
   (let [profile (or (provider/get-provider provider-id)
                     (throw (ex-info "Unknown provider" {:provider provider-id})))
         _ (validate-chat-request! request)
         transport ((:profile/transport-constructor profile))
-        ;; T2-12 — strip canonical fields the provider doesn't support
+        ;; Strip canonical fields the provider doesn't support
         ;; (and warn) when the profile opts in via :profile/supported-params.
         request (request/apply-supported-params profile request)
         ;; Adapters may need to know if streaming so they can pick the
@@ -263,7 +263,7 @@
         binary-stream? (= :aws-eventstream (:profile/binary-stream profile))
         model (:request/model request)]
     (if stream?
-      ;; Streaming path — retry NOT applied; a partially-consumed stream
+      ;; Streaming path - retry NOT applied; a partially-consumed stream
       ;; can't be safely resumed by the SDK. Wrap your own retry loop
       ;; if you need it.
       (let [events (if binary-stream?
@@ -302,8 +302,7 @@
 (defn embed
   "Send a canonical embed request and return a canonical EmbedResponse.
    Provider must be a registered provider whose profile carries a
-   :profile/embed-transport-constructor (currently :openai under T2-01;
-   T2-07 extends this to Cohere/Voyage/Mistral/Together/Jina).
+   :profile/embed-transport-constructor.
    Request keys: :embed/model, :embed/inputs (vector of strings),
    plus optional :embed/dimensions, :embed/encoding-format,
    :embed/user, :embed/provider-options."
@@ -317,7 +316,7 @@
 (defn moderate
   "Send a canonical moderation request and return a ModerationResponse.
    Provider must carry :profile/moderation-transport-constructor
-   (currently :openai under T2-13).
+   in its profile.
 
    :moderation/inputs is a vector of either strings or maps shaped
    {:type :text :text \"...\"} / {:type :image_url :image_url \"https://...\"}.
@@ -332,8 +331,8 @@
 
 (defn rerank
   "Send a canonical rerank request and return a RerankResponse.
-   Providers carrying :profile/rerank-transport-constructor (currently
-   :cohere, :jina, :voyage under T2-16).
+   Provider must carry :profile/rerank-transport-constructor
+   in its profile.
 
    Required keys: :rerank/model, :rerank/query, :rerank/documents
    (vector of strings). Optional: :rerank/top-n,
@@ -348,7 +347,7 @@
 (defn generate-image
   "Send a canonical image generation request and return an ImageGenResponse.
    Provider must carry :profile/image-transport-constructor
-   (currently :openai under T2-10).
+   in its profile.
 
    Required: :image/prompt. Optional: :image/model, :image/n,
    :image/size, :image/quality, :image/style,
@@ -363,7 +362,7 @@
 (defn transcribe
   "Send a canonical audio-transcription request and return a TranscribeResponse.
    Provider must carry :profile/transcribe-transport-constructor
-   (currently :openai and :groq under T2-14).
+   in its profile.
 
    Required: :transcribe/file (java.io.File / path / bytes / InputStream)
    and :transcribe/model. Optional: :transcribe/language,
@@ -382,7 +381,7 @@
   "Send a canonical text-to-speech request and return a SpeakResponse
    {:audio/bytes byte-array :audio/content-type str ...}.
    Provider must carry :profile/speak-transport-constructor
-   (currently :openai and :elevenlabs under T2-15).
+   in its profile.
 
    Required: :speak/model, :speak/input. Optional: :speak/voice,
    :speak/format (:mp3|:opus|:aac|:flac|:wav|:pcm), :speak/speed,
@@ -399,7 +398,7 @@
    request, returning the first success. If all fail, throws ex-info
    with :attempts (vector of failure maps) and :providers.
 
-   No credential pools, no cooldowns, no rate-limit tracking — that's
+   No credential pools, no cooldowns, no rate-limit tracking - that's
    credential-pool routing, which is explicitly out of scope for this
    SDK. Compose this with your own resilience layer for those needs."
   ([providers request]

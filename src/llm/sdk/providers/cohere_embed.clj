@@ -2,14 +2,14 @@
   "Cohere embed adapter — POST {base}/embed.
 
    Cohere's wire shape diverges from OpenAI's in three places:
-     - Request uses :texts (vector) instead of :input.
-     - Request carries a required :input_type
+  - Request uses :texts (vector) instead of :input.
+  - Request carries a required :input_type
        (search_document / search_query / classification / clustering)
        which lives in canonical request as
        :embed/provider-options :input-type. Defaults to
        \"search_document\" when omitted — that's the safest fallback
        for general-purpose retrieval.
-     - Response embeddings live under :embeddings.float (newer API
+  - Response embeddings live under :embeddings.float (newer API
        with multi-format support) or :embeddings (legacy single
        format). Usage is in :meta.billed_units.input_tokens.
 

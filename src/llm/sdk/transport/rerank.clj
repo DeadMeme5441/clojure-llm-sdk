@@ -1,6 +1,6 @@
 (ns llm.sdk.transport.rerank
   "Sibling protocol to llm.sdk.transport/Transport, scoped to rerank
-   endpoints (T2-16). Rerank is a natural pair-step to embeddings —
+   endpoints. Rerank is a natural pair-step to embeddings —
    search apps need both, and the three providers we ship adapters
    for (Cohere, Voyage, Jina) all share a similar wire shape with
    minor field-naming differences.")

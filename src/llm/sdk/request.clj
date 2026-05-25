@@ -4,10 +4,9 @@
    request fields the provider doesn't support.
 
    The supported-params set lives on the profile as
-   :profile/supported-params (introduced in T2-12). When set, any
-   canonical droppable field present in the request but absent from
-   the set is removed before the transport builds the body, and one
-   warning is emitted per call.
+   :profile/supported-params. When set, any canonical droppable field
+   present in the request but absent from the set is removed before
+   the transport builds the body, and one warning is emitted per call.
 
    When :profile/supported-params is NOT set on a profile, requests
    pass through unchanged — providers opt in to the drop+warn

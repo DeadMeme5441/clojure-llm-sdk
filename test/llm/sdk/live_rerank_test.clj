@@ -1,5 +1,5 @@
 (ns llm.sdk.live-rerank-test
-  "Live smokes for the T2-16 rerank adapters (Cohere/Voyage/Jina).
+  "Live smokes for rerank adapters (Cohere/Voyage/Jina).
    All env-gated; smokes use 3-document inputs to stay cheap.
 
    To run only this suite:
