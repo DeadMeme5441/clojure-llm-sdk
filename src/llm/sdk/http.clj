@@ -8,9 +8,13 @@
   "Dynamic var for the HTTP client. Bind to a mock for tests."
   nil)
 
-(defn- client []
-  (or *http-client* (hc/build-http-client {:connect-timeout 30000
-                                            :timeout 120000})))
+(defn- client
+  ([] (client nil))
+  ([{:keys [http-client connect-timeout-ms timeout-ms]}]
+   (or http-client
+       *http-client*
+       (hc/build-http-client {:connect-timeout (or connect-timeout-ms 30000)
+                              :timeout (or timeout-ms 120000)}))))
 
 (defn- encode-body
   "Serialize body to a JSON string unless already a string or byte array
@@ -41,13 +45,13 @@
   "Make an HTTP request. Returns a map with :status, :body, :headers
    for every status code (including 4xx/5xx) — callers branch on
    :status. Body is parsed as JSON if Content-Type is application/json."
-  [{:keys [method url headers body query-params]}]
+  [{:keys [method url headers body query-params] :as req}]
   (let [opts {:method method
               :url url
               :headers (merge {"Content-Type" "application/json"
                                "Accept" "application/json"}
                               headers)
-              :http-client (client)
+              :http-client (client req)
               ;; Always return a response map — callers (sdk/complete,
               ;; llm.sdk.models/get-json) branch on :status >= 400
               ;; themselves and throw ex-info with provider-specific
@@ -86,14 +90,14 @@
   "Make an SSE streaming request. Returns a response map. Successful
    responses carry an open InputStream in :body; non-2xx responses
    carry a parsed body and have already closed the stream."
-  [{:keys [method url headers body]}]
+  [{:keys [method url headers body] :as req}]
   (let [opts {:method method
               :url url
               :headers (merge {"Content-Type" "application/json"
                                "Accept" "text/event-stream"}
                               headers)
               :as :stream
-              :http-client (client)
+              :http-client (client req)
               :throw-exceptions? false}
         opts (if body
                (assoc opts :body (encode-body body))
@@ -121,12 +125,12 @@
    in :body. Used by adapters that speak a binary framing protocol
    (e.g. AWS event-stream for Bedrock /converse-stream) and need to
    decode frames themselves."
-  [{:keys [method url headers body]}]
+  [{:keys [method url headers body] :as req}]
   (let [opts {:method method
               :url url
               :headers headers
               :as :stream
-              :http-client (client)
+              :http-client (client req)
               :throw-exceptions? false}
         opts (if body
                (assoc opts :body (encode-body body))

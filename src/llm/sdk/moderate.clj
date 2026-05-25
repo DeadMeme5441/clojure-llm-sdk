@@ -11,6 +11,7 @@
   (:require [llm.sdk.provider :as provider]
             [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
+            [llm.sdk.errors :as errors]
             [llm.sdk.transport.moderate :as mt]))
 
 (defn moderate
@@ -20,8 +21,10 @@
    only moderation) or {:type :text :text \"...\"} / {:type :image_url
    :image_url \"https://...\"} maps. The OpenAI omni-moderation models
    accept the multi-modal shape."
-  [provider-id request]
-  (let [profile (or (provider/get-provider provider-id)
+  [provider-id request & {:keys [config]}]
+  (let [profile (some-> (provider/get-provider provider-id)
+                        (provider/apply-runtime-config config))
+        profile (or profile
                     (throw (ex-info "Unknown provider"
                                     {:provider provider-id})))
         _ (when-not (schema/validate-moderation-request request)
@@ -34,7 +37,14 @@
                             {:provider provider-id})))
         transport (ctor)
         req (mt/build-moderation-request transport profile request)
-        resp (http/request req)
+        req (provider/apply-http-options profile req)
+        resp (try
+               (http/request req)
+               (catch Exception e
+                 (throw (ex-info "Provider moderation transport error"
+                                 {:error (errors/classify-error e :provider provider-id)
+                                  :provider provider-id}
+                                 e))))
         status (:status resp)
         body (:body resp)]
     (if (>= status 400)

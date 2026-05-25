@@ -49,7 +49,7 @@
   :profile/protocol-family :fake
   :profile/base-url "https://fake.local"
   :profile/auth-strategy :none
-  :profile/supports-model-listing true
+  :profile/supports-model-listing false
   :profile/capabilities #{:chat :streaming :tools}
   :profile/env-var-names []
   :profile/transport-constructor make-fake-transport})

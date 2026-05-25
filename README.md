@@ -58,7 +58,7 @@ Streaming uses the same request shape:
   :stream? true
   :on-event (fn [event]
               (when (= :stream/content-delta (:event/type event))
-                (print (:delta event)))))
+                (print (:event/delta event)))))
 ```
 
 ## Documentation
@@ -116,6 +116,15 @@ Some provider names are intentionally distinct:
 - `:kimi-code` uses Kimi Code's coding endpoint and reads `KIMI_API_KEY`.
 - `:vertex-gemini` uses Google Application Default Credentials or `GOOGLE_OAUTH_ACCESS_TOKEN`.
 - `:codex-backend` reads OAuth data from the official Codex CLI auth file.
+
+Applications that manage secrets outside environment variables can pass per-call runtime config:
+
+```clojure
+(sdk/complete :openai request
+              :config {:api-key "sk-..."
+                       :base-url "https://api.openai.com/v1"
+                       :timeout-ms 60000})
+```
 
 ## Design Guarantees
 

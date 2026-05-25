@@ -12,18 +12,26 @@
   (:require [hato.client :as hc]
             [cheshire.core :as json]
             [llm.sdk.provider :as provider]
+            [llm.sdk.schema :as schema]
+            [llm.sdk.errors :as errors]
             [llm.sdk.transport.speak :as st]))
+
+(defn- http-client [{:keys [http-client connect-timeout-ms timeout-ms]}]
+  (or http-client
+      (hc/build-http-client {:connect-timeout (or connect-timeout-ms 30000)
+                             :timeout (or timeout-ms 120000)})))
 
 (defn- bytes-request
   "TTS responses are raw audio bytes — we read :as :byte-array and
    forward content-type so the transport can label the audio."
-  [{:keys [method url headers body]}]
+  [{:keys [method url headers body] :as req}]
   (let [resp (hc/request
               {:method method
                :url url
                :headers headers
                :body (when body (json/generate-string body))
                :as :byte-array
+               :http-client (http-client req)
                :throw-exceptions? false})]
     {:status (:status resp)
      :headers (:headers resp)
@@ -40,17 +48,30 @@
      :speak/speed    optional [0.25, 4.0]
      :speak/instructions  optional style/affect prompt (OpenAI tts-1-hd / gpt-4o-mini-tts)
      :speak/provider-options  extra provider-specific fields"
-  [provider-id request]
-  (let [profile (or (provider/get-provider provider-id)
+  [provider-id request & {:keys [config]}]
+  (let [profile (some-> (provider/get-provider provider-id)
+                        (provider/apply-runtime-config config))
+        profile (or profile
                     (throw (ex-info "Unknown provider"
                                     {:provider provider-id})))
+        _ (when-not (schema/validate-speak-request request)
+            (throw (ex-info "Invalid llm.sdk speak request"
+                            {:error/type :schema/invalid-speak-request
+                             :schema/explain (schema/explain-speak-request request)})))
         ctor (:profile/speak-transport-constructor profile)
         _ (when-not ctor
             (throw (ex-info "Text-to-speech not supported by provider"
                             {:provider provider-id})))
         transport (ctor)
         req (st/build-speak-request transport profile request)
-        resp (bytes-request req)
+        req (provider/apply-http-options profile req)
+        resp (try
+               (bytes-request req)
+               (catch Exception e
+                 (throw (ex-info "Provider TTS transport error"
+                                 {:error (errors/classify-error e :provider provider-id)
+                                  :provider provider-id}
+                                 e))))
         status (:status resp)]
     (if (>= status 400)
       (let [body (try (json/parse-string (String. ^bytes (:body resp)) true)

@@ -102,6 +102,27 @@
       (is (= :stream/end (:event/type (first events))))
       (is (= :length (:event/finish-reason (first events)))))))
 
+(deftest test-parse-stream-event-tool-call-includes-args-and-id
+  (let [t (gemini/make-transport)
+        line (str "data: "
+                  (cheshire.core/generate-string
+                   {:candidates [{:content {:parts [{:functionCall
+                                                      {:id "gemini_call_1"
+                                                       :name "get_weather"
+                                                       :args {:location "NYC"}}
+                                                      :thoughtSignature "sig-1"}]}}]}))
+        events (transport/parse-stream-event t {} line)]
+    (is (= [:stream/tool-call-start
+            :stream/tool-call-delta
+            :stream/tool-call-end
+            :stream/provider-state]
+           (mapv :event/type events)))
+    (is (= "gemini_call_1" (:tool-call/id (first events))))
+    (is (= "{\"location\":\"NYC\"}"
+           (:tool-call/arguments-delta (second events))))
+    (is (= "sig-1"
+           (get-in (last events) [:provider-state/data :parts 0 :thoughtSignature])))))
+
 (deftest test-build-request-tools
   (let [t (gemini/make-transport)
         profile (provider/get-provider :gemini-native)
@@ -135,6 +156,21 @@
         resp (transport/parse-response t {} raw)]
     (is (= 1 (count (:response/tool-calls resp))))
     (is (= "get_weather" (get-in resp [:response/tool-calls 0 :tool-call/name])))))
+
+(deftest test-parse-response-tool-call-preserves-provider-id
+  (let [t (gemini/make-transport)
+        raw {:candidates [{:content {:parts [{:functionCall {:id "call_from_provider"
+                                                             :name "get_weather"
+                                                             :args {:location "NYC"}}
+                                             :thoughtSignature "sig-1"}]}
+                          :finishReason "STOP"}]}
+        resp (transport/parse-response t {} raw)]
+    (is (= "call_from_provider"
+           (get-in resp [:response/tool-calls 0 :tool-call/id])))
+    (is (= "sig-1"
+           (get-in resp [:response/tool-calls 0
+                         :tool-call/provider-data
+                         :gemini/thought-signature])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Caching wiring (explicit cachedContent)

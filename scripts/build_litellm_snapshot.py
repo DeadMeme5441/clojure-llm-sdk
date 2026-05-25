@@ -27,7 +27,6 @@ PROVIDER_MAP = {
     "anthropic": "anthropic",
     "gemini": "gemini-native",
     "vertex_ai-language-models": "vertex-gemini",
-    "vertex_ai-anthropic_models": "vertex-anthropic",
     "openrouter": "openrouter",
     "deepseek": "deepseek",
     "text-completion-deepseek": "deepseek",
@@ -58,6 +57,7 @@ MODE_CAPS = {
     "audio_speech": ["audio-tts"],
     "realtime": ["realtime"],
     "search": ["web-search"],
+    "moderation": ["moderation"],
     "moderations": ["moderation"],
     "responses": ["chat", "streaming", "responses"],
 }
@@ -109,6 +109,20 @@ def per_million(val):
     return None
 
 
+def numeric(val):
+    if isinstance(val, (int, float)):
+        return float(val)
+    return None
+
+
+def first_numeric(*vals):
+    for val in vals:
+        n = numeric(val)
+        if n is not None:
+            return n
+    return None
+
+
 def derive_capabilities(entry):
     caps = set()
     mode = entry.get("mode")
@@ -146,6 +160,30 @@ def normalize_entry(key: str, raw: dict):
     ]:
         if (v := per_million(raw.get(src_key))) is not None:
             cost.setdefault(dst_key, v)
+    request_cost = sum(
+        n for n in [
+            numeric(raw.get("input_cost_per_request")),
+            numeric(raw.get("output_cost_per_request")),
+        ]
+        if n is not None
+    )
+    if request_cost:
+        cost["request_cost"] = request_cost
+    if (v := first_numeric(raw.get("output_cost_per_image"),
+                           raw.get("input_cost_per_image"))) is not None:
+        cost["image_per_image"] = v
+    if (v := first_numeric(raw.get("output_cost_per_pixel"),
+                           raw.get("input_cost_per_pixel"))) is not None:
+        cost["image_per_megapixel"] = v * 1_000_000.0
+    mode = raw.get("mode")
+    if mode == "audio_transcription":
+        if (v := first_numeric(raw.get("input_cost_per_second"),
+                               raw.get("output_cost_per_second"))) is not None:
+            cost["transcription_per_minute"] = v * 60.0
+    if mode == "audio_speech":
+        if (v := first_numeric(raw.get("input_cost_per_character"),
+                               raw.get("output_cost_per_character"))) is not None:
+            cost["tts_per_million_chars"] = v * 1_000_000.0
 
     out = {
         "id": model_id,

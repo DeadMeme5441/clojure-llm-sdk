@@ -21,7 +21,26 @@
     (is (= 1 (count (:tool-calls-indexed acc))))
     (is (= "get_weather" (get-in acc [:tool-calls-indexed 0 :tool-call/name])))
     (is (= "{\"location\": \"NYC\"}" (get-in acc [:tool-calls-indexed 0 :tool-call/arguments])))
-    (is (empty? (:parts acc)))))
+    (is (= [{:part/type :tool-call
+             :tool-call/id "call_1"
+             :tool-call/name "get_weather"
+             :tool-call/arguments "{\"location\": \"NYC\"}"
+             :tool-call/provider-data {:stream/index 0}}]
+           (:parts acc)))))
+
+(deftest test-tool-call-parts-preserve-stream-order
+  (let [events [(stream/start-event)
+                (stream/content-delta "Use ")
+                (stream/tool-call-start 0 "call_1" "get_weather")
+                (stream/tool-call-delta 0 "{\"location\":\"NYC\"}")
+                (stream/content-delta " after")
+                (stream/end-event :finish-reason :tool-calls)]
+        resp (stream/events->response events :openai "gpt-4o")]
+    (is (= [:text :tool-call :text]
+           (mapv :part/type (:response/parts resp))))
+    (is (= "call_1" (get-in resp [:response/tool-calls 0 :tool-call/id])))
+    (is (= "{\"location\":\"NYC\"}"
+           (get-in resp [:response/tool-calls 0 :tool-call/arguments])))))
 
 (deftest test-events->response
   (let [events [(stream/start-event)

@@ -62,6 +62,23 @@
       (is (= "object" (get-in tools [0 :toolSpec :inputSchema :json :type]))))
     (is (= {:auto {}} (get-in built [:body :toolConfig :toolChoice])))))
 
+(deftest test-assistant-tool-call-replay-keeps-text
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        built (transport/build-request
+               t profile
+               {:request/model "claude-3-5-sonnet"
+                :request/messages [{:message/role :assistant
+                                    :message/content "I'll check."
+                                    :message/tool-calls [{:part/type :tool-call
+                                                          :tool-call/id "tool_1"
+                                                          :tool-call/name "fetch_weather"
+                                                          :tool-call/arguments "{\"city\":\"NYC\"}"}]}]})
+        content (get-in built [:body :messages 0 :content])]
+    (is (= "I'll check." (get-in content [0 :text])))
+    (is (= "tool_1" (get-in content [1 :toolUse :toolUseId])))
+    (is (= {"city" "NYC"} (get-in content [1 :toolUse :input])))))
+
 (deftest test-cache-point-default-on-when-cache-enabled
   (testing "Bedrock injects cachePoint sentinel after system and final user content"
     (let [t (bedrock/make-transport)

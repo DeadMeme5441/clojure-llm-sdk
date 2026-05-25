@@ -1,5 +1,6 @@
 (ns llm.sdk.providers.anthropic-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [cheshire.core :as json]
+            [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
             [llm.sdk.providers.anthropic :as anthropic]))
@@ -55,6 +56,32 @@
     (is (= "get_weather" (get-in resp [:response/tool-calls 0 :tool-call/name])))
     (is (= "{\"location\":\"NYC\"}" (get-in resp [:response/tool-calls 0 :tool-call/arguments])))))
 
+(deftest test-build-request-tool-loop-replay
+  (let [t (anthropic/make-transport)
+        profile (provider/get-provider :anthropic)
+        req {:request/model "claude-sonnet-4-6"
+             :request/messages [{:message/role :user
+                                 :message/content "weather?"}
+                                {:message/role :assistant
+                                 :message/content "I'll check."
+                                 :message/tool-calls [{:part/type :tool-call
+                                                       :tool-call/id "toolu_1"
+                                                       :tool-call/name "get_weather"
+                                                       :tool-call/arguments "{\"location\":\"NYC\"}"}]}
+                                {:message/role :tool
+                                 :message/tool-call-id "toolu_1"
+                                 :message/content "72F"}]}
+        built (transport/build-request t profile req)
+        messages (get-in built [:body :messages])]
+    (is (= "assistant" (get-in messages [1 :role])))
+    (is (= ["text" "tool_use"]
+           (mapv :type (get-in messages [1 :content]))))
+    (is (= {:location "NYC"}
+           (get-in messages [1 :content 1 :input])))
+    (is (= "user" (get-in messages [2 :role])))
+    (is (= "tool_result" (get-in messages [2 :content 0 :type])))
+    (is (= "toolu_1" (get-in messages [2 :content 0 :tool_use_id])))))
+
 (deftest test-parse-response-thinking
   (let [t (anthropic/make-transport)
         raw {:id "msg_3"
@@ -67,6 +94,38 @@
     (is (= 2 (count (:response/parts resp))))
     (is (= :reasoning (:part/type (first (:response/parts resp)))))
     (is (= :text (:part/type (second (:response/parts resp)))))))
+
+(deftest test-parse-stream-tool-input-and-finish
+  (let [t (anthropic/make-transport)
+        start-line (str "data: "
+                        (json/generate-string
+                         {:type "content_block_start"
+                          :index 2
+                          :content_block {:type "tool_use"
+                                          :id "toolu_1"
+                                          :name "get_weather"}}))
+        delta-line (str "data: "
+                        (json/generate-string
+                         {:type "content_block_delta"
+                          :index 2
+                          :delta {:type "input_json_delta"
+                                  :partial_json "{\"location\""}}))
+        finish-line (str "data: "
+                         (json/generate-string
+                          {:type "message_delta"
+                           :delta {:stop_reason "tool_use"}
+                           :usage {:input_tokens 5
+                                   :output_tokens 3}}))
+        start-ev (transport/parse-stream-event t {} start-line)
+        delta-ev (transport/parse-stream-event t {} delta-line)
+        finish-events (transport/parse-stream-event t {} finish-line)]
+    (is (= :stream/tool-call-start (:event/type start-ev)))
+    (is (= 2 (:tool-call/index start-ev)))
+    (is (= :stream/tool-call-delta (:event/type delta-ev)))
+    (is (= "{\"location\"" (:tool-call/arguments-delta delta-ev)))
+    (is (= [:stream/usage :stream/end]
+           (mapv :event/type finish-events)))
+    (is (= :tool-calls (:event/finish-reason (second finish-events))))))
 
 ;; ---------------------------------------------------------------------------
 ;; OAuth token detection

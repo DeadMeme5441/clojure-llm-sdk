@@ -5,7 +5,7 @@ The public API lives in `llm.sdk`. Provider ids are keywords such as `:openai`, 
 ## Chat
 
 ```clojure
-(sdk/complete provider-id request & {:keys [stream? on-event retry]})
+(sdk/complete provider-id request & {:keys [stream? on-event retry config]})
 ```
 
 Minimum request:
@@ -39,13 +39,29 @@ Options:
 | `:on-event fn` | Callback invoked for every stream event. |
 | `:retry true` | Use the default retry policy for retryable transient failures. |
 | `:retry {...}` | Merge caller policy into the default retry policy. |
+| `:config {...}` | Per-call runtime configuration for auth, base URL, headers, HTTP client, and timeouts. |
 
 `sdk/complete` validates the request, applies provider supported-parameter rules, builds the provider request, parses the response, and stamps cost/cache data from usage.
+
+Runtime config is profile-local for that call and does not mutate the provider registry:
+
+```clojure
+(sdk/complete
+  :openai
+  {:request/model "gpt-4o-mini"
+   :request/messages [{:message/role :user
+                       :message/content "Hi"}]}
+  :config {:api-key "sk-..."
+           :base-url "https://api.openai.com/v1"
+           :headers {"X-App" "my-service"}
+           :connect-timeout-ms 5000
+           :timeout-ms 60000})
+```
 
 ## Embeddings
 
 ```clojure
-(sdk/embed provider-id request)
+(sdk/embed provider-id request & {:keys [config]})
 ```
 
 ```clojure
@@ -59,7 +75,7 @@ The result includes `:embed/vectors`, `:embed/model`, `:embed/provider`, dimensi
 ## Moderation
 
 ```clojure
-(sdk/moderate provider-id request)
+(sdk/moderate provider-id request & {:keys [config]})
 ```
 
 ```clojure
@@ -72,7 +88,7 @@ The result includes provider-normalized flagged status, categories, category sco
 ## Rerank
 
 ```clojure
-(sdk/rerank provider-id request)
+(sdk/rerank provider-id request & {:keys [config]})
 ```
 
 ```clojure
@@ -88,7 +104,7 @@ The result includes ranked indices, scores, optional document echoes, usage when
 ## Image Generation
 
 ```clojure
-(sdk/generate-image provider-id request)
+(sdk/generate-image provider-id request & {:keys [config]})
 ```
 
 ```clojure
@@ -104,7 +120,7 @@ Images may return URLs or base64 JSON depending on provider and request options.
 ## Audio Transcription
 
 ```clojure
-(sdk/transcribe provider-id request)
+(sdk/transcribe provider-id request & {:keys [config]})
 ```
 
 ```clojure
@@ -119,7 +135,7 @@ The result includes text, optional language/duration/segments/words, and raw res
 ## Text To Speech
 
 ```clojure
-(sdk/speak provider-id request)
+(sdk/speak provider-id request & {:keys [config]})
 ```
 
 ```clojure

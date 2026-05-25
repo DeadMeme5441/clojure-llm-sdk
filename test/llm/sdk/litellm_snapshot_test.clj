@@ -13,7 +13,8 @@
     (is (contains? kp :anthropic))
     (is (contains? kp :mistral))
     (is (contains? kp :perplexity))
-    (is (contains? kp :bedrock))))
+    (is (contains? kp :bedrock))
+    (is (not (contains? kp :vertex-anthropic)))))
 
 (deftest test-lookup-openai-gpt-4o
   (let [e (lsnap/lookup :openai "gpt-4o")]
@@ -48,6 +49,14 @@
   (testing "real Perplexity wire models are kept"
     (is (some? (lsnap/lookup :perplexity "sonar-pro"))
         "perplexity/sonar-pro should be in the snapshot")))
+
+(deftest test-non-token-pricing-is-preserved
+  (testing "image model pricing survives the LiteLLM snapshot"
+    (let [e (lsnap/lookup :openai "dall-e-2")]
+      (is (pos? (get-in e [:model/cost :image-per-image])))))
+  (testing "request-level pricing survives when LiteLLM reports it"
+    (let [e (lsnap/lookup :perplexity "pplx-7b-online")]
+      (is (pos? (get-in e [:model/cost :request-cost]))))))
 
 (deftest test-list-models-cardinality
   (testing "OpenAI and Bedrock are the largest provider buckets"

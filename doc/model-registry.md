@@ -93,4 +93,4 @@ The LiteLLM snapshot can be rebuilt from a local LiteLLM checkout:
 python3 scripts/build_litellm_snapshot.py /path/to/litellm
 ```
 
-The script filters LiteLLM data down to providers and fields used by this SDK.
+The script filters LiteLLM data down to providers this SDK can actually address. It preserves token pricing plus available request, image, transcription, and text-to-speech pricing fields for cost-aware applications.

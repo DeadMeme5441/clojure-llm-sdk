@@ -166,6 +166,19 @@
     (is (= "{\"loc\"" (:tool-call/arguments-delta delta-ev)))
     (is (= :stream/tool-call-end (:event/type end-ev)))))
 
+(deftest test-parse-stream-tool-call-index
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex)
+        start-line "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"get_time\"}}"
+        delta-line "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":2,\"delta\":\"{}\"}"
+        end-line "data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":2}"
+        start-ev (transport/parse-stream-event t profile start-line)
+        delta-ev (transport/parse-stream-event t profile delta-line)
+        end-ev (transport/parse-stream-event t profile end-line)]
+    (is (= 2 (:tool-call/index start-ev)))
+    (is (= 2 (:tool-call/index delta-ev)))
+    (is (= 2 (:tool-call/index end-ev)))))
+
 (deftest test-parse-stream-end
   (let [t (codex/make-transport)
         profile (provider/get-provider :codex)

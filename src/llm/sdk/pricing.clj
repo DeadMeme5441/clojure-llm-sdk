@@ -116,6 +116,11 @@
                               :cache-read (:cache-read entry)
                               :cache-write (:cache-write entry)
                               :request-cost (:request-cost entry)
+                              :image-per-image (:image-per-image entry)
+                              :image-per-megapixel (:image-per-megapixel entry)
+                              :transcription-per-minute (:transcription-per-minute entry)
+                              :tts-per-million-chars (:tts-per-million-chars entry)
+                              :search-per-call (:search-per-call entry)
                               :source (:source entry :user-override)
                               :source-url (:source-url entry)))
         cost (cond-> {}
@@ -127,7 +132,12 @@
                (assoc :cache-read-per-million (:cache-read-cost-per-million norm))
                (:cache-write-cost-per-million norm)
                (assoc :cache-write-per-million (:cache-write-cost-per-million norm))
-               (:request-cost norm) (assoc :request-cost (:request-cost norm)))]
+               (:request-cost norm) (assoc :request-cost (:request-cost norm))
+               (:image-cost-per-image norm) (assoc :image-per-image (:image-cost-per-image norm))
+               (:image-cost-per-megapixel norm) (assoc :image-per-megapixel (:image-cost-per-megapixel norm))
+               (:transcription-cost-per-minute norm) (assoc :transcription-per-minute (:transcription-cost-per-minute norm))
+               (:tts-cost-per-million-chars norm) (assoc :tts-per-million-chars (:tts-cost-per-million-chars norm))
+               (:search-cost-per-call norm) (assoc :search-per-call (:search-cost-per-call norm)))]
     (registry/register-entry! provider model
                               (cond-> {}
                                 (seq cost) (assoc :model/cost cost)

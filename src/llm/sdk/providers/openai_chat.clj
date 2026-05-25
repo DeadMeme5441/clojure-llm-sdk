@@ -260,38 +260,53 @@
   (when-let [data (parse-sse-line line)]
     (let [choice (first (:choices data))
           delta (:delta choice)
-          tc-deltas (:tool_calls delta)]
-      (cond
-        ;; Content delta
-        (seq (:content delta))
-        (stream/content-delta (:content delta))
+          tc-deltas (:tool_calls delta)
+          tool-events (mapcat
+                       (fn [tc]
+                         (let [idx (:index tc 0)
+                               fn-data (:function tc)
+                               args-present? (and (map? fn-data)
+                                                  (contains? fn-data :arguments))
+                               start? (or (:id tc) (:name fn-data))
+                               start-ev (when start?
+                                          (stream/tool-call-start
+                                           idx
+                                           (or (:id tc) (str "tool_call_" idx))
+                                           (or (:name fn-data) "")))
+                               delta-ev (when args-present?
+                                          (stream/tool-call-delta
+                                           idx
+                                           (or (:arguments fn-data) "")))]
+                           (remove nil? [start-ev delta-ev])))
+                       tc-deltas)
+          events (cond-> []
+                   (seq (:content delta))
+                   (conj (stream/content-delta (:content delta)))
 
-        ;; Reasoning delta (DeepSeek / Moonshot / etc)
-        (seq (:reasoning_content delta))
-        (stream/reasoning-delta (:reasoning_content delta))
+                   (seq (:reasoning_content delta))
+                   (conj (stream/reasoning-delta (:reasoning_content delta)))
 
-        ;; Tool call delta
-        (seq tc-deltas)
-        (let [tc (first tc-deltas)
-              idx (:index tc 0)]
-          (if (:id tc)
-            (stream/tool-call-start idx (:id tc) (get-in tc [:function :name]))
-            (stream/tool-call-delta idx (get-in tc [:function :arguments] ""))))
+                   (seq (:reasoning delta))
+                   (conj (stream/reasoning-delta (:reasoning delta))))
+          events (into events tool-events)
+          events (cond-> events
+                   (:usage data)
+                   (conj (stream/usage-event
+                          (usage/normalize-usage (:profile/id profile)
+                                                 (:usage data))))
 
-        ;; Usage at end
-        (:usage data)
-        (stream/usage-event (usage/normalize-usage (:profile/id profile) (:usage data)))
-
-        ;; Finish
-        (:finish_reason choice)
-        (stream/end-event :finish-reason (case (:finish_reason choice)
+                   (:finish_reason choice)
+                   (conj (stream/end-event
+                          :finish-reason (case (:finish_reason choice)
                                            ("stop" nil) :stop
                                            "length" :length
                                            "tool_calls" :tool-calls
                                            "content_filter" :content-filter
-                                           :unknown))
-
-        :else nil))))
+                                           :unknown))))]
+      (case (count events)
+        0 nil
+        1 (first events)
+        events))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing

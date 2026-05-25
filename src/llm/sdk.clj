@@ -224,7 +224,11 @@
           (if (:retry? decision)
             (do (*retry-sleep-fn* (:delay-ms decision))
                 (recur (inc attempt)))
-            (throw e)))))))
+            (throw (ex-info "Provider transport error"
+                            {:error classified
+                             :provider provider-id
+                             :attempts attempt}
+                            e))))))))
 
 (defn complete
   "Send a canonical request and return a canonical response.
@@ -246,9 +250,14 @@
                 into the default policy; supply only the keys you want
                 to override (e.g. {:retry/max-attempts 5}).
                 Streaming requests are not retried - partial streams
-                can't be safely resumed by the SDK."
-  [provider-id request & {:keys [stream? on-event retry]}]
-  (let [profile (or (provider/get-provider provider-id)
+                can't be safely resumed by the SDK.
+     :config    Per-call runtime config: :api-key/:auth-token,
+                :base-url, :headers, :http-client,
+                :connect-timeout-ms, :timeout-ms."
+  [provider-id request & {:keys [stream? on-event retry config]}]
+  (let [profile (some-> (provider/get-provider provider-id)
+                        (provider/apply-runtime-config config))
+        profile (or profile
                     (throw (ex-info "Unknown provider" {:provider provider-id})))
         _ (validate-chat-request! request)
         transport ((:profile/transport-constructor profile))
@@ -259,6 +268,7 @@
         ;; right URL or shape (Bedrock /converse vs /converse-stream).
         request (cond-> request stream? (assoc :request/stream? true))
         req (transport/build-request transport profile request)
+        req (provider/apply-http-options profile req)
         req (sign-if-needed profile req)
         binary-stream? (= :aws-eventstream (:profile/binary-stream profile))
         model (:request/model request)]
@@ -306,8 +316,8 @@
    Request keys: :embed/model, :embed/inputs (vector of strings),
    plus optional :embed/dimensions, :embed/encoding-format,
    :embed/user, :embed/provider-options."
-  [provider-id request]
-  (embed-driver/embed provider-id request))
+  [provider-id request & opts]
+  (apply embed-driver/embed provider-id request opts))
 
 ;; ---------------------------------------------------------------------------
 ;; Moderate
@@ -322,8 +332,8 @@
    {:type :text :text \"...\"} / {:type :image_url :image_url \"https://...\"}.
    omni-moderation models accept the multi-modal shape; text-moderation
    models are text-only."
-  [provider-id request]
-  (moderate-driver/moderate provider-id request))
+  [provider-id request & opts]
+  (apply moderate-driver/moderate provider-id request opts))
 
 ;; ---------------------------------------------------------------------------
 ;; Rerank
@@ -337,8 +347,8 @@
    Required keys: :rerank/model, :rerank/query, :rerank/documents
    (vector of strings). Optional: :rerank/top-n,
    :rerank/return-documents, :rerank/provider-options."
-  [provider-id request]
-  (rerank-driver/rerank provider-id request))
+  [provider-id request & opts]
+  (apply rerank-driver/rerank provider-id request opts))
 
 ;; ---------------------------------------------------------------------------
 ;; Image generation
@@ -352,8 +362,8 @@
    Required: :image/prompt. Optional: :image/model, :image/n,
    :image/size, :image/quality, :image/style,
    :image/response-format, :image/user, :image/provider-options."
-  [provider-id request]
-  (image-driver/generate-image provider-id request))
+  [provider-id request & opts]
+  (apply image-driver/generate-image provider-id request opts))
 
 ;; ---------------------------------------------------------------------------
 ;; Transcribe
@@ -370,8 +380,8 @@
    :transcribe/response-format (:json|:text|:srt|:verbose_json|:vtt),
    :transcribe/timestamp-granularities (#{:segment :word}),
    :transcribe/provider-options."
-  [provider-id request]
-  (transcribe-driver/transcribe provider-id request))
+  [provider-id request & opts]
+  (apply transcribe-driver/transcribe provider-id request opts))
 
 ;; ---------------------------------------------------------------------------
 ;; Speak (text-to-speech)
@@ -386,8 +396,8 @@
    Required: :speak/model, :speak/input. Optional: :speak/voice,
    :speak/format (:mp3|:opus|:aac|:flac|:wav|:pcm), :speak/speed,
    :speak/instructions, :speak/provider-options."
-  [provider-id request]
-  (speak-driver/speak provider-id request))
+  [provider-id request & opts]
+  (apply speak-driver/speak provider-id request opts))
 
 ;; ---------------------------------------------------------------------------
 ;; Fallbacks

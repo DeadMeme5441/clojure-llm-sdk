@@ -31,8 +31,43 @@
   (when (and (seq messages) (= (:message/role (first messages)) :system))
     [{:type "text" :text (t/content->string (:message/content (first messages)))}]))
 
+(defn- parse-json-object [s]
+  (if (seq s)
+    (try
+      (json/parse-string s true)
+      (catch Exception _ {}))
+    {}))
+
+(defn- image-source [part]
+  (let [url (:image/url part)
+        data (:image/data part)
+        mime (or (:image/mime-type part) "image/png")]
+    (cond
+      (seq data)
+      {:type "base64" :media_type mime :data data}
+
+      (and (string? url) (str/starts-with? url "data:"))
+      (let [[header encoded] (str/split url #"," 2)
+            mime (or (second (re-find #"data:([^;]+)" header)) mime)]
+        {:type "base64" :media_type mime :data encoded})
+
+      (seq url)
+      {:type "url" :url url}
+
+      :else
+      {:type "base64" :media_type mime :data ""})))
+
+(defn- tool-call->anthropic-block [tc]
+  {:type "tool_use"
+   :id (:tool-call/id tc)
+   :name (:tool-call/name tc)
+   :input (parse-json-object (:tool-call/arguments tc))})
+
 (defn- content->anthropic-blocks [content]
   (cond
+    (nil? content)
+    []
+
     (string? content)
     [{:type "text" :text content}]
 
@@ -40,9 +75,12 @@
     (mapv (fn [part]
             (case (:part/type part)
               :text {:type "text" :text (:text part)}
-              :image {:type "image" :source {:type "base64"
-                                              :media_type (get part :image/mime-type "image/png")
-                                              :data (:image/url part)}}
+              :image {:type "image" :source (image-source part)}
+              :reasoning (cond-> {:type "thinking"
+                                   :thinking (:reasoning/text part)}
+                            (:reasoning/signature part)
+                            (assoc :signature (:reasoning/signature part)))
+              :tool-call (tool-call->anthropic-block part)
               :tool-result {:type "tool_result"
                             :tool_use_id (:tool-result/id part)
                             :content (:tool-result/content part)
@@ -57,8 +95,21 @@
                (:user :tool) "user"
                (:assistant) "assistant"
                "user")]
-    {:role role
-     :content (content->anthropic-blocks (:message/content msg))}))
+    (cond
+      (= (:message/role msg) :tool)
+      {:role "user"
+       :content [{:type "tool_result"
+                  :tool_use_id (or (:message/tool-call-id msg) "tool_0")
+                  :content (t/content->string (:message/content msg))}]}
+
+      (seq (:message/tool-calls msg))
+      {:role "assistant"
+       :content (into (content->anthropic-blocks (:message/content msg))
+                      (map tool-call->anthropic-block (:message/tool-calls msg)))}
+
+      :else
+      {:role role
+       :content (content->anthropic-blocks (:message/content msg))})))
 
 (defn- messages->anthropic [messages]
   (let [without-system (if (and (seq messages) (= (:message/role (first messages)) :system))
@@ -296,16 +347,29 @@
 
 (defn parse-response-anthropic
   [_profile raw]
-  (let [text-parts (vec (keep #(when (= (:type %) "text") (:text %)) (:content raw)))
-        thinking-parts (vec (keep #(when (= (:type %) "thinking") (:thinking %)) (:content raw)))
+  (let [parts (vec
+               (keep (fn [block]
+                       (case (:type block)
+                         "text"
+                         {:part/type :text :text (:text block)}
+
+                         "thinking"
+                         (cond-> {:part/type :reasoning
+                                  :reasoning/text (:thinking block)}
+                           (:signature block)
+                           (assoc :reasoning/signature (:signature block)))
+
+                         "tool_use"
+                         {:part/type :tool-call
+                          :tool-call/id (:id block)
+                          :tool-call/name (:name block)
+                          :tool-call/arguments (json/generate-string (:input block))
+                          :tool-call/provider-data {:anthropic/input (:input block)}}
+
+                         nil))
+                     (:content raw)))
         reasoning-details (vec (keep #(when (= (:type %) "thinking") %) (:content raw)))
-        tool-calls (vec (keep #(when (= (:type %) "tool_use")
-                            {:part/type :tool-call
-                             :tool-call/id (:id %)
-                             :tool-call/name (:name %)
-                             :tool-call/arguments (json/generate-string (:input %))
-                             :tool-call/provider-data {:anthropic/input (:input %)}})
-                          (:content raw)))
+        tool-calls (vec (filter #(= (:part/type %) :tool-call) parts))
         finish-reason (get stop-reason-map (:stop_reason raw) :stop)
         usage-raw (:usage raw)
         provider-data (cond-> {}
@@ -314,11 +378,7 @@
     {:response/id (:id raw)
      :response/provider :anthropic
      :response/model (:model raw)
-     :response/parts (into []
-                           (concat
-                            (map #(hash-map :part/type :reasoning :reasoning/text %) thinking-parts)
-                            (map #(hash-map :part/type :text :text %) text-parts)
-                            tool-calls))
+     :response/parts parts
      :response/tool-calls (not-empty tool-calls)
      :response/finish-reason finish-reason
      :response/usage (when usage-raw
@@ -347,6 +407,13 @@
           (case (:type delta)
             "text_delta" (stream/content-delta (:text delta))
             "thinking_delta" (stream/reasoning-delta (:thinking delta))
+            "input_json_delta" (stream/tool-call-delta
+                                (:index data 0)
+                                (or (:partial_json delta) ""))
+            "signature_delta" (stream/provider-state-event
+                               :anthropic
+                               {:content-blocks
+                                {(:index data 0) {:signature (:signature delta)}}})
             nil))
 
         (= t "content_block_start")
@@ -355,14 +422,29 @@
                 idx (:index data 0)]
             (stream/tool-call-start idx (:id block) (:name block))))
 
+        (= t "content_block_stop")
+        (stream/tool-call-end (:index data 0))
+
         (= t "message_stop")
-        (stream/end-event :finish-reason (get stop-reason-map
-                                               (get-in data [:message :stop_reason])
-                                               :stop))
+        (when-let [stop-reason (get-in data [:message :stop_reason])]
+          (stream/end-event :finish-reason (get stop-reason-map
+                                                stop-reason
+                                                :stop)))
 
         (= t "message_delta")
-        (when-let [usage-raw (get-in data [:usage])]
-          (stream/usage-event (usage/normalize-usage :anthropic usage-raw)))
+        (let [usage-ev (when-let [usage-raw (get-in data [:usage])]
+                         (stream/usage-event
+                          (usage/normalize-usage :anthropic usage-raw)))
+              finish-ev (when-let [stop-reason (get-in data [:delta :stop_reason])]
+                          (stream/end-event
+                           :finish-reason (get stop-reason-map
+                                               stop-reason
+                                               :stop)))
+              events (vec (remove nil? [usage-ev finish-ev]))]
+          (case (count events)
+            0 nil
+            1 (first events)
+            events))
 
         :else nil))))
 

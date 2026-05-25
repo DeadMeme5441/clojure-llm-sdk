@@ -127,6 +127,23 @@
     (is (= "call_1" (:tool-call/id ev)))
     (is (= "get_weather" (:tool-call/name ev)))))
 
+(deftest test-parse-stream-event-multiple-tool-deltas
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        line "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"call_2\",\"function\":{\"name\":\"get_time\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}"
+        events (transport/parse-stream-event t profile line)]
+    (is (sequential? events))
+    (is (= [:stream/tool-call-start
+            :stream/tool-call-delta
+            :stream/tool-call-start
+            :stream/tool-call-delta
+            :stream/usage
+            :stream/end]
+           (mapv :event/type events)))
+    (is (= [0 0 1 1]
+           (mapv :tool-call/index (take 4 events))))
+    (is (= :tool-calls (:event/finish-reason (last events))))))
+
 (deftest test-parse-stream-event-usage
   (let [t (openai/make-transport)
         profile (provider/get-provider :openai)

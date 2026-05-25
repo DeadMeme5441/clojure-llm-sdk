@@ -358,6 +358,13 @@
   (->> (str/split-lines sse-text)
        (keep parse-sse-line)))
 
+(defn- stream-index [data]
+  (or (:output_index data)
+      (:item_index data)
+      (:index data)
+      (get-in data [:item :index])
+      0))
+
 (defn parse-response-codex
   [profile raw]
   ;; Handle SSE text responses (Codex backend returns SSE even for non-streaming)
@@ -441,24 +448,28 @@
         (= t "response.output_item.added")
         (let [item (:item data)]
           (when (= (:type item) "function_call")
-            (stream/tool-call-start 0
-                                    (or (:call_id item) (:id item))
-                                    (:name item))))
+            (stream/tool-call-start (stream-index data)
+                                    (or (:call_id item) (:id item)
+                                        (str "tool_call_" (stream-index data)))
+                                    (or (:name item) ""))))
 
         ;; Tool call: arguments delta
         (= t "response.function_call_arguments.delta")
-        (stream/tool-call-delta 0 (:delta data))
+        (stream/tool-call-delta (stream-index data) (:delta data))
 
         ;; Tool call: arguments done (end)
         (= t "response.function_call_arguments.done")
-        (stream/tool-call-end 0)
+        (stream/tool-call-end (stream-index data))
 
         ;; Tool call: output item done (alternative start signal)
         (= t "response.output_item.done")
         (let [item (:item data)]
           (case (:type item)
             "function_call"
-            (stream/tool-call-start 0 (or (:call_id item) (:id item)) (:name item))
+            (stream/tool-call-start (stream-index data)
+                                    (or (:call_id item) (:id item)
+                                        (str "tool_call_" (stream-index data)))
+                                    (or (:name item) ""))
             nil))
 
         ;; Usage event

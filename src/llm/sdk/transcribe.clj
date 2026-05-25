@@ -7,18 +7,26 @@
   (:require [hato.client :as hc]
             [cheshire.core :as json]
             [llm.sdk.provider :as provider]
+            [llm.sdk.schema :as schema]
+            [llm.sdk.errors :as errors]
             [llm.sdk.transport.transcribe :as tt]))
+
+(defn- http-client [{:keys [http-client connect-timeout-ms timeout-ms]}]
+  (or http-client
+      (hc/build-http-client {:connect-timeout (or connect-timeout-ms 30000)
+                             :timeout (or timeout-ms 120000)})))
 
 (defn- multipart-request
   "Hato multipart upload. We bypass llm.sdk.http because the body is
    binary and the Content-Type header must be set by hato to include
    the multipart boundary."
-  [{:keys [method url headers multipart]}]
+  [{:keys [method url headers multipart] :as req}]
   (let [resp (hc/request
               {:method method
                :url url
                :headers headers
                :multipart multipart
+               :http-client (http-client req)
                :throw-exceptions? false})
         body (:body resp)
         ct (or (get-in resp [:headers "content-type"])
@@ -55,17 +63,30 @@
       :transcription/duration-seconds num?
       :response/usage Usage?
       :response/raw raw}"
-  [provider-id request]
-  (let [profile (or (provider/get-provider provider-id)
+  [provider-id request & {:keys [config]}]
+  (let [profile (some-> (provider/get-provider provider-id)
+                        (provider/apply-runtime-config config))
+        profile (or profile
                     (throw (ex-info "Unknown provider"
                                     {:provider provider-id})))
+        _ (when-not (schema/validate-transcribe-request request)
+            (throw (ex-info "Invalid llm.sdk transcribe request"
+                            {:error/type :schema/invalid-transcribe-request
+                             :schema/explain (schema/explain-transcribe-request request)})))
         ctor (:profile/transcribe-transport-constructor profile)
         _ (when-not ctor
             (throw (ex-info "Transcription not supported by provider"
                             {:provider provider-id})))
         transport (ctor)
         req (tt/build-transcribe-request transport profile request)
-        resp (multipart-request req)
+        req (provider/apply-http-options profile req)
+        resp (try
+               (multipart-request req)
+               (catch Exception e
+                 (throw (ex-info "Provider transcribe transport error"
+                                 {:error (errors/classify-error e :provider provider-id)
+                                  :provider provider-id}
+                                 e))))
         status (:status resp)
         body (:body resp)]
     (if (>= status 400)

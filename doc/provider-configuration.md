@@ -40,6 +40,34 @@ Important chat credentials:
 
 See [.env.example](../.env.example) for the full credential template across chat, embeddings, rerank, audio, image, and AWS providers.
 
+## Per-Call Runtime Config
+
+Applications can override provider configuration for a single call without changing the global provider registry. Every public modality accepts `:config`:
+
+```clojure
+(sdk/complete
+  :openai
+  {:request/model "gpt-4o-mini"
+   :request/messages [{:message/role :user
+                       :message/content "Hi"}]}
+  :config {:api-key "sk-..."
+           :base-url "https://api.openai.com/v1"
+           :headers {"X-App" "my-service"}
+           :connect-timeout-ms 5000
+           :timeout-ms 60000})
+```
+
+Supported config keys:
+
+| Key | Meaning |
+|---|---|
+| `:api-key` / `:auth-token` | Auth token for this call. |
+| `:base-url` | Provider base URL override. |
+| `:headers` | Extra headers merged into the provider defaults. |
+| `:http-client` | Caller-managed hato Java HTTP client. |
+| `:connect-timeout-ms` | HTTP connect timeout. |
+| `:timeout-ms` | HTTP request timeout. |
+
 ## Kimi And Kimi Code
 
 There are two separate providers:
@@ -114,8 +142,8 @@ For a provider that accepts OpenAI Chat Completions shape, register an alias:
 
 (openai-chat/register-alias!
   {:id :my-private-llm
-   :base-url "https://llm.internal.example/v1"
-   :env-var-names ["INTERNAL_LLM_KEY"]
+   :base-url "https://llm.example.com/v1"
+   :env-var-names ["MY_LLM_KEY"]
    :capabilities #{:chat :streaming :tools}
    :quirks {:drops #{:frequency_penalty :presence_penalty}}})
 ```

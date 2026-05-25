@@ -67,7 +67,25 @@
                         (double (get cost-raw "cache_read_per_million")))
                  (get cost-raw "cache_write_per_million")
                  (assoc :cache-write-per-million
-                        (double (get cost-raw "cache_write_per_million")))))
+                        (double (get cost-raw "cache_write_per_million")))
+                 (get cost-raw "request_cost")
+                 (assoc :request-cost
+                        (double (get cost-raw "request_cost")))
+                 (get cost-raw "image_per_image")
+                 (assoc :image-per-image
+                        (double (get cost-raw "image_per_image")))
+                 (get cost-raw "image_per_megapixel")
+                 (assoc :image-per-megapixel
+                        (double (get cost-raw "image_per_megapixel")))
+                 (get cost-raw "transcription_per_minute")
+                 (assoc :transcription-per-minute
+                        (double (get cost-raw "transcription_per_minute")))
+                 (get cost-raw "tts_per_million_chars")
+                 (assoc :tts-per-million-chars
+                        (double (get cost-raw "tts_per_million_chars")))
+                 (get cost-raw "search_per_call")
+                 (assoc :search-per-call
+                        (double (get cost-raw "search_per_call")))))
         caps-raw (get raw "capabilities")
         caps (when (sequential? caps-raw)
                (into #{} (map keyword caps-raw)))]

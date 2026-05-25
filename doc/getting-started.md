@@ -75,7 +75,7 @@ Pass `:stream? true` and optionally `:on-event`:
   :stream? true
   :on-event (fn [event]
               (when (= :stream/content-delta (:event/type event))
-                (print (:delta event)))))
+                (print (:event/delta event)))))
 ```
 
 Stream events use a provider-neutral taxonomy: content deltas, reasoning deltas, tool-call deltas, citations, usage, provider-state, errors, and end events. The final response is still stamped with usage, cost, and cache data when the provider reports enough information.
