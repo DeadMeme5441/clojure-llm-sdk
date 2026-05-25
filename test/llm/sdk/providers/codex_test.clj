@@ -1,9 +1,24 @@
 (ns llm.sdk.providers.codex-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [cheshire.core :as json]
+            [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
             [llm.sdk.providers.codex :as codex]))
+
+(defn- temp-auth-file []
+  (let [dir (doto (java.io.File/createTempFile "codex-auth-test" "")
+              (.delete)
+              (.mkdirs))
+        file (java.io.File. dir "auth.json")]
+    [dir file]))
+
+(defn- write-auth! [file access-token refresh-token]
+  (spit file
+        (json/generate-string
+         {:auth_mode "chatgpt"
+          :tokens {:access_token access-token
+                   :refresh_token refresh-token}})))
 
 (deftest test-build-request-basic
   (let [t (codex/make-transport)
@@ -45,6 +60,31 @@
     (is (= "high" (get-in built [:body :reasoning :effort])))
     (is (= "auto" (get-in built [:body :reasoning :summary])))
     (is (= ["reasoning.encrypted_content"] (get-in built [:body :include])))))
+
+(deftest test-codex-auth-file-is-cached-until-file-changes
+  (let [[dir file] (temp-auth-file)
+        path (.getPath file)
+        original-slurp slurp
+        reads (atom 0)]
+    (try
+      (reset! @#'codex/codex-auth-cache nil)
+      (write-auth! file "tok-1" "ref-1")
+      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
+                       #'clojure.core/slurp (fn [& args]
+                                              (swap! reads inc)
+                                              (apply original-slurp args))}
+        (fn []
+          (is (= "tok-1" (:access-token (codex/read-codex-auth))))
+          (is (= "tok-1" (:access-token (codex/read-codex-auth))))
+          (is (= 1 @reads) "stable auth file should only be read once")
+          (write-auth! file "tok-2" "ref-2")
+          (.setLastModified file (+ 5000 (.lastModified file)))
+          (is (= "tok-2" (:access-token (codex/read-codex-auth))))
+          (is (= 2 @reads) "auth file should be reread after mtime/length changes")))
+      (finally
+        (reset! @#'codex/codex-auth-cache nil)
+        (.delete file)
+        (.delete dir)))))
 
 (deftest test-parse-response-text
   (let [t (codex/make-transport)
