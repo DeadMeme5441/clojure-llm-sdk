@@ -36,11 +36,11 @@
 
 (defn- tiny-pdf [text]
   (let [stream (str "BT /F1 12 Tf 72 720 Td (" (pdf-escape text) ") Tj ET")
-        objects [(str "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
-                 (str "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
+        objects ["1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+                 "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
                  (str "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
                       "/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n")
-                 (str "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n")
+                 "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
                  (str "5 0 obj\n<< /Length " (count (.getBytes stream "UTF-8")) " >>\n"
                       "stream\n" stream "\nendstream\nendobj\n")]
         header "%PDF-1.4\n"
