@@ -15,6 +15,7 @@
             [llm.sdk.http :as http]
             [llm.sdk.models-dev :as mdev]
             [llm.sdk.providers.codex :as codex]
+            [llm.sdk.providers.codex.responses :as codex-impl]
             [llm.sdk.registry :as registry]
             [llm.sdk.schema :as schema])
   (:import [java.io ByteArrayInputStream]))
@@ -126,6 +127,8 @@
                     :output-per-million 2.0
                     :cache-read-per-million 0.2}})
      (with-redefs [codex/codex-backend-auth-headers
+                   (fn [] {"Authorization" "Bearer test-token"})
+                   codex-impl/codex-backend-auth-headers
                    (fn [] {"Authorization" "Bearer test-token"})
                    http/sse-response
                    (fn [_]
