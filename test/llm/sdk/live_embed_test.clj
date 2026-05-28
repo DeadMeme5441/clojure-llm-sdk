@@ -91,3 +91,8 @@
   (when (has-creds? "JINA_API_KEY")
     (testing "Jina jina-embeddings-v3 live"
       (smoke-embed :jina "jina-embeddings-v3"))))
+
+(deftest ^:live live-openrouter-embed
+  (when (has-creds? "OPENROUTER_API_KEY")
+    (testing "OpenRouter google/gemini-embedding-001 live"
+      (smoke-embed :openrouter "google/gemini-embedding-001"))))

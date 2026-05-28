@@ -43,6 +43,27 @@ Options:
 
 `sdk/complete` validates the request, applies provider supported-parameter rules, builds the provider request, parses the response, and stamps cost/cache data from usage.
 
+Message content can be a string or a vector of canonical parts. File/document
+attachments use `:part/type :file`:
+
+```clojure
+{:message/role :user
+ :message/content [{:part/type :file
+                    :file/name "brief.pdf"
+                    :file/data "JVBERi0x"
+                    :file/mime-type "application/pdf"}
+                   {:part/type :text
+                    :text "Summarize this."}]}
+```
+
+Supported file sources are `:file/id`, `:file/url`, base64 `:file/data`, raw
+`:file/bytes`, or textual `:file/content`. OpenAI Chat, OpenAI
+Responses/Codex, Anthropic, Gemini/Vertex Gemini, and Bedrock Converse
+serialize files natively. Cohere maps textual `:file/content` into native
+top-level `documents`. OpenAI file data is emitted as the required
+`data:<mime>;base64,...` URI. Providers without native file input support
+reject `:file` parts explicitly.
+
 Runtime config is profile-local for that call and does not mutate the provider registry:
 
 ```clojure

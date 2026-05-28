@@ -37,8 +37,79 @@
         tools (get-in built [:body :tools])]
     (is (= 1 (count tools)))
     (is (= "function" (get-in tools [0 :type])))
-    (is (= "get_weather" (get-in tools [0 :function :name])))
+      (is (= "get_weather" (get-in tools [0 :function :name])))
     (is (= "REQUIRED" (get-in built [:body :tool_choice])))))
+
+(deftest test-build-request-stop-sequence-is-not-split
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        built (transport/build-request
+               t profile
+               {:request/model "command-r-plus"
+                :request/messages [{:message/role :user
+                                    :message/content "hi"}]
+                :request/stop "END"})]
+    (is (= ["END"] (get-in built [:body :stop_sequences])))))
+
+(deftest test-build-request-file-attachment-fails-clearly
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        req {:request/model "command-r-plus"
+             :request/messages
+             [{:message/role :user
+               :message/content [{:part/type :file
+                                  :file/name "brief.pdf"
+                                  :file/data "JVBERi0x"}]}]}]
+    (try
+      (transport/build-request t profile req)
+      (is false "expected file attachment rejection")
+      (catch clojure.lang.ExceptionInfo e
+        (is (= :provider/unsupported-file-attachment
+               (:error/type (ex-data e))))
+        (is (= :cohere (:provider (ex-data e))))))))
+
+(deftest test-build-request-text-file-becomes-document
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        req {:request/model "command-r-plus"
+             :request/messages
+             [{:message/role :user
+               :message/content [{:part/type :text
+                                  :text "Answer using the attached file."}
+                                 {:part/type :file
+                                  :file/name "brief.txt"
+                                  :file/content "secret_code: SDK-LIVE-FILE-42"
+                                  :file/mime-type "text/plain"}]}]
+             :request/provider-options
+             {:cohere {:citation_options {:mode "FAST"}}}}
+        built (transport/build-request t profile req)]
+    (is (= [{:type "text" :text "Answer using the attached file."}]
+           (get-in built [:body :messages 0 :content])))
+    (is (= [{:id "brief.txt"
+             :data {:snippet "secret_code: SDK-LIVE-FILE-42"
+                    :title "brief.txt"
+                    :mime_type "text/plain"}}]
+           (get-in built [:body :documents])))
+    (is (= {:mode "FAST"} (get-in built [:body :citation_options])))))
+
+(deftest test-build-request-merges-provider-documents-and-text-file-documents
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        req {:request/model "command-r-plus"
+             :request/messages
+             [{:message/role :user
+               :message/content [{:part/type :text :text "answer"}
+                                 {:part/type :file
+                                  :file/name "brief.txt"
+                                  :file/content "attached"}]}]
+             :request/provider-options
+             {:cohere {:documents [{:id "doc1" :data {:snippet "existing"}}]}}}
+        built (transport/build-request t profile req)]
+    (is (= [{:id "doc1" :data {:snippet "existing"}}
+            {:id "brief.txt"
+             :data {:snippet "attached"
+                    :title "brief.txt"}}]
+           (get-in built [:body :documents])))))
 
 (deftest test-build-request-tool-result-roundtrip
   (testing "assistant tool_calls and tool messages are mapped onto Cohere's shape"

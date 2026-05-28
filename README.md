@@ -170,7 +170,7 @@ Fallbacks:
 Custom OpenAI-compatible alias:
 
 ```clojure
-(require '[llm.sdk.providers.openai-chat :as openai-chat])
+(require '[llm.sdk.providers.openai.chat :as openai-chat])
 
 (openai-chat/register-alias!
   {:id :my-private-llm
@@ -178,6 +178,8 @@ Custom OpenAI-compatible alias:
    :env-var-names ["MY_PRIVATE_LLM_KEY"]
    :capabilities #{:chat :streaming :tools}})
 ```
+
+Provider implementations are split by provider family, such as `llm.sdk.providers.openai.chat`, `llm.sdk.providers.anthropic.chat`, and `llm.sdk.providers.openrouter.chat`. Older flat namespaces remain compatibility shims for existing code.
 
 ## Validation
 

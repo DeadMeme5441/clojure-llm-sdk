@@ -10,6 +10,8 @@
             [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
             [llm.sdk.errors :as errors]
+            [llm.sdk.pricing :as pricing]
+            [llm.sdk.aws-sigv4 :as aws-sigv4]
             [llm.sdk.transport.rerank :as rt]))
 
 (defn rerank
@@ -36,6 +38,7 @@
         transport (ctor)
         req (rt/build-rerank-request transport profile request)
         req (provider/apply-http-options profile req)
+        req (aws-sigv4/maybe-sign profile req)
         resp (try
                (http/request req)
                (catch Exception e
@@ -55,5 +58,9 @@
       ;; Adapters whose servers don't echo the model leave
       ;; :rerank/model nil — fall back to the caller-supplied id so
       ;; the surface always carries the model that was actually used.
-      (let [parsed (rt/parse-rerank-response transport profile body)]
-        (update parsed :rerank/model #(or % (:rerank/model request)))))))
+      (let [parsed (rt/parse-rerank-response transport profile body)
+            parsed (update parsed :rerank/model #(or % (:rerank/model request)))
+            usage (:response/usage parsed)
+            cost (pricing/canonical-cost provider-id (:rerank/model parsed) usage)]
+        (cond-> parsed
+          cost (assoc :response/cost cost))))))

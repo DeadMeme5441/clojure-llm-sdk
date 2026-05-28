@@ -74,6 +74,27 @@
              (:image/url (first (:image/images resp)))))
       (is (schema/validate-image-gen-response resp)))))
 
+(deftest test-generate-image-stamps-token-cost-when-usage-present
+  (with-redefs [http/request
+                (fn [_]
+                  {:status 200
+                   :body {:created 1736500000
+                          :data [{:b64_json "abc"}]
+                          :usage {:input_tokens 10
+                                  :output_tokens 100
+                                  :total_tokens 110}}})]
+    (let [resp (sdk/generate-image
+                :openai
+                {:image/model "gpt-image-1-mini"
+                 :image/prompt "a cat"})]
+      (is (= "gpt-image-1-mini" (:image/model resp)))
+      (is (= 10 (get-in resp [:response/usage :usage/input-tokens])))
+      (is (= 100 (get-in resp [:response/usage :usage/output-tokens])))
+      (is (number? (get-in resp [:response/cost :cost/usd])))
+      (is (= "openai-pricing-page"
+             (get-in resp [:response/cost :cost/pricing-source])))
+      (is (schema/validate-image-gen-response resp)))))
+
 ;; ---------------------------------------------------------------------------
 ;; Public API surface
 ;; ---------------------------------------------------------------------------

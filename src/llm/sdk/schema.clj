@@ -23,9 +23,17 @@
 (def FilePart
   [:map {:closed true}
    [:part/type [:= :file]]
-   [:file/name string?]
-   [:file/content string?]
-   [:file/mime-type {:optional true} string?]])
+   [:file/name {:optional true} string?]
+   [:file/content {:optional true} string?]
+   [:file/data {:optional true} string?]
+   [:file/bytes {:optional true} any?]
+   [:file/id {:optional true} string?]
+   [:file/url {:optional true} string?]
+   [:file/mime-type {:optional true} string?]
+   [:file/format {:optional true} string?]
+   [:file/title {:optional true} string?]
+   [:file/context {:optional true} string?]
+   [:file/citations {:optional true} boolean?]])
 
 (def ToolCallPart
   [:map {:closed true}
@@ -185,6 +193,22 @@
    [:usage/provider-raw {:optional true} map?]])
 
 ;; ---------------------------------------------------------------------------
+;; Cost (canonical :response/cost)
+;;
+;; Honesty rule: never substitute $0 for unknown. When pricing or usage
+;; is missing, :cost/usd is the keyword :unknown, not 0M.
+;; ---------------------------------------------------------------------------
+
+(def Cost
+  [:map {:closed true}
+   [:cost/usd [:or number? [:= :unknown]]]
+   [:cost/estimated? boolean?]
+   [:cost/pricing-source {:optional true} [:or string? keyword? nil?]]
+   [:cost/source-url {:optional true} [:or string? nil?]]
+   [:cost/breakdown {:optional true} map?]
+   [:cost/reason {:optional true} string?]])
+
+;; ---------------------------------------------------------------------------
 ;; Embeddings request / response
 ;; ---------------------------------------------------------------------------
 
@@ -205,6 +229,7 @@
    [:embed/vectors [:vector [:vector number?]]]
    [:embed/dimensions {:optional true} int?]
    [:response/usage {:optional true} Usage]
+   [:response/cost {:optional true} Cost]
    [:embed/provider-data {:optional true} map?]
    [:embed/raw {:optional true} any?]])
 
@@ -238,6 +263,7 @@
    [:image/images [:vector Image]]
    [:image/created {:optional true} int?]
    [:response/usage {:optional true} Usage]
+   [:response/cost {:optional true} Cost]
    [:image/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
@@ -266,6 +292,7 @@
    [:rerank/model string?]
    [:rerank/results [:vector RerankResult]]
    [:response/usage {:optional true} Usage]
+   [:response/cost {:optional true} Cost]
    [:rerank/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
@@ -329,6 +356,7 @@
    [:transcription/segments {:optional true} [:vector map?]]
    [:transcription/words {:optional true} [:vector map?]]
    [:response/usage {:optional true} Usage]
+   [:response/cost {:optional true} Cost]
    [:response/raw {:optional true} any?]])
 
 ;; ---------------------------------------------------------------------------
@@ -351,23 +379,8 @@
    [:audio/content-type string?]
    [:audio/model {:optional true} string?]
    [:response/usage {:optional true} Usage]
+   [:response/cost {:optional true} Cost]
    [:response/raw {:optional true} any?]])
-
-;; ---------------------------------------------------------------------------
-;; Cost (canonical :response/cost)
-;;
-;; Honesty rule: never substitute $0 for unknown. When pricing or usage
-;; is missing, :cost/usd is the keyword :unknown — not 0M.
-;; ---------------------------------------------------------------------------
-
-(def Cost
-  [:map {:closed true}
-   [:cost/usd [:or number? [:= :unknown]]]
-   [:cost/estimated? boolean?]
-   [:cost/pricing-source {:optional true} [:or string? keyword? nil?]]
-   [:cost/source-url {:optional true} [:or string? nil?]]
-   [:cost/breakdown {:optional true} map?]
-   [:cost/reason {:optional true} string?]])
 
 ;; ---------------------------------------------------------------------------
 ;; Cache (canonical :response/cache)

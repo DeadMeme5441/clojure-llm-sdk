@@ -54,8 +54,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Anthropic OAuth (Claude OAT token)
 ;; Uses CLAUDE_OAT_TOKEN with Bearer auth + Claude Code identity.
-;; NOTE: OAuth/setup tokens (sk-ant-oat-*) have strict rate limits.
-;;       A 429 means auth succeeded but the token is throttled.
+;; A 429 is a failure here; this test proves the full live path works.
 ;; ---------------------------------------------------------------------------
 
 (deftest ^:live test-anthropic-oauth-smoke
@@ -75,8 +74,6 @@
                  :request/messages [{:message/role :user
                                      :message/content "Say exactly 'pong' and nothing else."}]
                  :request/max-tokens 1024}
-            ;; Try the request; if we get a 429, the auth format is correct
-            ;; but the token is rate-limited — that's still a success for the adapter.
             result (try
                      {:ok true :resp (sdk/complete :anthropic-oauth-temp req)}
                      (catch clojure.lang.ExceptionInfo e
@@ -96,13 +93,10 @@
             (is (some #(= "pong" (str/lower-case (:text %)))
                       (:response/parts resp))
                 (str "Expected 'pong' in parts: " (:response/parts resp))))
-          ;; If we got a 429, verify it's a rate limit (not an auth/format error)
-          (do
-            (is (= 429 (:status result))
-                (str "Unexpected error status: " (:status result) 
-                     " body: " (:body result)))
-            (is (= "rate_limit_error" (get-in result [:body :error :type]))
-                "Expected rate_limit_error when token is throttled")))))))
+          (is false
+              (str "Claude OAT live request must succeed; got status "
+                   (:status result)
+                   " body: " (:body result))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; OpenRouter

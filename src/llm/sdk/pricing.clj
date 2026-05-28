@@ -93,6 +93,34 @@
        :source (:model/source model-entry)
        :source-url (:model/source-url model-entry)))))
 
+(defn- official-openai-pricing
+  "Small current-pricing fallback for OpenAI models whose bundled
+   models.dev entries exist but omit specialized cost data."
+  [provider model]
+  (when (= provider :openai)
+    (case model
+      ;; OpenAI pricing page, image generation models, standard tier.
+      ;; gpt-image-* pricing is token-based. We map text input to
+      ;; :input-cost-per-million and image output tokens to
+      ;; :output-cost-per-million because OpenAI returns them in the
+      ;; ordinary input/output token counters on /images/generations.
+      "gpt-image-1-mini"
+      (pricing-entry :input 2.0 :output 8.0
+                     :cache-read 0.20
+                     :source :openai-pricing-page
+                     :source-url "https://developers.openai.com/api/docs/pricing")
+      "gpt-image-1.5"
+      (pricing-entry :input 5.0 :output 32.0
+                     :cache-read 1.25
+                     :source :openai-pricing-page
+                     :source-url "https://developers.openai.com/api/docs/pricing")
+      "gpt-image-2"
+      (pricing-entry :input 5.0 :output 30.0
+                     :cache-read 1.25
+                     :source :openai-pricing-page
+                     :source-url "https://developers.openai.com/api/docs/pricing")
+      nil)))
+
 ;; ---------------------------------------------------------------------------
 ;; Registry-backed lookup
 ;; ---------------------------------------------------------------------------
@@ -101,8 +129,9 @@
   "Get the pricing-entry for (provider, model), or nil when no tier of
    the registry has cost data for the pair."
   [provider model]
-  (some-> (registry/lookup provider model)
-          model-entry->pricing-entry))
+  (or (official-openai-pricing provider model)
+      (some-> (registry/lookup provider model)
+              model-entry->pricing-entry)))
 
 (defn register-pricing
   "Register a caller-provided pricing entry as a registry override.
@@ -167,6 +196,58 @@
 ;; Live refresh — delegate to registry
 ;; ---------------------------------------------------------------------------
 
+(declare estimate-cost)
+
+(def openrouter-provider-prefixes
+  "Best-effort mapping from SDK provider ids to OpenRouter model id prefixes.
+
+   This is intentionally conservative. OpenRouter pricing is billing-route
+   pricing for OpenRouter, not proof of the direct provider's current direct
+   API price. Callers can always pass the full OpenRouter model id
+   (for example, \"openai/gpt-4o\") to avoid inference."
+  {:openai "openai"
+   :anthropic "anthropic"
+   :gemini-native "google"
+   :vertex-gemini "google"
+   :mistral "mistralai"
+   :xai "x-ai"
+   :deepseek "deepseek"
+   :cohere "cohere"
+   :perplexity "perplexity"})
+
+(defn openrouter-model-id
+  "Return the OpenRouter model id for a provider/model pair.
+   If model already contains a slash, it is treated as an OpenRouter id."
+  [provider model]
+  (cond
+    (nil? model) nil
+    (str/includes? model "/") model
+    (= provider :openrouter) model
+    :else (when-let [prefix (openrouter-provider-prefixes provider)]
+            (str prefix "/" model))))
+
+(defn fetch-openrouter-pricing!
+  "Refresh OpenRouter's live /models catalog. This populates registry live
+   entries under provider :openrouter, including pricing from
+   https://openrouter.ai/api/v1/models. Returns the number of entries fetched,
+   or 0 on failure."
+  []
+  (try
+    (count (registry/refresh! :openrouter))
+    (catch Exception _ 0)))
+
+(defn get-openrouter-pricing
+  "Get OpenRouter billing-route pricing for provider/model.
+
+   Unlike get-pricing, this deliberately looks under provider :openrouter.
+   Use it when the actual call is routed through OpenRouter or when comparing
+   OpenRouter pricing against direct-provider pricing. Call
+   fetch-openrouter-pricing! first when fresh live data is required."
+  [provider model]
+  (when-let [or-model (openrouter-model-id provider model)]
+    (some-> (registry/lookup :openrouter or-model)
+            model-entry->pricing-entry)))
+
 (defn fetch-pricing!
   "Refresh pricing for a billing-route by hitting the provider's live
    /models endpoint via registry/refresh!. Returns the number of
@@ -184,6 +265,12 @@
         (count (registry/refresh! pid))
         (catch Exception _ 0))
       0)))
+
+(defn estimate-openrouter-cost
+  "Estimate cost using OpenRouter billing-route pricing. Does not refresh live
+   data by itself; call fetch-openrouter-pricing! when freshness matters."
+  [provider model usage]
+  (estimate-cost usage (get-openrouter-pricing provider model)))
 
 ;; ---------------------------------------------------------------------------
 ;; Cost estimation
@@ -362,6 +449,30 @@
          :cost/reason (cond
                         (nil? pricing) "no pricing data for model"
                         :else (or (:cost/label result) "incomplete pricing data"))}))))
+
+(defn cost-result->canonical
+  "Convert a modality-specific cost-result into the public
+   :response/cost shape. Used by non-chat drivers whose cost is based
+   on image count, audio duration, or synthesized characters instead of
+   chat token usage."
+  [result pricing breakdown]
+  (let [amount (:cost/amount-usd result)
+        status (:cost/status result)
+        src (:source pricing)
+        src-url (:source-url pricing)]
+    (if (and (= status :actual) (some? amount))
+      {:cost/usd amount
+       :cost/estimated? true
+       :cost/pricing-source (when src (name src))
+       :cost/source-url src-url
+       :cost/breakdown breakdown}
+      {:cost/usd :unknown
+       :cost/estimated? true
+       :cost/pricing-source (when src (name src))
+       :cost/source-url src-url
+       :cost/reason (cond
+                      (nil? pricing) "no pricing data for model"
+                      :else (or (:cost/label result) "incomplete pricing data"))})))
 
 (defn canonical-cache
   "Build a canonical :response/cache map from a usage map.

@@ -24,10 +24,23 @@
     (is (= "verbose_json" (:content (name->part "response_format"))))
     (is (some? (name->part "file"))
         "binary file part is present")
+    (is (= (.getName tmp) (:file-name (name->part "file"))))
     (is (some #(and (= (:name %) "timestamp_granularities[]")
                     (= (:content %) "segment"))
               parts))
     (.delete tmp)))
+
+(deftest test-openai-build-request-byte-array-file-part
+  (let [t (openai-tx/make-transport)
+        profile (provider/get-provider :openai)
+        built (tt/build-transcribe-request
+               t profile
+               {:transcribe/file (.getBytes "fake audio")
+                :transcribe/filename "fake.wav"
+                :transcribe/model "whisper-1"})
+        file-part (first (filter #(= "file" (:name %)) (:multipart built)))]
+    (is (bytes? (:content file-part)))
+    (is (= "fake.wav" (:file-name file-part)))))
 
 (deftest test-groq-attached
   (let [profile (provider/get-provider :groq)

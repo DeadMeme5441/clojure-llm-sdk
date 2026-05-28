@@ -30,6 +30,59 @@
     (is (= "high" (get-in built [:body :output_config :effort])))
     (is (nil? (get-in built [:body :temperature])))))
 
+(deftest test-build-request-stop-sequence-is-not-split
+  (let [t (anthropic/make-transport)
+        profile (provider/get-provider :anthropic)
+        built (transport/build-request
+               t profile
+               {:request/model "claude-sonnet-4-6"
+                :request/messages [{:message/role :user
+                                    :message/content "Hello"}]
+                :request/stop "END"})]
+    (is (= ["END"] (get-in built [:body :stop_sequences])))))
+
+(deftest test-build-request-document-file-id
+  (let [t (anthropic/make-transport)
+        profile (provider/get-provider :anthropic)
+        req {:request/model "claude-sonnet-4-20250514"
+             :request/messages
+             [{:message/role :user
+               :message/content [{:part/type :file
+                                  :file/id "file_abc123"
+                                  :file/name "brief.pdf"
+                                  :file/citations true}
+                                 {:part/type :text
+                                  :text "Summarize this."}]}]}
+        built (transport/build-request t profile req)
+        blocks (get-in built [:body :messages 0 :content])]
+    (is (= "files-api-2025-04-14"
+           (get-in built [:headers "anthropic-beta"])))
+    (is (= {:type "document"
+            :source {:type "file" :file_id "file_abc123"}
+            :title "brief.pdf"
+            :citations {:enabled true}}
+           (first blocks)))
+    (is (= {:type "text" :text "Summarize this."}
+           (second blocks)))))
+
+(deftest test-build-request-document-base64
+  (let [t (anthropic/make-transport)
+        profile (provider/get-provider :anthropic)
+        req {:request/model "claude-sonnet-4-20250514"
+             :request/messages
+             [{:message/role :user
+               :message/content [{:part/type :file
+                                  :file/name "brief.pdf"
+                                  :file/data "JVBERi0x"
+                                  :file/mime-type "application/pdf"}]}]}
+        built (transport/build-request t profile req)]
+    (is (= {:type "document"
+            :source {:type "base64"
+                     :media_type "application/pdf"
+                     :data "JVBERi0x"}
+            :title "brief.pdf"}
+           (get-in built [:body :messages 0 :content 0])))))
+
 (deftest test-parse-response-text
   (let [t (anthropic/make-transport)
         raw {:id "msg_1"
@@ -153,6 +206,80 @@
     ;; The request should build without errors.
     (is (map? built))
     (is (string? (:url built)))))
+
+(deftest test-build-request-claude-oat-direct-wire-shape
+  (testing "Claude OAT on direct Anthropic endpoint uses Claude Code bearer headers and body transforms"
+    (let [t (anthropic/make-transport)
+          profile (assoc (provider/get-provider :anthropic)
+                         :profile/auth-token "sk-ant-oat-test-token")
+          req {:request/model "claude-sonnet-4-6"
+               :request/messages [{:message/role :system
+                                   :message/content "You are Hermes Agent"}
+                                  {:message/role :user
+                                   :message/content "weather?"}
+                                  {:message/role :assistant
+                                   :message/content "Checking."
+                                   :message/tool-calls [{:part/type :tool-call
+                                                         :tool-call/id "toolu_1"
+                                                         :tool-call/name "get_weather"
+                                                         :tool-call/arguments "{\"city\":\"NYC\"}"}]}]
+               :request/tools [{:type :function
+                                :function {:name "get_weather"
+                                           :description "Weather"
+                                           :parameters {:type :object
+                                                        :properties {:city {:type :string}}}}}]
+               :request/tool-choice :required}
+          built (transport/build-request t profile req)]
+      (is (= "Bearer sk-ant-oat-test-token" (get-in built [:headers "Authorization"])))
+      (is (nil? (get-in built [:headers "x-api-key"])))
+      (is (re-find #"oauth-2025-04-20" (get-in built [:headers "anthropic-beta"])))
+      (is (re-find #"claude_cli|claude-cli"
+                   (or (get-in built [:headers "user-agent"]) "")))
+      (is (= "cli" (get-in built [:headers "x-app"])))
+      (is (nil? (get-in built [:headers "anthropic-dangerous-direct-browser-access"])))
+      (is (= "claude-sonnet-4-6" (get-in built [:body :model])))
+      (is (= "You are Claude Code, Anthropic's official CLI for Claude."
+             (get-in built [:body :system 0 :text])))
+      (is (= "You are Claude Code"
+             (get-in built [:body :system 1 :text])))
+      (is (= "mcp_get_weather" (get-in built [:body :tools 0 :name])))
+      (is (= "mcp_get_weather"
+             (get-in built [:body :messages 1 :content 1 :name])))
+      (is (= {:type "any"} (get-in built [:body :tool_choice]))))))
+
+(deftest test-claude-oat-transform-does-not-apply-to-third-party-endpoints
+  (testing "OAuth-looking tokens on Anthropic-compatible gateways keep the gateway wire shape"
+    (let [t (anthropic/make-transport)
+          profile (assoc (provider/get-provider :anthropic)
+                         :profile/base-url "https://example-gateway.test/v1"
+                         :profile/auth-token "sk-ant-oat-test-token")
+          req {:request/model "claude-sonnet-4-6"
+               :request/messages [{:message/role :system
+                                   :message/content "You are Hermes Agent"}
+                                  {:message/role :user
+                                   :message/content "hi"}]}
+          built (transport/build-request t profile req)]
+      (is (= "sk-ant-oat-test-token" (get-in built [:headers "x-api-key"])))
+      (is (nil? (get-in built [:headers "Authorization"])))
+      (is (= "You are Hermes Agent" (get-in built [:body :system 0 :text])))
+      (is (nil? (get-in built [:headers "x-app"]))))))
+
+(deftest test-claude-oat-transform-requires-real-anthropic-host
+  (testing "host detection does not treat lookalike domains as Anthropic"
+    (let [t (anthropic/make-transport)
+          profile (assoc (provider/get-provider :anthropic)
+                         :profile/base-url "https://proxy.anthropic.com.evil.test/v1"
+                         :profile/auth-token "sk-ant-oat-test-token")
+          built (transport/build-request
+                 t profile
+                 {:request/model "claude-sonnet-4-6"
+                  :request/messages [{:message/role :system
+                                      :message/content "You are Hermes Agent"}
+                                     {:message/role :user
+                                      :message/content "hi"}]})]
+      (is (= "sk-ant-oat-test-token" (get-in built [:headers "x-api-key"])))
+      (is (nil? (get-in built [:headers "Authorization"])))
+      (is (= "You are Hermes Agent" (get-in built [:body :system 0 :text]))))))
 
 (deftest test-build-request-oauth-system-prefix
   (testing "OAuth mode sanitizes system prompt product references"

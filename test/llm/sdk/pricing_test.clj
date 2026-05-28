@@ -209,6 +209,37 @@
              (pricing/resolve-billing-route "gpt-4o" :provider :openai))]
       (is (zero? n) "exceptions surface as 0 entries"))))
 
+(deftest fetch-openrouter-pricing-refreshes-openrouter-provider
+  (let [seen (atom nil)]
+    (with-redefs [registry/refresh!
+                  (fn [pid]
+                    (reset! seen pid)
+                    [{:model/id "openai/gpt-4o"
+                      :model/provider :openrouter
+                      :model/source :live-models-api}])]
+      (is (= 1 (pricing/fetch-openrouter-pricing!)))
+      (is (= :openrouter @seen)))))
+
+(deftest openrouter-pricing-is-looked-up-as-openrouter-billing-route
+  (offline
+   (fn []
+     (pricing/register-pricing :openrouter "openai/gpt-4o"
+                               {:input 2.5 :output 10.0})
+     (let [p (pricing/get-openrouter-pricing :openai "gpt-4o")
+           c (pricing/estimate-openrouter-cost
+              :openai "gpt-4o"
+              {:usage/input-tokens 1000 :usage/output-tokens 500})]
+       (is (= 2.5 (:input-cost-per-million p)))
+       (is (= 10.0 (:output-cost-per-million p)))
+       (is (= :actual (:cost/status c)))
+       (is (bd≈ 0.0075M (:cost/amount-usd c)))))))
+
+(deftest official-openai-image-pricing-fallback
+  (let [p (pricing/get-pricing :openai "gpt-image-1-mini")]
+    (is (= :openai-pricing-page (:source p)))
+    (is (= 2.0 (:input-cost-per-million p)))
+    (is (= 8.0 (:output-cost-per-million p)))))
+
 ;; ---------------------------------------------------------------------------
 ;; resolve-billing-route — pure metadata
 ;; ---------------------------------------------------------------------------

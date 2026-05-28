@@ -9,7 +9,20 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.schema :as schema]
             [llm.sdk.errors :as errors]
+            [llm.sdk.pricing :as pricing]
             [llm.sdk.transport.transcribe :as tt]))
+
+(defn- stamp-transcription-cost [provider-id request parsed]
+  (let [model (:transcribe/model request)
+        duration (:transcription/duration-seconds parsed)
+        pricing (pricing/get-pricing provider-id model)
+        result (pricing/transcription-cost {:duration-seconds duration} pricing)
+        cost (pricing/cost-result->canonical
+              result
+              pricing
+              (cond-> {}
+                duration (assoc :duration-seconds duration)))]
+    (assoc parsed :response/cost cost)))
 
 (defn- http-client [{:keys [http-client connect-timeout-ms timeout-ms]}]
   (or http-client
@@ -96,4 +109,5 @@
                          :status status
                          :body body
                          :provider provider-id})))
-      (tt/parse-transcribe-response transport profile body))))
+      (stamp-transcription-cost provider-id request
+                                (tt/parse-transcribe-response transport profile body)))))

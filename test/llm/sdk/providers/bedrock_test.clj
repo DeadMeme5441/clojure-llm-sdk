@@ -43,6 +43,59 @@
     (is (.endsWith ^String (:url built) "/model/amazon.nova-pro-v1:0/converse-stream"))
     (is (= "application/vnd.amazon.eventstream" (get-in built [:headers "Accept"])))))
 
+(deftest test-inference-config-stop-sequence-is-not-split
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        built (transport/build-request
+               t profile
+               {:request/model "nova-pro"
+                :request/messages [{:message/role :user
+                                    :message/content "hi"}]
+                :request/temperature 0.2
+                :request/stop "END"})]
+    (is (= 0.2 (get-in built [:body :inferenceConfig :temperature])))
+    (is (= ["END"] (get-in built [:body :inferenceConfig :stopSequences])))))
+
+(deftest test-build-request-document-attachment
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        built (transport/build-request
+               t profile
+               {:request/model "claude-3-5-sonnet"
+                :request/messages
+                [{:message/role :user
+                  :message/content [{:part/type :text
+                                     :text "Summarize."}
+                                    {:part/type :file
+                                     :file/name "Q1 Report!!.pdf"
+                                     :file/data "JVBERi0x"
+                                     :file/mime-type "application/pdf"
+                                     :file/citations true}]}]})
+        content (get-in built [:body :messages 0 :content])]
+    (is (= {:text "Summarize."} (first content)))
+    (is (= {:document {:format "pdf"
+                       :name "Q1 Report pdf"
+                       :source {:bytes "JVBERi0x"}
+                       :citations {:enabled true}}}
+           (second content)))))
+
+(deftest test-build-request-document-s3-source
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        built (transport/build-request
+               t profile
+               {:request/model "claude-3-5-sonnet"
+                :request/messages
+                [{:message/role :user
+                  :message/content [{:part/type :file
+                                     :file/name "brief.pdf"
+                                     :file/url "s3://bucket/brief.pdf"
+                                     :file/mime-type "application/pdf"}]}]})]
+    (is (= {:document {:format "pdf"
+                       :name "brief pdf"
+                       :source {:s3Location {:uri "s3://bucket/brief.pdf"}}}}
+           (get-in built [:body :messages 0 :content 0])))))
+
 (deftest test-tool-call-shape
   (let [t (bedrock/make-transport)
         profile (provider/get-provider :bedrock)

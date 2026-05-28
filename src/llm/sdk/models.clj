@@ -16,6 +16,7 @@
             [malli.core :as m]
             [llm.sdk.http :as http]
             [llm.sdk.provider :as provider]
+            [llm.sdk.providers.openai-compat.aliases :as openai-aliases]
             [llm.sdk.gcp-auth :as gcp-auth]))
 
 ;; ---------------------------------------------------------------------------
@@ -147,11 +148,16 @@
           entries)))
 
 (defn- parse-decimal
-  "Parse a decimal string - returns nil for nil/empty/malformed input."
-  [s]
-  (when (and s (string? s) (seq s))
-    (try (Double/parseDouble s)
-         (catch Exception _ nil))))
+  "Parse a decimal string or numeric value. Returns nil for nil/empty/malformed
+   input. OpenRouter documents pricing as decimal strings, but the live
+   endpoint may emit JSON numbers for the same fields."
+  [x]
+  (cond
+    (number? x) (double x)
+    (and (string? x) (seq x))
+    (try (Double/parseDouble x)
+         (catch Exception _ nil))
+    :else nil))
 
 (defn- parse-decimal-string
   "OpenRouter encodes per-token pricing as decimal strings. Convert to
@@ -180,12 +186,16 @@
                          (parse-decimal-string (:completion pricing))
                          (assoc :output-per-million
                                 (parse-decimal-string (:completion pricing)))
-                         (parse-decimal-string (:cache_read pricing))
+                         (or (parse-decimal-string (:cache_read pricing))
+                             (parse-decimal-string (:input_cache_read pricing)))
                          (assoc :cache-read-per-million
-                                (parse-decimal-string (:cache_read pricing)))
-                         (parse-decimal-string (:cache_write pricing))
+                                (or (parse-decimal-string (:cache_read pricing))
+                                    (parse-decimal-string (:input_cache_read pricing))))
+                         (or (parse-decimal-string (:cache_write pricing))
+                             (parse-decimal-string (:input_cache_write pricing)))
                          (assoc :cache-write-per-million
-                                (parse-decimal-string (:cache_write pricing)))
+                                (or (parse-decimal-string (:cache_write pricing))
+                                    (parse-decimal-string (:input_cache_write pricing))))
                          (parse-decimal (:request pricing))
                          (assoc :request-cost
                                 (parse-decimal (:request pricing)))
@@ -345,11 +355,8 @@
 
 (def supported-providers
   "Providers with a usable live /models endpoint."
-  #{:openai :anthropic :gemini-native :vertex-gemini
-    :openrouter :deepseek :kimi
-    :mistral :groq :cerebras :together :xai :huggingface
-    :sambanova :deepinfra :lambda :nebius :hyperbolic :novita
-    :friendliai :featherless :dashscope :volcengine})
+  (into #{:openai :anthropic :gemini-native :vertex-gemini :openrouter}
+        openai-aliases/model-listing-alias-ids))
 
 (defn supports-models-listing?
   "Does this provider expose a /models endpoint we can call?"

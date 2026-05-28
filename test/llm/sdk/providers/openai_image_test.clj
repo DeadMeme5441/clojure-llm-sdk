@@ -89,6 +89,23 @@
       (is (string? (:image/b64 img)))
       (is (nil? (:image/url img))))))
 
+(deftest test-parse-response-usage
+  (let [t (oai-img/make-transport)
+        profile (provider/get-provider :openai)
+        raw {:created 0
+             :data [{:b64_json "abc"}]
+             :usage {:input_tokens 11
+                     :input_tokens_details {:image_tokens 0
+                                            :text_tokens 11}
+                     :output_tokens 1056
+                     :output_tokens_details {:image_tokens 1056
+                                             :text_tokens 0}
+                     :total_tokens 1067}}
+        resp (it/parse-image-response t profile raw)]
+    (is (= 11 (get-in resp [:response/usage :usage/input-tokens])))
+    (is (= 1056 (get-in resp [:response/usage :usage/output-tokens])))
+    (is (= 1067 (get-in resp [:response/usage :usage/total-tokens])))))
+
 ;; ---------------------------------------------------------------------------
 ;; Error classification
 ;; ---------------------------------------------------------------------------

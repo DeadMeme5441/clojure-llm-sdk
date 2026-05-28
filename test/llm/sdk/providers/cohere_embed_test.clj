@@ -117,5 +117,4 @@
   (testing "sdk/embed picks up :cohere's embed transport constructor"
     (let [profile (provider/get-provider :cohere)
           transport ((:profile/embed-transport-constructor profile))]
-      (is (instance? llm.sdk.providers.cohere_embed.CohereEmbedTransport
-                     transport)))))
+      (is (satisfies? et/EmbedTransport transport)))))

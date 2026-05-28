@@ -141,7 +141,9 @@
   [{:id :voyage    :base "https://api.voyageai.com/v1"   :env "VOYAGE_API_KEY"}
    {:id :jina      :base "https://api.jina.ai/v1"        :env "JINA_API_KEY"}
    {:id :mistral   :base "https://api.mistral.ai/v1"     :env "MISTRAL_API_KEY"}
-   {:id :together  :base "https://api.together.xyz/v1"   :env "TOGETHER_API_KEY"}])
+   {:id :together  :base "https://api.together.xyz/v1"   :env "TOGETHER_API_KEY"}
+   {:id :openrouter :base "https://openrouter.ai/api/v1" :env "OPENROUTER_API_KEY"}
+   {:id :nebius    :base "https://api.studio.nebius.com/v1" :env "NEBIUS_API_KEY"}])
 
 (deftest test-openai-shape-embed-providers-registered
   (doseq [{:keys [id base env]} openai-shape-embed-providers]
@@ -155,13 +157,11 @@
           (str id " capabilities include :embedding")))))
 
 (deftest test-openai-shape-embed-providers-share-transport
-  (testing "all OpenAI-shape embed providers reuse OpenAIEmbedTransport"
+  (testing "all OpenAI-shape embed providers reuse the OpenAI embeddings transport"
     (doseq [{:keys [id]} openai-shape-embed-providers]
       (let [profile (provider/get-provider id)
             transport ((:profile/embed-transport-constructor profile))]
-        (is (instance? llm.sdk.providers.openai_embed.OpenAIEmbedTransport
-                       transport)
-            (str id))))))
+        (is (satisfies? et/EmbedTransport transport) (str id))))))
 
 (deftest test-voyage-build-request-includes-extra-body
   (testing "Voyage-specific :input-type lands on the body via :extra_body"
@@ -178,3 +178,20 @@
       (is (= "https://api.voyageai.com/v1/embeddings" (:url built)))
       (is (= "query phrase" (get-in built [:body :input])))
       (is (= "query" (get-in built [:body :input_type]))))))
+
+(deftest test-openrouter-embed-request-shape
+  (testing "OpenRouter embeddings use the OpenAI-compatible endpoint with OpenRouter headers"
+    (let [t (openai-embed/make-transport)
+          profile (provider/get-provider :openrouter)
+          built (with-redefs [provider/resolve-auth-token
+                              (constantly "stub")]
+                  (et/build-embed-request
+                   t profile
+                   {:embed/model "openrouter/google/gemini-embedding-001"
+                    :embed/inputs ["query phrase"]}))]
+      (is (= "https://openrouter.ai/api/v1/embeddings" (:url built)))
+      (is (= "Bearer stub" (get-in built [:headers "Authorization"])))
+      (is (string? (get-in built [:headers "HTTP-Referer"])))
+      (is (string? (get-in built [:headers "X-Title"])))
+      (is (= "google/gemini-embedding-001" (get-in built [:body :model])))
+      (is (= "query phrase" (get-in built [:body :input]))))))

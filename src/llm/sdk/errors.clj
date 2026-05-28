@@ -256,3 +256,11 @@
       {:error/reason :unknown
        :error/retryable true
        :error/message "Unclassified error"})))
+
+(defn classify-api-error
+  "Classify a provider HTTP API error with a consistent exception label."
+  [provider label status body]
+  (classify-error (Exception. (str label " API error"))
+                  :status status
+                  :body body
+                  :provider provider))
