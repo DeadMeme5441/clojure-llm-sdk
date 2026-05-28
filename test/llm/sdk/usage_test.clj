@@ -80,3 +80,17 @@
               :prompt_tokens_details {:cached_tokens 300 :cache_write_tokens 50}
               :cache_read_input_tokens 9999})]  ; should be ignored
       (is (= 300 (:usage/cached-input-tokens u))))))
+
+(deftest test-normalize-openai-usage-image-generation-shape
+  (let [u (usage/normalize-openai-usage
+           {:input_tokens 11
+            :input_tokens_details {:image_tokens 0
+                                   :text_tokens 11}
+            :output_tokens 1056
+            :output_tokens_details {:image_tokens 1056
+                                    :text_tokens 0}
+            :total_tokens 1067})]
+    (is (= 11 (:usage/input-tokens u)))
+    (is (= 1056 (:usage/output-tokens u)))
+    (is (= 1056 (:usage/image-tokens u)))
+    (is (= 1067 (:usage/total-tokens u)))))

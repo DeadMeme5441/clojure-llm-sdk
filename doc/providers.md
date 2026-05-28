@@ -55,6 +55,8 @@ OpenAI-compatible aggregator aliases:
 
 `clojure-llm-sdk` is not a proxy router. Aggregator aliases use one credential each and do not perform pool management, spend routing, cooldowns, or tenant isolation.
 
+Provider implementation namespaces are split by provider family. For example, OpenAI chat is owned by `llm.sdk.providers.openai.chat`, Anthropic chat by `llm.sdk.providers.anthropic.chat`, OpenRouter by `llm.sdk.providers.openrouter.chat`, and Bedrock Converse by `llm.sdk.providers.bedrock.converse`. The older flat namespaces remain compatibility shims for existing callers.
+
 ## Non-Chat Providers
 
 ### Embeddings
@@ -128,7 +130,7 @@ OpenRouter supports provider routing options through `:request/provider-options`
 
 ### Azure OpenAI
 
-Azure routes by deployment name in the URL. Register one provider id per deployment with `llm.sdk.providers.openai-chat/register-azure-deployment!`. See [provider-configuration.md](provider-configuration.md#azure-openai-deployments).
+Azure routes by deployment name in the URL. Register one provider id per deployment with `llm.sdk.providers.openai.chat/register-azure-deployment!`. The legacy `llm.sdk.providers.openai-chat` namespace forwards to the same implementation. See [provider-configuration.md](provider-configuration.md#azure-openai-deployments).
 
 ### Custom OpenAI-Compatible Providers
 

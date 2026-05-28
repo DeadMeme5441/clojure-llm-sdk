@@ -115,7 +115,7 @@ export GOOGLE_CLOUD_PROJECT=my-project
 Azure routes by deployment name in the URL. Register a provider profile per deployment:
 
 ```clojure
-(require '[llm.sdk.providers.openai-chat :as openai-chat])
+(require '[llm.sdk.providers.openai.chat :as openai-chat])
 
 (openai-chat/register-azure-deployment!
   {:id :azure-gpt4o-prod
@@ -133,12 +133,14 @@ Azure routes by deployment name in the URL. Register a provider profile per depl
 
 Default Azure auth uses the `api-key` header. Use `:auth-strategy :bearer` for AAD bearer tokens.
 
+The legacy namespace `llm.sdk.providers.openai-chat` remains as a compatibility shim.
+
 ## Custom OpenAI-Compatible Providers
 
 For a provider that accepts OpenAI Chat Completions shape, register an alias:
 
 ```clojure
-(require '[llm.sdk.providers.openai-chat :as openai-chat])
+(require '[llm.sdk.providers.openai.chat :as openai-chat])
 
 (openai-chat/register-alias!
   {:id :my-private-llm

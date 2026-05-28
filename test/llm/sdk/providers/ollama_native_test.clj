@@ -35,6 +35,17 @@
     (is (= ["base64bytes"] (:images msg))
         "Ollama native takes images as sibling :images, not as content parts")))
 
+(deftest test-chat-stop-sequence-is-not-split
+  (let [t (ollama/make-transport)
+        profile (provider/get-provider :ollama-native)
+        built (transport/build-request
+               t profile
+               {:request/model "llama3.1"
+                :request/messages [{:message/role :user
+                                    :message/content "hi"}]
+                :request/stop "END"})]
+    (is (= ["END"] (get-in built [:body :options :stop])))))
+
 (deftest test-chat-vision-data-uri-strips-header
   (let [t (ollama/make-transport)
         profile (provider/get-provider :ollama-native)

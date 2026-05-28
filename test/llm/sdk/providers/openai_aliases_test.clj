@@ -21,6 +21,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
             [llm.sdk.providers.openai-chat :as openai]
+            [llm.sdk.providers.openai-compat.aliases :as aliases]
             [llm.sdk.models :as models]))
 
 ;; ---------------------------------------------------------------------------
@@ -151,6 +152,29 @@
         (is (= "test-model" (get-in built [:body :model]))
             (str id " body model"))
         (is (some? env))))))
+
+(deftest test-openai-compatible-aliases-reject-file-parts
+  (testing "aliases do not inherit OpenAI-only file content parts"
+    (doseq [id aliases/chat-alias-ids]
+      (let [t (openai/make-transport)
+            profile (provider/get-provider id)
+            req {:request/model "test-model"
+                 :request/messages
+                 [{:message/role :user
+                   :message/content [{:part/type :file
+                                      :file/name "brief.pdf"
+                                      :file/data "JVBERi0x"}]}]}]
+        (is (not (contains? (:profile/capabilities profile) :file-attachments))
+            (str id " must not claim file attachments"))
+        (try
+          (transport/build-request t profile req)
+          (is false (str id " should reject file parts before network"))
+          (catch clojure.lang.ExceptionInfo e
+            (is (= :provider/unsupported-file-attachment
+                   (:error/type (ex-data e)))
+                (str id " error type"))
+            (is (= id (:provider (ex-data e)))
+                (str id " error provider"))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; :drops quirk strips body keys (Mistral)

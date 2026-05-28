@@ -11,6 +11,7 @@
             [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
             [llm.sdk.errors :as errors]
+            [llm.sdk.pricing :as pricing]
             [llm.sdk.transport.embed :as et]))
 
 (defn embed
@@ -56,5 +57,9 @@
       ;; Adapters that don't echo the model in the response leave
       ;; :embed/model nil — fall back to what the caller asked for so
       ;; the surface always carries a useful model id.
-      (let [parsed (et/parse-embed-response transport profile body)]
-        (update parsed :embed/model #(or % (:embed/model request)))))))
+      (let [parsed (et/parse-embed-response transport profile body)
+            parsed (update parsed :embed/model #(or % (:embed/model request)))
+            usage (:response/usage parsed)
+            cost (pricing/canonical-cost provider-id (:embed/model parsed) usage)]
+        (cond-> parsed
+          cost (assoc :response/cost cost))))))

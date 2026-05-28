@@ -10,8 +10,34 @@
             [llm.sdk.schema :as schema]
             [llm.sdk.http :as http]
             [llm.sdk.errors :as errors]
+            [llm.sdk.pricing :as pricing]
             [llm.sdk.aws-sigv4 :as aws-sigv4]
             [llm.sdk.transport.image :as it]))
+
+(defn- parse-size [s]
+  (when-let [[_ w h] (and (string? s) (re-matches #"(\d+)x(\d+)" s))]
+    {:width (Long/parseLong w)
+     :height (Long/parseLong h)}))
+
+(defn- stamp-image-cost [provider-id request parsed]
+  (let [model (:image/model parsed)
+        usage (:response/usage parsed)
+        pricing (pricing/get-pricing provider-id model)
+        dims (parse-size (:image/size request))
+        n-images (or (some-> (:image/images parsed) count)
+                     (:image/n request)
+                     1)
+        cost (if usage
+               (pricing/canonical-cost provider-id model usage)
+               (let [result (pricing/image-cost (merge {:n-images n-images} dims)
+                                                pricing)]
+                 (pricing/cost-result->canonical
+                  result
+                  pricing
+                  (cond-> {:images n-images}
+                    (:width dims) (assoc :width (:width dims))
+                    (:height dims) (assoc :height (:height dims))))))]
+    (assoc parsed :response/cost cost)))
 
 (defn generate-image
   "Send a canonical ImageGenRequest, return an ImageGenResponse.
@@ -57,4 +83,9 @@
                          :status status
                          :body body
                          :provider provider-id})))
-      (it/parse-image-response transport profile body))))
+      (let [parsed (it/parse-image-response transport profile body)
+            parsed (assoc parsed :image/model
+                          (or (:image/model parsed)
+                              (:image/model request)
+                              "openai-image"))]
+        (stamp-image-cost provider-id request parsed)))))

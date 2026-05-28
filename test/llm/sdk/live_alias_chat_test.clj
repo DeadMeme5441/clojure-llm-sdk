@@ -47,6 +47,11 @@
     (testing "Kimi Code chat live"
       (smoke-chat :kimi-code "kimi-for-coding" 128))))
 
+(deftest ^:live live-deepseek-chat
+  (when (has-creds? "DEEPSEEK_API_KEY")
+    (testing "DeepSeek OpenAI-compatible chat live"
+      (smoke-chat :deepseek "deepseek-chat"))))
+
 (deftest ^:live live-mistral-chat
   (when (has-creds? "MISTRAL_API_KEY")
     (testing "Mistral chat live"

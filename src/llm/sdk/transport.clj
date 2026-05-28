@@ -1,7 +1,9 @@
 (ns llm.sdk.transport
   "Transport protocol definition. A transport owns the translation between
    canonical SDK shapes and provider-native wire formats."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str])
+  (:import [java.nio.charset StandardCharsets]
+           [java.util Base64]))
 
 ;; ---------------------------------------------------------------------------
 ;; Protocol
@@ -97,3 +99,88 @@
                  (str/includes? model-lower "o3")))
       (assoc-in messages [0 :message/role] :developer)
       messages)))
+
+(defn stop-sequences
+  "Normalize canonical :request/stop into providers' stop-sequence arrays.
+   A single string is one sequence, not a seq of characters."
+  [stop]
+  (cond
+    (nil? stop) nil
+    (string? stop) [stop]
+    (sequential? stop) (vec stop)
+    :else [(str stop)]))
+
+(defn bytes->base64 [^bytes bs]
+  (.encodeToString (Base64/getEncoder) bs))
+
+(defn text->base64 [^String s]
+  (bytes->base64 (.getBytes s StandardCharsets/UTF_8)))
+
+(defn file-mime-type [part]
+  (or (:file/mime-type part) "application/pdf"))
+
+(defn file-name [part]
+  (or (:file/name part) "document"))
+
+(defn file-binary-data
+  "Return base64 encoded file bytes from :file/data or :file/bytes.
+   :file/data is assumed to already be base64 encoded."
+  [part]
+  (or (:file/data part)
+      (when-let [bs (:file/bytes part)]
+        (if (bytes? bs)
+          (bytes->base64 bs)
+          (str bs)))))
+
+(defn file-text-content [part]
+  (:file/content part))
+
+(defn file-data-for-input-file
+  "Return base64 content for providers whose file input field expects
+   encoded file data. Text content is UTF-8 encoded."
+  [part]
+  (or (file-binary-data part)
+      (when-let [text (:file/content part)]
+        (text->base64 text))))
+
+(defn file-data-uri-for-input-file
+  "Return a data URI for OpenAI file_data fields.
+   OpenAI Responses and Chat Completions reject raw base64 here; they expect
+   data:<mime>;base64,<payload>."
+  [part]
+  (when-let [data (file-data-for-input-file part)]
+    (str "data:" (file-mime-type part) ";base64," data)))
+
+(defn file-extension [part]
+  (or (:file/format part)
+      (some-> (file-name part)
+              (str/split #"\.")
+              last
+              str/lower-case
+              not-empty)
+      (case (file-mime-type part)
+        "application/pdf" "pdf"
+        "text/csv" "csv"
+        "text/html" "html"
+        "text/plain" "txt"
+        "text/markdown" "md"
+        "application/msword" "doc"
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" "docx"
+        "application/vnd.ms-excel" "xls"
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" "xlsx"
+        "pdf")))
+
+(defn unsupported-file-part!
+  [provider-id part]
+  (throw (ex-info "File attachments are not supported by this provider transport"
+                  {:provider provider-id
+                   :part/type (:part/type part)
+                   :file/name (:file/name part)
+                   :error/type :provider/unsupported-file-attachment})))
+
+(defn missing-file-source!
+  [provider-id part]
+  (throw (ex-info "File attachment is missing :file/id, :file/url, :file/data, :file/bytes, or :file/content"
+                  {:provider provider-id
+                   :file/name (:file/name part)
+                   :error/type :request/missing-file-source})))

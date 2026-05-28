@@ -34,6 +34,13 @@
   (is (schema/validate-part {:part/type :image
                              :image/data "base64"
                              :image/mime-type "image/png"}))
+  (is (schema/validate-part {:part/type :file
+                             :file/name "doc.pdf"
+                             :file/data "JVBERi0x"
+                             :file/mime-type "application/pdf"}))
+  (is (schema/validate-part {:part/type :file
+                             :file/id "file_123"
+                             :file/name "doc.pdf"}))
   (is (schema/validate-part {:part/type :reasoning
                              :reasoning/text "thinking..."})))
 

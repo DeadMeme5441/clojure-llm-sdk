@@ -14,7 +14,19 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.schema :as schema]
             [llm.sdk.errors :as errors]
+            [llm.sdk.pricing :as pricing]
             [llm.sdk.transport.speak :as st]))
+
+(defn- stamp-tts-cost [provider-id request parsed]
+  (let [model (or (:audio/model parsed) (:speak/model request))
+        characters (count (:speak/input request))
+        pricing (pricing/get-pricing provider-id model)
+        result (pricing/tts-cost {:characters characters} pricing)
+        cost (pricing/cost-result->canonical
+              result
+              pricing
+              {:characters characters})]
+    (assoc parsed :response/cost cost)))
 
 (defn- http-client [{:keys [http-client connect-timeout-ms timeout-ms]}]
   (or http-client
@@ -82,4 +94,5 @@
                          :status status
                          :body body
                          :provider provider-id})))
-      (st/parse-speak-response transport profile resp))))
+      (stamp-tts-cost provider-id request
+                      (st/parse-speak-response transport profile resp)))))

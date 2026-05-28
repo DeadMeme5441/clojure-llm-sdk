@@ -4,7 +4,8 @@
             [clojure.string :as str]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.codex :as codex]))
+            [llm.sdk.providers.codex :as codex]
+            [llm.sdk.providers.codex.responses :as codex-impl]))
 
 (defn- temp-auth-file []
   (let [dir (doto (java.io.File/createTempFile "codex-auth-test" "")
@@ -54,6 +55,28 @@
     (is (= true (get-in built [:body :parallel_tool_calls])))
     (is (= "get_weather" (get-in built [:body :tools 0 :name])))))
 
+(deftest test-build-request-file-input
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex)
+        req {:request/model "gpt-5"
+             :request/messages
+             [{:message/role :user
+               :message/content [{:part/type :text
+                                  :text "Summarize this."}
+                                 {:part/type :file
+                                  :file/name "brief.pdf"
+                                  :file/data "JVBERi0x"
+                                  :file/mime-type "application/pdf"}]}]}
+        built (transport/build-request t profile req)
+        first-input (first (get-in built [:body :input]))
+        content (:content first-input)]
+    (is (= {:type "input_text" :text "Summarize this."}
+           (first content)))
+    (is (= {:type "input_file"
+            :file_data "data:application/pdf;base64,JVBERi0x"
+            :filename "brief.pdf"}
+           (second content)))))
+
 (deftest test-build-request-reasoning
   (let [t (codex/make-transport)
         profile (provider/get-provider :codex)
@@ -74,6 +97,7 @@
       (reset! @#'codex/codex-auth-cache nil)
       (write-auth! file "tok-1" "ref-1")
       (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
+                       #'codex-impl/codex-auth-file-path (constantly path)
                        #'clojure.core/slurp (fn [& args]
                                               (swap! reads inc)
                                               (apply original-slurp args))}
@@ -96,13 +120,94 @@
     (try
       (reset! @#'codex/codex-auth-cache nil)
       (write-auth! file "tok-1" "ref-1" "acct-123")
-      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)}
+      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
+                       #'codex-impl/codex-auth-file-path (constantly path)}
         (fn []
           (let [auth (codex/read-codex-auth)
                 headers (codex/codex-backend-auth-headers)]
             (is (= "acct-123" (:account-id auth)))
             (is (= "Bearer tok-1" (get headers "Authorization")))
             (is (= "acct-123" (get headers "ChatGPT-Account-ID"))))))
+      (finally
+        (reset! @#'codex/codex-auth-cache nil)
+        (.delete file)
+        (.delete dir)))))
+
+(deftest test-codex-auth-file-without-access-token-is-invalid
+  (let [[dir file] (temp-auth-file)
+        path (.getPath file)]
+    (try
+      (reset! @#'codex/codex-auth-cache nil)
+      (spit file
+            (json/generate-string
+             {:auth_mode "chatgpt"
+              :tokens {:refresh_token "ref-1"
+                       :account_id "acct-123"}}))
+      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
+                       #'codex-impl/codex-auth-file-path (constantly path)}
+        (fn []
+          (is (nil? (codex/read-codex-auth)))
+          (is (nil? (codex/codex-backend-auth-headers)))
+          (is (false? (codex/codex-backend-available?)))))
+      (finally
+        (reset! @#'codex/codex-auth-cache nil)
+        (.delete file)
+        (.delete dir)))))
+
+(deftest test-build-request-codex-backend-requires-valid-oauth-file
+  (let [[dir file] (temp-auth-file)
+        path (.getPath file)
+        t (codex/make-transport)
+        profile (provider/get-provider :codex-backend)
+        req {:request/model "gpt-5-codex"
+             :request/messages [{:message/role :user
+                                 :message/content "hi"}]}]
+    (try
+      (reset! @#'codex/codex-auth-cache nil)
+      (spit file (json/generate-string {:auth_mode "chatgpt" :tokens {}}))
+      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
+                       #'codex-impl/codex-auth-file-path (constantly path)}
+        (fn []
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo
+               #"Codex backend OAuth credentials are unavailable"
+               (transport/build-request t profile req)))))
+      (finally
+        (reset! @#'codex/codex-auth-cache nil)
+        (.delete file)
+        (.delete dir)))))
+
+(deftest test-build-request-codex-backend-wire-auth-and-cache
+  (let [[dir file] (temp-auth-file)
+        path (.getPath file)
+        t (codex/make-transport)
+        profile (provider/get-provider :codex-backend)
+        req {:request/model "gpt-5-codex"
+             :request/messages [{:message/role :system
+                                 :message/content "Sys"}
+                                {:message/role :user
+                                 :message/content "hi"}]
+             :request/max-tokens 16
+             :request/cache {:scope-id "session-123"}}]
+    (try
+      (reset! @#'codex/codex-auth-cache nil)
+      (write-auth! file "tok-1" "ref-1" "acct-123")
+      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
+                       #'codex-impl/codex-auth-file-path (constantly path)}
+        (fn []
+          (let [built (transport/build-request t profile req)]
+            (is (= "https://chatgpt.com/backend-api/codex/responses" (:url built)))
+            (is (= "Bearer tok-1" (get-in built [:headers "Authorization"])))
+            (is (= "acct-123" (get-in built [:headers "ChatGPT-Account-ID"])))
+            (is (= "text/event-stream" (get-in built [:headers "Accept"])))
+            (is (= "codex_cli_rs" (get-in built [:headers "originator"])))
+            (is (= "session-123" (get-in built [:headers "session_id"])))
+            (is (= "session-123" (get-in built [:headers "x-client-request-id"])))
+            (is (= "session-123" (get-in built [:body :prompt_cache_key])))
+            (is (= true (get-in built [:body :stream])))
+            (is (nil? (get-in built [:body :max_output_tokens]))
+                "Codex backend rejects max_output_tokens; transport must suppress it")
+            (is (= "Sys" (get-in built [:body :instructions]))))))
       (finally
         (reset! @#'codex/codex-auth-cache nil)
         (.delete file)
@@ -348,6 +453,20 @@
       (is (nil? (get-in built [:body :prompt_cache_key])))
       (is (= "conv-xai" (get-in built [:body :extra_body :prompt_cache_key])))
       (is (= "conv-xai" (get-in built [:headers "x-grok-conv-id"]))))))
+
+(deftest test-codex-host-detection-does-not-match-lookalikes
+  (let [t (codex/make-transport)
+        profile (assoc (provider/get-provider :codex)
+                       :profile/base-url "https://chatgpt.com.evil.test/backend-api/codex")
+        built (transport/build-request
+               t profile
+               {:request/model "gpt-5-codex"
+                :request/messages [{:message/role :user
+                                    :message/content "hi"}]
+                :request/max-tokens 16})]
+    (is (= "https://chatgpt.com.evil.test/backend-api/codex/responses" (:url built)))
+    (is (nil? (get-in built [:body :stream])))
+    (is (= 16 (get-in built [:body :max_output_tokens])))))
 
 (deftest test-cache-no-cache-key-when-disabled
   (let [t (codex/make-transport)

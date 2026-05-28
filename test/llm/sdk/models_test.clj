@@ -91,6 +91,23 @@
       (is (nil? (get-in gpt4o [:model/cost :cache-read-per-million])))
       (is (nil? (get-in gpt4o [:model/cost :cache-write-per-million]))))))
 
+(deftest parse-openrouter-models-accepts-live-numeric-pricing-keys
+  (let [body {:data [{:id "qwen/qwen3.7-max"
+                      :name "Qwen: Qwen3.7 Max"
+                      :context_length 1000000
+                      :pricing {:prompt 0.00000125
+                                :completion 0.00000375
+                                :input_cache_read 0.00000025
+                                :input_cache_write 0.0000015625}
+                      :top_provider {:max_completion_tokens 65536}}]}
+        [entry] (models/parse-openrouter-models
+                 body :openrouter "https://openrouter.ai/api/v1/models")]
+    (is (= "qwen/qwen3.7-max" (:model/id entry)))
+    (is (= 1.25 (get-in entry [:model/cost :input-per-million])))
+    (is (= 3.75 (get-in entry [:model/cost :output-per-million])))
+    (is (= 0.25 (get-in entry [:model/cost :cache-read-per-million])))
+    (is (= 1.5625 (get-in entry [:model/cost :cache-write-per-million])))))
+
 ;; ---------------------------------------------------------------------------
 ;; Schema conformance
 ;; ---------------------------------------------------------------------------

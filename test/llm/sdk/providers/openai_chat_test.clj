@@ -78,6 +78,39 @@
         built (transport/build-request t profile req)]
     (is (= "developer" (get-in built [:body :messages 0 :role])))))
 
+(deftest test-build-request-file-attachment
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        req {:request/model "gpt-4o"
+             :request/messages
+             [{:message/role :user
+               :message/content [{:part/type :file
+                                  :file/name "brief.pdf"
+                                  :file/data "JVBERi0x"
+                                  :file/mime-type "application/pdf"}]}]}
+        built (transport/build-request t profile req)]
+    (is (= {:type "file"
+            :file {:filename "brief.pdf"
+                   :file_data "data:application/pdf;base64,JVBERi0x"}}
+           (get-in built [:body :messages 0 :content 0])))))
+
+(deftest test-build-request-file-attachment-fails-for-alias
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :deepseek)
+        req {:request/model "deepseek-chat"
+             :request/messages
+             [{:message/role :user
+               :message/content [{:part/type :file
+                                  :file/name "brief.pdf"
+                                  :file/data "JVBERi0x"}]}]}]
+    (try
+      (transport/build-request t profile req)
+      (is false "expected file attachment rejection")
+      (catch clojure.lang.ExceptionInfo e
+        (is (= :provider/unsupported-file-attachment
+               (:error/type (ex-data e))))
+        (is (= :deepseek (:provider (ex-data e))))))))
+
 (deftest test-parse-response-text
   (let [t (openai/make-transport)
         profile (provider/get-provider :openai)

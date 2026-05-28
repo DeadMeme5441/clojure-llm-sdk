@@ -57,9 +57,28 @@ Each modality has a narrow protocol and driver:
 
 Provider profiles attach constructors for the transports they support. Calling a modality on a provider without the matching transport returns a clear `ex-info` error instead of failing downstream.
 
+## Provider Implementation Ownership
+
+Provider implementations live under provider-family namespaces. These namespaces own request building, response parsing, streaming events, provider-native replay state, usage normalization, cache handling, and provider-specific registration helpers:
+
+| Family | Owner namespaces |
+|---|---|
+| OpenAI | `llm.sdk.providers.openai.chat`, `.embeddings`, `.moderation`, `.image`, `.speak`, `.transcribe`, `.audio` |
+| Anthropic | `llm.sdk.providers.anthropic.chat` |
+| Gemini / Vertex | `llm.sdk.providers.gemini.native`, `.vertex`, `.imagen` |
+| Cohere | `llm.sdk.providers.cohere.chat`, `.embeddings`, `.rerank` |
+| Bedrock | `llm.sdk.providers.bedrock.converse`, `.image` |
+| Codex | `llm.sdk.providers.codex.responses` |
+| Local / Aggregators | `llm.sdk.providers.ollama.native`, `llm.sdk.providers.openrouter.chat`, `llm.sdk.providers.perplexity.chat`, `llm.sdk.providers.openai_compat.aliases` |
+| Other modalities | `llm.sdk.providers.voyage.rerank`, `llm.sdk.providers.elevenlabs.tts`, `llm.sdk.providers.fake.chat` |
+
+The older flat namespaces, such as `llm.sdk.providers.openai-chat` and `llm.sdk.providers.anthropic`, are compatibility shims. New SDK code should depend on the family owner namespaces directly.
+
+Provider registry and auth implementation live in `llm.sdk.provider.registry`, `llm.sdk.provider.auth`, and `llm.sdk.provider.builtins`. Cache implementation lives in `llm.sdk.cache.markers`, `llm.sdk.cache.policy`, and `llm.sdk.cache.request`. The aggregate namespaces `llm.sdk.provider` and `llm.sdk.cache` remain public compatibility surfaces.
+
 ## Provider Profiles
 
-Provider profiles live in `llm.sdk.provider` and carry:
+Provider profiles are registered by `llm.sdk.provider.builtins` and carry:
 
 - provider id
 - protocol family
@@ -74,7 +93,7 @@ Provider profiles live in `llm.sdk.provider` and carry:
 - optional URL builder
 - optional cost calculator
 
-OpenAI-compatible providers reuse the OpenAI Chat Completions transport. Providers with native shapes, such as Anthropic, Gemini, Cohere, Bedrock, and Ollama, use dedicated transports.
+OpenAI-compatible providers reuse the OpenAI Chat Completions transport owned by `llm.sdk.providers.openai.chat`. Providers with native shapes, such as Anthropic, Gemini, Cohere, Bedrock, and Ollama, use dedicated transports in their own family namespaces.
 
 ## Provider-Specific Replay State
 

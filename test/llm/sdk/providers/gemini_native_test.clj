@@ -36,6 +36,52 @@
             :thinkingConfig {:includeThoughts true}}
            (get-in built [:body :generationConfig])))))
 
+(deftest test-build-request-string-stop-sequence-is-not-split
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        built (transport/build-request
+               t profile
+               {:request/model "gemini-2.5-flash"
+                :request/messages [{:message/role :user
+                                    :message/content "Hello"}]
+                :request/stop "END"})]
+    (is (= ["END"] (get-in built [:body :generationConfig :stopSequences])))))
+
+(deftest test-build-request-file-uri
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        built (transport/build-request
+               t profile
+               {:request/model "gemini-2.5-flash"
+                :request/messages
+                [{:message/role :user
+                  :message/content [{:part/type :file
+                                     :file/url "https://generativelanguage.googleapis.com/v1beta/files/abc"
+                                     :file/mime-type "application/pdf"}
+                                    {:part/type :text
+                                     :text "Summarize this."}]}]})
+        parts (get-in built [:body :contents 0 :parts])]
+    (is (= {:fileData {:mimeType "application/pdf"
+                       :fileUri "https://generativelanguage.googleapis.com/v1beta/files/abc"}}
+           (first parts)))
+    (is (= {:text "Summarize this."}
+           (second parts)))))
+
+(deftest test-build-request-inline-file-data
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        built (transport/build-request
+               t profile
+               {:request/model "gemini-2.5-flash"
+                :request/messages
+                [{:message/role :user
+                  :message/content [{:part/type :file
+                                     :file/data "JVBERi0x"
+                                     :file/mime-type "application/pdf"}]}]})]
+    (is (= {:inlineData {:mimeType "application/pdf"
+                         :data "JVBERi0x"}}
+           (get-in built [:body :contents 0 :parts 0])))))
+
 (deftest test-build-request-stream-uses-stream-endpoint
   (testing "streaming flips the URL suffix to :streamGenerateContent?alt=sse"
     (let [t (gemini/make-transport)
