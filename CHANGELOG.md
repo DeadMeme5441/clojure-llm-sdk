@@ -5,7 +5,7 @@ All notable user-visible changes are tracked here.
 ## 0.1.0
 
 First published release to Clojars as
-`io.github.deadmeme5441/clojure-llm-sdk`. Consume it with
+`net.clojars.deadmeme5441/clojure-llm-sdk`. Consume it with
 `{:mvn/version "0.1.0"}` instead of a git SHA.
 
 ### Added

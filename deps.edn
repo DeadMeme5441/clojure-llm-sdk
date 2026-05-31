@@ -46,5 +46,5 @@
                        :sign-releases? false
                        ;; b/write-pom emits the pom under the class-dir, not the
                        ;; repo root where deps-deploy looks by default.
-                       :pom-file "target/classes/META-INF/maven/io.github.deadmeme5441/clojure-llm-sdk/pom.xml"
+                       :pom-file "target/classes/META-INF/maven/net.clojars.deadmeme5441/clojure-llm-sdk/pom.xml"
                        :artifact "target/clojure-llm-sdk-0.1.0.jar"}}}}

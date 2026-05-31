@@ -1,7 +1,7 @@
 (ns build
   (:require [clojure.tools.build.api :as b]))
 
-(def lib 'io.github.deadmeme5441/clojure-llm-sdk)
+(def lib 'net.clojars.deadmeme5441/clojure-llm-sdk)
 ;; Version is the release coordinate. CI passes the git tag (minus the `v`)
 ;; via RELEASE_VERSION so the tag, the jar name, and the pom never drift;
 ;; local builds fall back to this literal.

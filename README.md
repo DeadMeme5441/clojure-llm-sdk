@@ -1,7 +1,7 @@
 # clojure-llm-sdk
 
 [![CI](https://github.com/DeadMeme5441/clojure-llm-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/DeadMeme5441/clojure-llm-sdk/actions/workflows/ci.yml)
-[![Clojars Project](https://img.shields.io/clojars/v/io.github.deadmeme5441/clojure-llm-sdk.svg)](https://clojars.org/io.github.deadmeme5441/clojure-llm-sdk)
+[![Clojars Project](https://img.shields.io/clojars/v/net.clojars.deadmeme5441/clojure-llm-sdk.svg)](https://clojars.org/net.clojars.deadmeme5441/clojure-llm-sdk)
 
 A production-quality Clojure SDK for LLM providers: one canonical API for chat, embeddings, moderation, rerank, image generation, audio transcription, and text-to-speech.
 
@@ -9,16 +9,16 @@ This is a provider SDK, not an agent framework or proxy server. It owns provider
 
 ## Installation
 
-Add the library to `deps.edn` (released to [Clojars](https://clojars.org/io.github.deadmeme5441/clojure-llm-sdk)):
+Add the library to `deps.edn` (released to [Clojars](https://clojars.org/net.clojars.deadmeme5441/clojure-llm-sdk)):
 
 ```clojure
-{:deps {io.github.deadmeme5441/clojure-llm-sdk {:mvn/version "0.1.0"}}}
+{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.1.0"}}}
 ```
 
 Or with Leiningen / `project.clj`:
 
 ```clojure
-[io.github.deadmeme5441/clojure-llm-sdk "0.1.0"]
+[net.clojars.deadmeme5441/clojure-llm-sdk "0.1.0"]
 ```
 
 Then require the public namespace:
