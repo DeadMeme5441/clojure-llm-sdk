@@ -33,4 +33,15 @@
               :exec-fn cognitect.test-runner.api/test}
 
   :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}}
-          :ns-default build}}}
+          :ns-default build}
+
+  ;; Publish the built jar to Clojars. Reads CLOJARS_USERNAME / CLOJARS_PASSWORD
+  ;; (a Clojars deploy token) from the environment. Build first, then deploy:
+  ;;   clojure -T:build jar
+  ;;   clojure -X:deploy :artifact '"target/clojure-llm-sdk-0.1.0.jar"'
+  ;; CI does both on a v* tag (see .github/workflows/release.yml).
+  :deploy {:replace-deps {slipset/deps-deploy {:mvn/version "0.2.2"}}
+           :exec-fn deps-deploy.deps-deploy/deploy
+           :exec-args {:installer :remote
+                       :sign-releases? false
+                       :artifact "target/clojure-llm-sdk-0.1.0.jar"}}}}

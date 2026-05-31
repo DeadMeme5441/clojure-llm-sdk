@@ -1,8 +1,11 @@
 (ns build
   (:require [clojure.tools.build.api :as b]))
 
-(def lib 'com.deadmeme5441/clojure-llm-sdk)
-(def version "0.1.0-SNAPSHOT")
+(def lib 'io.github.deadmeme5441/clojure-llm-sdk)
+;; Version is the release coordinate. CI passes the git tag (minus the `v`)
+;; via RELEASE_VERSION so the tag, the jar name, and the pom never drift;
+;; local builds fall back to this literal.
+(def version (or (System/getenv "RELEASE_VERSION") "0.1.0"))
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
