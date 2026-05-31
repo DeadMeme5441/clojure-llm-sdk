@@ -5,20 +5,34 @@ Reads LiteLLM's model_prices_and_context_window.json, keeps only the
 providers we have SDK adapters for, and normalises to a leaner shape
 the Clojure side can load without further parsing.
 
-Source:
+Source (only this one file is needed — no full LiteLLM checkout):
   https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
-  (or the litellm-ref local clone at LITELLM_REPO env / argv[1])
+
+By default the script fetches that file directly over HTTPS, so a
+plain refresh needs nothing on disk:
+
+  python3 scripts/build_litellm_snapshot.py
+
+To pin or work offline, pass an override as argv[1] or via the
+LITELLM_SOURCE / LITELLM_REPO env var. The override may be any of:
+  - an http(s) URL to a model_prices_and_context_window.json
+  - a path to a model_prices_and_context_window.json file
+  - a directory containing that file (e.g. a local LiteLLM checkout)
 
 Output:
   resources/litellm-snapshot.json
-
-To refresh:
-  python3 scripts/build_litellm_snapshot.py [path-to-litellm-repo]
 """
 import json
 import os
 import sys
+import urllib.request
 from pathlib import Path
+
+DEFAULT_SOURCE_URL = (
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/"
+    "model_prices_and_context_window.json"
+)
+PRICING_FILENAME = "model_prices_and_context_window.json"
 
 # --- LiteLLM provider name → our SDK provider keyword (as string) ---
 PROVIDER_MAP = {
@@ -215,18 +229,39 @@ def normalize_entry(key: str, raw: dict):
     return out
 
 
-def main():
-    repo = sys.argv[1] if len(sys.argv) > 1 else os.environ.get(
-        "LITELLM_REPO",
-        "litellm-ref",
-    )
-    src = Path(repo) / "model_prices_and_context_window.json"
-    if not src.exists():
-        print(f"source not found: {src}", file=sys.stderr)
-        sys.exit(1)
+def load_source(override):
+    """Load LiteLLM's pricing JSON from the override or the default URL.
 
-    with src.open() as f:
-        data = json.load(f)
+    `override` (argv/env) may be a URL, a path to the JSON file, or a
+    directory holding it. When falsy, fetch DEFAULT_SOURCE_URL over HTTPS.
+    Returns the parsed dict.
+    """
+    if not override:
+        print(f"fetching {DEFAULT_SOURCE_URL}", file=sys.stderr)
+        with urllib.request.urlopen(DEFAULT_SOURCE_URL) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    if override.startswith(("http://", "https://")):
+        print(f"fetching {override}", file=sys.stderr)
+        with urllib.request.urlopen(override) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    path = Path(override)
+    if path.is_dir():
+        path = path / PRICING_FILENAME
+    if not path.exists():
+        print(f"source not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    print(f"reading {path}", file=sys.stderr)
+    with path.open() as f:
+        return json.load(f)
+
+
+def main():
+    override = sys.argv[1] if len(sys.argv) > 1 else (
+        os.environ.get("LITELLM_SOURCE") or os.environ.get("LITELLM_REPO")
+    )
+    data = load_source(override)
 
     out = {}  # {sdk-provider: {model-id: entry}}
     skipped = 0

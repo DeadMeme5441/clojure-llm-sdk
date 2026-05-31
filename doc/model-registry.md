@@ -115,7 +115,17 @@ If a provider is silent about cache statistics, `:cache/status` is `:unknown`. T
 
 ## Snapshot Refresh
 
-The LiteLLM snapshot can be rebuilt from a local LiteLLM checkout:
+The LiteLLM snapshot is rebuilt by fetching a single upstream file
+(`model_prices_and_context_window.json`) directly over HTTPS — no local
+LiteLLM checkout required:
+
+```bash
+python3 scripts/build_litellm_snapshot.py
+```
+
+To pin a version or work offline, pass an override (a URL, a path to that
+JSON file, or a directory containing it) as the first argument or via the
+`LITELLM_SOURCE` env var:
 
 ```bash
 python3 scripts/build_litellm_snapshot.py /path/to/litellm
