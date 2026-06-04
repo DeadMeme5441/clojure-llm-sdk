@@ -107,6 +107,21 @@
         :errors #{:shared-classifier}
         :live-smoke :env-gated)
 
+   :vertex-anthropic
+   (cov :surfaces #{:complete :streaming :tools :json-schema :reasoning
+                    :thinking-blocks :file-attachments}
+        :cache #{:system-and-3-native :system-blocks :tools-cache
+                 :canonical-cache-stamp}
+        :metrics #{:anthropic-usage :canonical-chat-stamp}
+        :pricing #{:models-dev :litellm-snapshot :user-override}
+        :models #{:models-dev :bundled-snapshot}
+        :request #{:anthropic-messages-golden :anthropic-document-golden}
+        :response #{:anthropic-messages-fixture}
+        :stream #{:anthropic-sse-fixture}
+        :auth #{:gcp-adc :oauth-bearer}
+        :errors #{:shared-classifier}
+        :live-smoke :env-gated)
+
    :openrouter
    (cov :surfaces #{:complete :streaming :tools :json-schema :reasoning
                     :provider-routing :embedding :image-generation}

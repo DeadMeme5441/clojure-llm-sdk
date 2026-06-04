@@ -52,6 +52,7 @@ than stringifying maps into prompts.
 | `:cohere` | `cohere` | native chat, streaming, tools, citations, textual file/document attachments via `documents`, embeddings, rerank | responses/messages wrappers and a2a/interactions are not SDK surfaces; keep v1/v2 embed/rerank variants fixture-backed |
 | `:gemini-native` | `gemini` | native chat, streaming, tools, multimodal, file/document attachments, reasoning, cachedContent handling | count tokens, file lifecycle APIs, vector search/RAG, realtime, public generateContent pass-through |
 | `:vertex-gemini` | `vertex_ai` | Vertex Gemini chat, streaming, tools, multimodal, file/document attachments, reasoning | embeddings, TTS, OCR, count tokens, fine tuning, RAG/vector stores, realtime, public generateContent pass-through |
+| `:vertex-anthropic` | `vertex_ai` | Claude-on-Vertex messages chat, streaming, tools, JSON schema, thinking, file/document attachments, native cache markers (reuses Anthropic body/parse with GCP OAuth) | count tokens, batches, file lifecycle APIs, model listing, public rawPredict pass-through |
 | `:vertex-imagen` | `vertex_ai` | image generation | image edits/videos and other Vertex AI endpoint families |
 | `:openrouter` | `openrouter` | chat, streaming, tools, JSON schema, reasoning, provider routing, embeddings, image generation, live model/pricing lookup | responses, image edit, messages/a2a/interactions |
 | `:perplexity` | `perplexity` | chat, streaming, JSON schema, web-search-shaped response/citations | dedicated search endpoint, responses/messages/a2a/interactions |

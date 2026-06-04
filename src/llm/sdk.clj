@@ -39,6 +39,7 @@
             [llm.sdk.providers.cohere.rerank]
             [llm.sdk.providers.voyage.rerank]
             [llm.sdk.providers.anthropic.chat]
+            [llm.sdk.providers.anthropic.vertex]
             [llm.sdk.providers.gemini.native]
             [llm.sdk.providers.gemini.vertex]
             [llm.sdk.providers.gemini.imagen]
