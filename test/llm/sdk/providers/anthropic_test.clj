@@ -19,6 +19,26 @@
     (is (= 1 (count (get-in built [:body :messages]))))
     (is (= 1 (count (get-in built [:body :system]))))))
 
+(deftest test-build-request-max-tokens-clamped-to-model-cap
+  (testing "max_tokens is clamped to the model's known output ceiling"
+    (let [t (anthropic/make-transport)
+          profile (provider/get-provider :anthropic)
+          build (fn [model max-tokens]
+                  (let [req (cond-> {:request/model model
+                                     :request/messages [{:message/role :user
+                                                         :message/content "Hi"}]}
+                              max-tokens (assoc :request/max-tokens max-tokens))]
+                    (get-in (transport/build-request t profile req) [:body :max_tokens])))]
+      ;; haiku-4-5 caps at 64000 — the 128000 default and an over-cap request both clamp down
+      (is (= 64000 (build "claude-haiku-4-5-20251001" nil)))
+      (is (= 64000 (build "claude-haiku-4-5-20251001" 200000)))
+      ;; a request under the cap is left untouched
+      (is (= 1000 (build "claude-haiku-4-5-20251001" 1000)))
+      ;; opus-4-6 caps at 128000 — the default fits
+      (is (= 128000 (build "claude-opus-4-6" nil)))
+      ;; unknown model: no catalog entry, keep the requested/default value
+      (is (= 128000 (build "totally-unknown-model" nil))))))
+
 (deftest test-build-request-thinking
   (let [t (anthropic/make-transport)
         profile (provider/get-provider :anthropic)

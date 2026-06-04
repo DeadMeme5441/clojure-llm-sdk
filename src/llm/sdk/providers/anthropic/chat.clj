@@ -7,6 +7,7 @@
             [llm.sdk.sse :as sse]
             [llm.sdk.transport :as t]
             [llm.sdk.provider :as provider]
+            [llm.sdk.catalog :as catalog]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
             [llm.sdk.cache :as cache]
@@ -333,7 +334,14 @@
                 (mapv tool->anthropic (:request/tools request)))
         thinking (build-thinking-config model-norm (:request/reasoning request))
         tool-choice (tool-choice->anthropic (:request/tool-choice request))
-        max-tokens (or (:request/max-tokens request) 128000)
+        ;; Clamp to the model's known output ceiling: Anthropic rejects
+        ;; max_tokens above a model's cap (e.g. haiku-4-5 tops out at 64000,
+        ;; not the 128000 default). The single-arg catalog scan resolves both
+        ;; native ids (claude-haiku-4-5-20251001) and Vertex ids
+        ;; (claude-haiku-4-5@20251001). Unknown models keep the requested value.
+        max-tokens (let [requested (or (:request/max-tokens request) 128000)
+                         cap (catalog/max-output-tokens model-norm)]
+                     (if cap (min requested cap) requested))
         ;; OAuth transforms
         system-blocks (if oauth?
                         (let [cc-block {:type "text" :text claude-code-system-prefix}
