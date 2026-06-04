@@ -26,6 +26,7 @@ Important chat credentials:
 | Anthropic OAuth | `:anthropic` | `CLAUDE_OAT_TOKEN` |
 | Gemini Native | `:gemini-native` | `GEMINI_API_KEY` |
 | Vertex Gemini | `:vertex-gemini` | ADC or `GOOGLE_OAUTH_ACCESS_TOKEN` |
+| Vertex Anthropic | `:vertex-anthropic` | ADC or `GOOGLE_OAUTH_ACCESS_TOKEN` |
 | OpenRouter | `:openrouter` | `OPENROUTER_API_KEY` |
 | DeepSeek | `:deepseek` | `DEEPSEEK_API_KEY` |
 | Moonshot Kimi | `:kimi` | `MOONSHOT_API_KEY` |
@@ -109,6 +110,34 @@ export GOOGLE_CLOUD_PROJECT=my-project
    :request/messages [{:message/role :user
                        :message/content "Hi"}]})
 ```
+
+## Vertex Anthropic (Claude)
+
+`:vertex-anthropic` runs Anthropic's Claude models on Vertex AI. It authenticates with the same GCP Application Default Credentials chain as `:vertex-gemini` (request provider option, `GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, the gcloud ADC file, then the metadata server). There is no separate Anthropic key; do not set `ANTHROPIC_API_KEY` for this provider.
+
+Set `GOOGLE_CLOUD_PROJECT`, and the location through `GOOGLE_CLOUD_LOCATION` or a per-call provider option. The default location is `us-central1`, but Claude on Vertex is region-gated: confirm the model is served in your chosen location. The region-less `global` endpoint is often the broadest, and several projects only have Claude enabled there.
+
+```bash
+gcloud auth application-default login
+export GOOGLE_CLOUD_PROJECT=my-project
+export GOOGLE_CLOUD_LOCATION=global
+```
+
+```clojure
+(sdk/complete
+  :vertex-anthropic
+  {:request/model "claude-sonnet-4-6"
+   :request/messages [{:message/role :user
+                       :message/content "Hi"}]
+   :request/max-tokens 256
+   ;; project/location can also come from GOOGLE_CLOUD_* env vars
+   :request/provider-options {:vertex {:project "my-project"
+                                       :location "global"}}})
+```
+
+Model ids are the Vertex Claude ids, such as `claude-opus-4-6`, `claude-sonnet-4-6`, and `claude-haiku-4-5`; a pinned `@`-dated id like `claude-haiku-4-5@20251001` is preserved into the URL path. A request against a region that does not serve the requested model returns an HTTP 404 from the Vertex frontend rather than a model-not-found body, so a 404 usually means "wrong region," not "wrong model id."
+
+The provider reuses the native Anthropic Messages shaping, so thinking blocks, tool use, file/document attachments, and native cache markers behave exactly as on `:anthropic`.
 
 ## Azure OpenAI Deployments
 

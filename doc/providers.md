@@ -1,6 +1,6 @@
 # Providers
 
-`clojure-llm-sdk` ships 36 registered provider profiles across chat, embeddings, moderation, rerank, image generation, transcription, and text-to-speech.
+`clojure-llm-sdk` ships 37 registered provider profiles across chat, embeddings, moderation, rerank, image generation, transcription, and text-to-speech.
 
 Provider profiles define:
 
@@ -21,6 +21,7 @@ Provider profiles define:
 | Anthropic OAuth | `:anthropic` | `anthropic-messages` | `CLAUDE_OAT_TOKEN` |
 | Gemini Native | `:gemini-native` | `gemini-native` | `GEMINI_API_KEY` |
 | Vertex Gemini | `:vertex-gemini` | `gemini-native` | ADC / `GOOGLE_OAUTH_ACCESS_TOKEN` |
+| Vertex Anthropic (Claude) | `:vertex-anthropic` | `anthropic-messages` | ADC / `GOOGLE_OAUTH_ACCESS_TOKEN` |
 | OpenAI Codex | `:codex` | `codex` | `OPENAI_API_KEY` |
 | Codex Backend | `:codex-backend` | `codex` | `~/.codex/auth.json` |
 | DeepSeek | `:deepseek` | `openai-chat` | `DEEPSEEK_API_KEY` |
@@ -112,6 +113,16 @@ Provider implementation namespaces are split by provider family. For example, Op
 ### Anthropic OAuth
 
 The Anthropic adapter auto-detects OAuth-style tokens by token prefix and switches from `x-api-key` to Bearer auth. OAuth mode also adds Claude Code identity headers and preserves thinking block signatures for replay.
+
+### Vertex Anthropic (Claude on Vertex)
+
+`:vertex-anthropic` serves Anthropic's Claude models through Google Vertex AI. It reuses the native Anthropic Messages request body, response parser, and streaming parser, so thinking blocks, tool use, and cache markers behave exactly as on `:anthropic`. Only the transport differs:
+
+- Endpoint: `POST {location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/anthropic/models/{model}:rawPredict` for unary calls and `:streamRawPredict` for streaming.
+- Auth: a GCP OAuth bearer token resolved through the same ADC chain as `:vertex-gemini`, in place of the `x-api-key` header.
+- Body: the model id moves into the URL path; the body carries `anthropic_version: "vertex-2023-10-16"` and adds `stream: true` on streaming calls.
+
+Pass the project and location through `:request/provider-options` under `:vertex`, or set `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION`. Model ids are the Vertex Claude ids, for example `claude-opus-4-6`, `claude-sonnet-4-6`, and `claude-haiku-4-5`. See [provider-configuration.md](provider-configuration.md#vertex-anthropic-claude) for credentials, model availability, and a worked example.
 
 ### Kimi Code
 

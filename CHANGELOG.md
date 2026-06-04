@@ -2,6 +2,30 @@
 
 All notable user-visible changes are tracked here.
 
+## 0.2.1
+
+### Added
+
+- Documented the `:vertex-anthropic` provider across the README supported-surface
+  table, the provider matrix (`doc/providers.md`), the configuration guide
+  (`doc/provider-configuration.md`), and the LiteLLM parity / shape-audit ledgers,
+  including credentials, model ids, and the region-gating (HTTP 404) caveat.
+
+## 0.2.0
+
+### Added
+
+- Added `:vertex-anthropic`, a provider that serves Anthropic's Claude models
+  through Google Vertex AI. It reuses the native Anthropic Messages request body,
+  response parser, and streaming parser, and swaps in Vertex-specific transport:
+  the `:rawPredict` / `:streamRawPredict` endpoints with the model in the URL path,
+  GCP OAuth bearer auth via the existing ADC chain (instead of `x-api-key`), and an
+  `anthropic_version` body field. Authenticates with the same GCP credentials as
+  `:vertex-gemini`. Thinking blocks, tool use, file/document attachments, and native
+  cache markers behave as on `:anthropic`.
+- Added `scripts/vertex_anthropic_smoke.clj`, a live smoke script mirroring
+  `scripts/vertex_stream_smoke.clj`.
+
 ## 0.1.0
 
 First published release to Clojars as

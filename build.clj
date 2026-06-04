@@ -5,7 +5,7 @@
 ;; Version is the release coordinate. CI passes the git tag (minus the `v`)
 ;; via RELEASE_VERSION so the tag, the jar name, and the pom never drift;
 ;; local builds fall back to this literal.
-(def version (or (System/getenv "RELEASE_VERSION") "0.2.0"))
+(def version (or (System/getenv "RELEASE_VERSION") "0.2.1"))
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))
 (def jar-file (format "target/%s-%s.jar" (name lib) version))

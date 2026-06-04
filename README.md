@@ -88,11 +88,11 @@ Project docs:
 
 ## Supported Surface
 
-The SDK currently registers 36 provider profiles across seven canonical modalities.
+The SDK currently registers 37 provider profiles across seven canonical modalities.
 
 | Modality | Public function | Providers |
 |---|---|---|
-| Chat | `sdk/complete` | OpenAI, Anthropic, Gemini, Vertex, OpenRouter, Codex, DeepSeek, Kimi, Kimi Code, Mistral, Groq, Cerebras, Together, xAI, HuggingFace Router, Perplexity, Bedrock, Ollama, and aggregator aliases |
+| Chat | `sdk/complete` | OpenAI, Anthropic, Anthropic on Vertex, Gemini, Vertex Gemini, OpenRouter, Codex, DeepSeek, Kimi, Kimi Code, Mistral, Groq, Cerebras, Together, xAI, HuggingFace Router, Perplexity, Bedrock, Ollama, and aggregator aliases |
 | Embeddings | `sdk/embed` | OpenAI, Cohere, Voyage, Mistral, Together, Jina, Ollama |
 | Moderation | `sdk/moderate` | OpenAI |
 | Rerank | `sdk/rerank` | Cohere, Voyage, Jina |
@@ -120,6 +120,7 @@ Some provider names are intentionally distinct:
 - `:kimi` uses Moonshot's public API and reads `MOONSHOT_API_KEY`.
 - `:kimi-code` uses Kimi Code's coding endpoint and reads `KIMI_API_KEY`.
 - `:vertex-gemini` uses Google Application Default Credentials or `GOOGLE_OAUTH_ACCESS_TOKEN`.
+- `:vertex-anthropic` serves Claude models through Google Vertex AI using the same GCP credentials as `:vertex-gemini`, not an `ANTHROPIC_API_KEY`.
 - `:codex-backend` reads OAuth data from the official Codex CLI auth file.
 
 Applications that manage secrets outside environment variables can pass per-call runtime config:
