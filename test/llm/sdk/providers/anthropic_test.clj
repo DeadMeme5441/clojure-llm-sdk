@@ -336,7 +336,7 @@
                :request/cache {}}
           built (transport/build-request t profile req)
           sys (get-in built [:body :system])]
-      (is (= {:type "ephemeral"} (get-in (last sys) [:cache_control]))))))
+      (is (= {:type "ephemeral" :ttl "5m"} (get-in (last sys) [:cache_control]))))))
 
 (deftest test-cache-system-and-tail-native-layout
   (testing "system + last 3 messages get inner-block cache_control"
@@ -359,7 +359,7 @@
       (is (not (some :cache_control (get-in msgs [0 :content]))))
       ;; messages[2,3,4] (a1 dropped from marking; last 3 are u2, a2, u3) — marked
       (doseq [i [2 3 4]]
-        (is (= {:type "ephemeral"}
+        (is (= {:type "ephemeral" :ttl "5m"}
                (get-in msgs [i :content (-> msgs (nth i) :content count dec) :cache_control]))
             (str "expected marker on message " i))))))
 
@@ -400,4 +400,4 @@
           tools (get-in built [:body :tools])]
       (is (= 2 (count tools)))
       (is (nil? (:cache_control (first tools))))
-      (is (= {:type "ephemeral"} (:cache_control (last tools)))))))
+      (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last tools)))))))

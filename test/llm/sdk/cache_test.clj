@@ -8,8 +8,8 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-marker-default-ttl
-  (is (= {:type "ephemeral"} (cache/marker)))
-  (is (= {:type "ephemeral"} (cache/marker "5m"))))
+  (is (= {:type "ephemeral" :ttl "5m"} (cache/marker)))
+  (is (= {:type "ephemeral" :ttl "5m"} (cache/marker "5m"))))
 
 (deftest test-marker-1h-ttl
   (is (= {:type "ephemeral" :ttl "1h"} (cache/marker "1h"))))
@@ -33,14 +33,14 @@
     (testing "system message gets marker on inner content block"
       (let [sys-content (:content (first marked))]
         (is (vector? sys-content))
-        (is (= {:type "ephemeral"}
+        (is (= {:type "ephemeral" :ttl "5m"}
                (get-in (last sys-content) [:cache_control])))))
     (testing "last 3 non-system messages get markers"
       ;; total 6 messages, system = 1 breakpoint, 3 more for tail.
       ;; That means messages at indices 3, 4, 5 are marked.
       (doseq [i [3 4 5]]
         (let [c (:content (nth marked i))]
-          (is (= {:type "ephemeral"}
+          (is (= {:type "ephemeral" :ttl "5m"}
                  (get-in (last c) [:cache_control]))
               (str "expected marker on message " i)))))
     (testing "middle messages stay un-marked"
@@ -55,11 +55,11 @@
                   {:role "user" :content "u2"}]
         marked (cache/apply-system-and-3 messages {:layout :envelope})]
     (testing "marker lives on outer dict, content untouched"
-      (is (= {:type "ephemeral"} (:cache_control (first marked))))
+      (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (first marked))))
       (is (= "sys" (:content (first marked)))))
     (testing "tail messages marked on envelope"
       (doseq [i [1 2 3]]
-        (is (= {:type "ephemeral"} (:cache_control (nth marked i))))))))
+        (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (nth marked i))))))))
 
 (deftest test-system-and-3-no-system-message
   (let [messages [{:role "user" :content "u1"}
@@ -69,7 +69,7 @@
     (testing "all messages get marked when no system role + breakpoints = count"
       (doseq [m marked]
         (let [c (:content m)]
-          (is (= {:type "ephemeral"}
+          (is (= {:type "ephemeral" :ttl "5m"}
                  (get-in (last c) [:cache_control]))))))))
 
 (deftest test-system-and-3-respects-breakpoint-count
@@ -80,8 +80,8 @@
                   {:role "user" :content "u4"}]
         ;; breakpoints=2 → system + only the very last message
         marked (cache/apply-system-and-3 messages {:layout :envelope :breakpoints 2})]
-    (is (= {:type "ephemeral"} (:cache_control (first marked))))
-    (is (= {:type "ephemeral"} (:cache_control (last marked))))
+    (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (first marked))))
+    (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last marked))))
     (is (nil? (:cache_control (nth marked 1))))
     (is (nil? (:cache_control (nth marked 2))))
     (is (nil? (:cache_control (nth marked 3))))))
@@ -102,13 +102,13 @@
                 {:type "text" :text "b"}]
         marked (cache/apply-system-blocks-cache blocks {})]
     (is (nil? (:cache_control (first marked))))
-    (is (= {:type "ephemeral"} (:cache_control (last marked))))))
+    (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last marked))))))
 
 (deftest test-apply-tools-cache
   (let [tools [{:name "foo"} {:name "bar"}]
         marked (cache/apply-tools-cache tools {})]
     (is (nil? (:cache_control (first marked))))
-    (is (= {:type "ephemeral"} (:cache_control (last marked))))))
+    (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last marked))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Layout policy

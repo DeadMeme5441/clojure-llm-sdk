@@ -83,9 +83,9 @@
                :request/cache {:ttl "5m"}}
           built (transport/build-request t profile req)
           msgs (get-in built [:body :messages])]
-      (is (= {:type "ephemeral"} (:cache_control (first msgs))))
+      (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (first msgs))))
       ;; tail messages marked
-      (is (= {:type "ephemeral"} (:cache_control (last msgs)))))))
+      (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last msgs)))))))
 
 (deftest test-cache-prompt-key-in-extra-body
   (testing "scope-id surfaces under extra_body.prompt_cache_key for OpenRouter passthrough"

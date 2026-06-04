@@ -2,11 +2,19 @@
   "Provider-native context cache marker transforms.")
 
 (defn marker
-  "Build a cache_control marker for the given TTL ('5m' or '1h')."
+  "Build a cache_control marker for the given TTL ('5m' or '1h').
+
+  The ttl is emitted *explicitly* for both known durations. We used to omit it
+  for '5m' and lean on the provider's implicit ephemeral default — but Anthropic
+  silently changed that default from 1h to 5m on 2026-03-06, which silently
+  shortened the cache lifetime of every consumer that relied on it. Pinning the
+  ttl in cache_control makes the requested duration explicit and immune to future
+  default shifts. An unrecognized ttl falls back to a bare marker (the provider
+  default) rather than sending an invalid value."
   ([] (marker "5m"))
   ([ttl]
    (cond-> {:type "ephemeral"}
-     (= ttl "1h") (assoc :ttl "1h"))))
+     (#{"5m" "1h"} ttl) (assoc :ttl ttl))))
 
 (defn- apply-marker-to-blocks
   "Add cache_control to the last content block of a list."

@@ -27,7 +27,7 @@
     (is (fn? make))))
 
 (deftest cache-facades-preserve-current-cache-surface
-  (is (= {:type "ephemeral"} (cache-markers/marker)))
+  (is (= {:type "ephemeral" :ttl "5m"} (cache-markers/marker)))
   (is (= false (cache-request/cache-enabled? {})))
   (is (= :prompt-key
          (:strategy (cache-policy/decide-strategy
