@@ -2,6 +2,14 @@
 
 All notable user-visible changes are tracked here.
 
+## 0.2.4
+
+### Fixed
+
+- Preserved the first user message for `:codex-backend` requests that rely on
+  the default backend instructions instead of providing an explicit leading
+  system message.
+
 ## 0.2.1
 
 ### Added

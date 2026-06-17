@@ -213,6 +213,56 @@
         (.delete file)
         (.delete dir)))))
 
+(deftest test-build-request-codex-backend-default-instructions-keep-user-input
+  (let [[dir file] (temp-auth-file)
+        path (.getPath file)
+        t (codex/make-transport)
+        profile (provider/get-provider :codex-backend)
+        req {:request/model "gpt-5.5"
+             :request/messages [{:message/role :user
+                                 :message/content "hello"}]}]
+    (try
+      (reset! @#'codex/codex-auth-cache nil)
+      (write-auth! file "tok-1" "ref-1" "acct-123")
+      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
+                       #'codex-impl/codex-auth-file-path (constantly path)}
+        (fn []
+          (let [built (transport/build-request t profile req)]
+            (is (= "You are a helpful assistant." (get-in built [:body :instructions])))
+            (is (= [{:role "user"
+                     :content [{:type "input_text" :text "hello"}]}]
+                   (get-in built [:body :input]))))))
+      (finally
+        (reset! @#'codex/codex-auth-cache nil)
+        (.delete file)
+        (.delete dir)))))
+
+(deftest test-build-request-codex-backend-explicit-system-becomes-instructions
+  (let [[dir file] (temp-auth-file)
+        path (.getPath file)
+        t (codex/make-transport)
+        profile (provider/get-provider :codex-backend)
+        req {:request/model "gpt-5.5"
+             :request/messages [{:message/role :system
+                                 :message/content "be terse"}
+                                {:message/role :user
+                                 :message/content "hello"}]}]
+    (try
+      (reset! @#'codex/codex-auth-cache nil)
+      (write-auth! file "tok-1" "ref-1" "acct-123")
+      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
+                       #'codex-impl/codex-auth-file-path (constantly path)}
+        (fn []
+          (let [built (transport/build-request t profile req)]
+            (is (= "be terse" (get-in built [:body :instructions])))
+            (is (= [{:role "user"
+                     :content [{:type "input_text" :text "hello"}]}]
+                   (get-in built [:body :input]))))))
+      (finally
+        (reset! @#'codex/codex-auth-cache nil)
+        (.delete file)
+        (.delete dir)))))
+
 (deftest test-parse-response-text
   (let [t (codex/make-transport)
         profile (provider/get-provider :codex)
