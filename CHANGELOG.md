@@ -2,7 +2,7 @@
 
 All notable user-visible changes are tracked here.
 
-## Unreleased
+## 0.3.4
 
 ### Changed
 
