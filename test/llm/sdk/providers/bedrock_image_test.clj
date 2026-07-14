@@ -51,4 +51,48 @@
         raw {:artifacts [{:base64 "abc" :finishReason "SUCCESS"}]}
         parsed (it/parse-image-response t profile raw)]
     (is (= "abc" (:image/b64 (first (:image/images parsed)))))
-    (is (= "SUCCESS" (:image/finish-reason (first (:image/images parsed)))))))
+    (is (= "SUCCESS" (get-in parsed [:image/raw :artifacts 0 :finishReason])))))
+
+(deftest test-bedrock-nova-canvas-build-request
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)
+        built (it/build-image-request
+               t profile
+               {:image/model "nova-canvas"
+                :image/prompt "a lighthouse"
+                :image/size "1024x1024"
+                :image/quality :high
+                :image/provider-options
+                {:bedrock {:negative-prompt "fog"
+                           :seed 12}}})]
+    (is (.endsWith ^String (:url built)
+                   "/model/amazon.nova-canvas-v1:0/invoke"))
+    (is (= "fog" (get-in built [:body :textToImageParams :negativeText])))
+    (is (= 6.5 (get-in built [:body :imageGenerationConfig :cfgScale])))
+    (is (= "premium" (get-in built [:body :imageGenerationConfig :quality])))
+    (is (= 12 (get-in built [:body :imageGenerationConfig :seed])))))
+
+(deftest test-bedrock-modern-stability-build-and-parse
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)
+        built (it/build-image-request
+               t profile
+               {:image/model "stability.sd3-5-large-v1:0"
+                :image/prompt "a vegetable car"
+                :image/size "1536x1024"
+                :image/provider-options
+                {:bedrock {:negative-prompt "blur"
+                           :output-format :jpeg
+                           :seed 7}}})
+        raw {:seeds [7]
+             :finish_reasons [nil]
+             :images ["modern-b64"]}
+        parsed (it/parse-image-response t profile raw)]
+    (is (= {:prompt "a vegetable car"
+            :aspect_ratio "3:2"
+            :output_format "jpeg"
+            :seed 7
+            :negative_prompt "blur"}
+           (:body built)))
+    (is (= [{:image/b64 "modern-b64"}] (:image/images parsed)))
+    (is (= [nil] (get-in parsed [:image/raw :finish_reasons])))))

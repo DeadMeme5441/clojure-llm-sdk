@@ -27,18 +27,29 @@
      {:type "TEXT"
       :textDocument {:text (str doc)}})})
 
+(defn- bedrock-options [request]
+  (get-in request [:rerank/provider-options :bedrock] {}))
+
 (defn build-rerank-request-bedrock
   [_profile request]
   (let [documents (:rerank/documents request)
         top-n (or (:rerank/top-n request) (count documents))
-        body {:queries [{:type "TEXT"
-                         :textQuery {:text (:rerank/query request)}}]
-              :rerankingConfiguration
-              {:type "BEDROCK_RERANKING_MODEL"
-               :bedrockRerankingConfiguration
-               {:modelConfiguration {:modelArn (:rerank/model request)}
-                :numberOfResults top-n}}
-              :sources (mapv source-for documents)}]
+        options (bedrock-options request)
+        model-configuration
+        (cond-> {:modelArn (:rerank/model request)}
+          (seq (:additional-model-request-fields options))
+          (assoc :additionalModelRequestFields
+                 (:additional-model-request-fields options)))
+        body (cond-> {:queries [{:type "TEXT"
+                                 :textQuery {:text (:rerank/query request)}}]
+                      :rerankingConfiguration
+                      {:type "BEDROCK_RERANKING_MODEL"
+                       :bedrockRerankingConfiguration
+                       {:modelConfiguration model-configuration
+                        :numberOfResults top-n}}
+                      :sources (mapv source-for documents)}
+               (:next-token options)
+               (assoc :nextToken (:next-token options)))]
     {:method :post
      :url (str (bedrock-agent-runtime-base-url) "/rerank")
      :headers {"Content-Type" "application/json"}
@@ -46,37 +57,20 @@
      :llm.sdk.providers.bedrock/aws-region (aws-region)
      :body body}))
 
-(defn- ->int [x]
-  (cond
-    (int? x) x
-    (number? x) (int x)
-    :else 0))
-
-(defn- normalize-usage [raw]
-  (let [usage (:usage raw)
-        total (+ (->int (:inputTokens usage))
-                 (->int (:outputTokens usage)))]
-    (cond-> {:usage/request-count 1
-             :usage/provider-raw usage}
-      (contains? usage :inputTokens)
-      (assoc :usage/input-tokens (->int (:inputTokens usage)))
-      (contains? usage :outputTokens)
-      (assoc :usage/output-tokens (->int (:outputTokens usage)))
-      (pos? total)
-      (assoc :usage/total-tokens total))))
 
 (defn parse-rerank-response-bedrock
   [_profile raw]
   (let [results (->> (:results raw)
                      (mapv (fn [r]
-                             {:rerank/index (:index r)
-                              :rerank/score (double (or (:relevanceScore r) 0.0))})))]
-    (cond-> {:rerank/provider :bedrock
-             :rerank/model nil
-             :rerank/results results
-             :rerank/raw raw}
-      (:id raw) (assoc :rerank/id (:id raw))
-      (:usage raw) (assoc :response/usage (normalize-usage raw)))))
+                             (cond-> {:rerank/index (:index r)
+                                      :rerank/score (double (or (:relevanceScore r) 0.0))}
+                               (get-in r [:document :textDocument :text])
+                               (assoc :rerank/document
+                                      (get-in r [:document :textDocument :text]))))))]
+    {:rerank/provider :bedrock
+     :rerank/model nil
+     :rerank/results results
+     :rerank/raw raw}))
 
 (defn parse-rerank-error-bedrock
   [_profile status body]

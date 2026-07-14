@@ -70,15 +70,24 @@
         ;; picks SSE framing over the default JSON-array stream so the
         ;; existing parse-stream-event SSE parser can consume it.
         stream? (boolean (:request/stream? request))
-        suffix (if stream? ":streamGenerateContent?alt=sse" ":generateContent")]
-    (assoc base-req
-           :url (str host
-                     "/v1/projects/" project
-                     "/locations/" location
-                     "/publishers/google/models/" model-norm
-                     suffix)
-           :headers (merge (:headers base-req)
-                           {"Authorization" (str "Bearer " token)}))))
+        suffix (if stream? ":streamGenerateContent?alt=sse" ":generateContent")
+        cached-content (get-in base-req [:body :cachedContent])
+        cached-content (when cached-content
+                         (if (str/starts-with? cached-content "cachedContents/")
+                           (str "projects/" project
+                                "/locations/" location
+                                "/" cached-content)
+                           cached-content))]
+    (cond-> (assoc base-req
+                   :url (str host
+                             "/v1/projects/" project
+                             "/locations/" location
+                             "/publishers/google/models/" model-norm
+                             suffix)
+                   :headers (merge (:headers base-req)
+                                   {"Authorization" (str "Bearer " token)}))
+      cached-content
+      (assoc-in [:body :cachedContent] cached-content))))
 
 (defn parse-response-vertex
   [_profile raw]

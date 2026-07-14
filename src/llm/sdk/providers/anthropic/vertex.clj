@@ -57,11 +57,12 @@
       "us-central1"))
 
 (defn- vertex-base-url
-  "Choose the Vertex AI host for a given location. `global` uses the
-   region-less endpoint; everything else uses the regional host."
+  "Choose the Vertex AI host for regional, global, and multi-region locations."
   [location]
-  (if (= "global" (str location))
-    "https://aiplatform.googleapis.com"
+  (case (str location)
+    "global" "https://aiplatform.googleapis.com"
+    "us" "https://aiplatform.us.rep.googleapis.com"
+    "eu" "https://aiplatform.eu.rep.googleapis.com"
     (str "https://" location "-aiplatform.googleapis.com")))
 
 (defn- vertex-model-id
@@ -77,9 +78,33 @@
 ;; Request building — reuse the native Anthropic body, re-target at Vertex
 ;; ---------------------------------------------------------------------------
 
+(defn- unsupported-input-source [part]
+  (case (:part/type part)
+    :image (let [url (:image/url part)]
+             (when (and (seq url) (not (str/starts-with? url "data:")))
+               :image-url))
+    :file (cond
+            (:file/id part) :files-api
+            (:file/url part) :document-url
+            :else nil)
+    nil))
+
+(defn- validate-input-sources! [request]
+  (doseq [message (:request/messages request)
+          :let [content (:message/content message)]
+          part (when (sequential? content) content)
+          :let [unsupported (unsupported-input-source part)]
+          :when unsupported]
+    (throw (ex-info
+            (str "Vertex Anthropic does not support " (name unsupported)
+                 " input sources; use inline base64 or text content.")
+            {:error/type :vertex-anthropic/unsupported-input-source
+             :source/type unsupported}))))
+
 (defn build-request-vertex-anthropic
   [profile request]
-  (let [base (anthropic/build-request-anthropic profile request)
+  (let [_ (validate-input-sources! request)
+        base (anthropic/build-request-anthropic profile request)
         project (vertex-project profile request)
         location (vertex-location profile request)
         host (vertex-base-url location)
@@ -111,14 +136,30 @@
 ;; Response / stream / error parsing — identical to native Anthropic
 ;; ---------------------------------------------------------------------------
 
+(defn- retag-provider-native [value]
+  (case (:part/type value)
+    :provider-state (assoc value :provider-state/provider :vertex-anthropic)
+    :unknown/provider-native (assoc value :unknown/provider :vertex-anthropic)
+    value))
+
+(defn- retag-stream-event [event]
+  (cond
+    (vector? event) (mapv retag-stream-event event)
+    (= :stream/provider-state (:event/type event))
+    (assoc event :provider-state/provider :vertex-anthropic)
+    :else event))
+
 (defn parse-response-vertex-anthropic
   [profile raw]
-  (assoc (anthropic/parse-response-anthropic profile raw)
-         :response/provider :vertex-anthropic))
+  (-> (anthropic/parse-response-anthropic profile raw)
+      (assoc :response/provider :vertex-anthropic)
+      (update :response/parts
+              #(mapv retag-provider-native %))))
 
 (defn parse-stream-event-vertex-anthropic
   [profile line]
-  (anthropic/parse-stream-event-anthropic profile line))
+  (retag-stream-event
+   (anthropic/parse-stream-event-anthropic profile line)))
 
 (defn parse-error-vertex-anthropic
   [_profile status body]

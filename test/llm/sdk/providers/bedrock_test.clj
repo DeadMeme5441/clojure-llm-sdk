@@ -5,7 +5,7 @@
             [llm.sdk.providers.bedrock :as bedrock]))
 
 (deftest test-resolve-model-id-known-short
-  (is (= "anthropic.claude-sonnet-4-5-20250101-v1:0"
+  (is (= "anthropic.claude-sonnet-4-5-20250929-v1:0"
          (bedrock/resolve-model-id "claude-sonnet-4-5")))
   (is (= "amazon.nova-pro-v1:0"
          (bedrock/resolve-model-id "nova-pro")))
@@ -220,6 +220,154 @@
                      :cacheWriteInputTokens 2}}
         parsed (transport/parse-response t profile raw)]
     (is (= [{:part/type :text :text "hi back"}] (:response/parts parsed)))
-    (is (= 0 (get-in parsed [:response/usage :usage/input-tokens])))
+    (is (= 10 (get-in parsed [:response/usage :usage/input-tokens])))
     (is (= 8 (get-in parsed [:response/usage :usage/cached-input-tokens])))
     (is (= 2 (get-in parsed [:response/usage :usage/cache-write-tokens])))))
+
+(deftest test-build-current-converse-fields
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        built (transport/build-request
+               t profile
+               {:request/model "claude-sonnet-4-6"
+                :request/messages [{:message/role :user
+                                    :message/content "Answer as JSON"}]
+                :request/tools [{:type :function
+                                 :function {:name "lookup"
+                                            :parameters {:type "object"}}}]
+                :request/reasoning {:enabled true :effort :xhigh}
+                :request/cache {:ttl "1h" :tools-cache? true}
+                :request/response-format {:type :json_schema
+                                          :name "answer"
+                                          :json-schema {:type "object"}}
+                :request/metadata {:trace-id 42}
+                :request/provider-options
+                {:bedrock
+                 {:additional-model-response-field-paths ["/stop_sequence"]
+                  :guardrail-config {:guardrailIdentifier "guardrail-id"
+                                     :guardrailVersion "1"
+                                     :trace "enabled"}
+                  :service-tier {:type "priority"}}}})
+        body (:body built)]
+    (is (= {:type "adaptive"}
+           (get-in body [:additionalModelRequestFields :thinking])))
+    (is (= "max"
+           (get-in body [:additionalModelRequestFields :output_config :effort])))
+    (is (= "json_schema" (get-in body [:outputConfig :textFormat :type])))
+    (is (= "{\"type\":\"object\"}"
+           (get-in body [:outputConfig :textFormat :structure :jsonSchema :schema])))
+    (is (= {"trace-id" "42"} (:requestMetadata body)))
+    (is (= "guardrail-id"
+           (get-in body [:guardrailConfig :guardrailIdentifier])))
+    (is (= ["/stop_sequence"] (:additionalModelResponseFieldPaths body)))
+    (is (= {:type "default" :ttl "1h"}
+           (get-in body [:messages 0 :content 1 :cachePoint])))
+    (is (= {:type "default" :ttl "1h"}
+           (get-in body [:toolConfig :tools 1 :cachePoint])))))
+
+(deftest test-build-converse-multimodal-and-replay-content
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        built (transport/build-request
+               t profile
+               {:request/model "claude-3-7-sonnet"
+                :request/messages
+                [{:message/role :user
+                  :message/content
+                  [{:part/type :image
+                    :image/url "s3://bucket/photo.webp"
+                    :image/mime-type "image/webp"}
+                   {:part/type :image
+                    :image/url "data:image/png;base64,aW1hZ2U="
+                    :image/mime-type "image/png"}]}
+                 {:message/role :assistant
+                  :message/content
+                  [{:part/type :reasoning
+                    :reasoning/text "checked"
+                    :reasoning/signature "signed"}]}]})
+        messages (get-in built [:body :messages])]
+    (is (= {:s3Location {:uri "s3://bucket/photo.webp"}}
+           (get-in messages [0 :content 0 :image :source])))
+    (is (= {:bytes "aW1hZ2U="}
+           (get-in messages [0 :content 1 :image :source])))
+    (is (= {:text "checked" :signature "signed"}
+           (get-in messages [1 :content 0 :reasoningContent :reasoningText])))))
+
+(deftest test-build-tool-result-and-guard-content
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        built (transport/build-request
+               t profile
+               {:request/model "nova-pro"
+                :request/messages
+                [{:message/role :user
+                  :message/content
+                  [{:part/type :tool-result
+                    :tool-result/id "tool-1"
+                    :tool-result/name "lookup"
+                    :tool-result/content "failed"
+                    :tool-result/is-error true}
+                   {:part/type :unknown/provider-native
+                    :unknown/provider :bedrock
+                    :unknown/data
+                    {:guardContent {:text {:text "guard only this"}}}}]}]})
+        content (get-in built [:body :messages 0 :content])]
+    (is (= "error" (get-in content [0 :toolResult :status])))
+    (is (= "failed" (get-in content [0 :toolResult :content 0 :text])))
+    (is (= "guard only this"
+           (get-in content [1 :guardContent :text :text])))))
+
+(deftest test-parse-current-converse-content
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        parsed (transport/parse-response
+                t profile
+                {:stopReason "malformed_tool_use"
+                 :output
+                 {:message
+                  {:content
+                   [{:reasoningContent
+                     {:reasoningText {:text "analysis" :signature "sig"}}}
+                    {:reasoningContent {:redactedContent "cmVkYWN0ZWQ="}}
+                    {:citationsContent
+                     {:content [{:text "cited answer"}]
+                      :citations [{:source "doc-1" :title "Document"}]}}]}}})]
+    (is (= :incomplete (:response/finish-reason parsed)))
+    (is (= {:part/type :reasoning
+            :reasoning/text "analysis"
+            :reasoning/signature "sig"}
+           (first (:response/parts parsed))))
+    (is (= {:part/type :reasoning
+            :reasoning/text "cmVkYWN0ZWQ="
+            :reasoning/encrypted true}
+           (second (:response/parts parsed))))
+    (is (= {:part/type :text :text "cited answer"}
+           (nth (:response/parts parsed) 2)))))
+
+(deftest test-parse-current-stream-events
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        signature (transport/parse-stream-event
+                   t profile
+                   {:event-type "contentBlockDelta"
+                    :data {:contentBlockIndex 2
+                           :delta {:reasoningContent {:signature "sig"}}}})
+        redacted (transport/parse-stream-event
+                  t profile
+                  {:event-type "contentBlockDelta"
+                   :data {:contentBlockIndex 2
+                          :delta {:reasoningContent
+                                  {:redactedContent "cmVkYWN0ZWQ="}}}})
+        exception (transport/parse-stream-event
+                   t profile
+                   {:event-type nil
+                    :headers {":message-type" "exception"
+                              ":exception-type" "validationException"}
+                    :data {:message "bad request"}})]
+    (is (= :stream/provider-state (:event/type signature)))
+    (is (= "sig"
+           (get-in signature [:provider-state/data :reasoning/signature])))
+    (is (= :stream/reasoning-delta (:event/type redacted)))
+    (is (true? (:event/encrypted redacted)))
+    (is (= :stream/error (:event/type exception)))
+    (is (= "validationException" (get-in exception [:error/error :type])))))

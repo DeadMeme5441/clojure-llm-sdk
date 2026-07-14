@@ -45,18 +45,50 @@
   (let [t (bedrock-rerank/make-transport)
         profile (provider/get-provider :bedrock)
         raw {:results [{:index 0 :relevanceScore 0.73}
-                       {:index 1 :relevanceScore 0.41}]
-             :usage {:inputTokens 20 :outputTokens 4}}
+                       {:index 1 :relevanceScore 0.41}]}
         parsed (rt/parse-rerank-response t profile raw)]
     (is (= :bedrock (:rerank/provider parsed)))
     (is (= [{:rerank/index 0 :rerank/score 0.73}
             {:rerank/index 1 :rerank/score 0.41}]
-           (:rerank/results parsed)))
-    (is (= 20 (get-in parsed [:response/usage :usage/input-tokens])))
-    (is (= 4 (get-in parsed [:response/usage :usage/output-tokens])))
-    (is (= 24 (get-in parsed [:response/usage :usage/total-tokens])))))
+           (:rerank/results parsed)))))
 
 (deftest test-bedrock-profile-has-rerank-transport
   (let [profile (provider/get-provider :bedrock)]
     (is (fn? (:profile/rerank-transport-constructor profile)))
     (is (contains? (:profile/capabilities profile) :rerank))))
+
+(deftest test-build-rerank-provider-fields
+  (let [t (bedrock-rerank/make-transport)
+        profile (provider/get-provider :bedrock)
+        built (rt/build-rerank-request
+               t profile
+               {:rerank/model "model-arn"
+                :rerank/query "query"
+                :rerank/documents ["one"]
+                :rerank/provider-options
+                {:bedrock
+                 {:next-token "page-2"
+                  :additional-model-request-fields
+                  {:max_chunks_per_doc 3}}}})]
+    (is (= "page-2" (get-in built [:body :nextToken])))
+    (is (= {:max_chunks_per_doc 3}
+           (get-in built
+                   [:body :rerankingConfiguration
+                    :bedrockRerankingConfiguration
+                    :modelConfiguration
+                    :additionalModelRequestFields])))))
+
+(deftest test-parse-rerank-returned-document
+  (let [t (bedrock-rerank/make-transport)
+        profile (provider/get-provider :bedrock)
+        parsed (rt/parse-rerank-response
+                t profile
+                {:nextToken "page-2"
+                 :results
+                 [{:index 0
+                   :relevanceScore 0.9
+                   :document {:type "TEXT"
+                              :textDocument {:text "returned document"}}}]})]
+    (is (= "returned document"
+           (get-in parsed [:rerank/results 0 :rerank/document])))
+    (is (= "page-2" (get-in parsed [:rerank/raw :nextToken])))))

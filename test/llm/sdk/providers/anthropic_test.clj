@@ -3,7 +3,8 @@
             [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.anthropic :as anthropic]))
+            [llm.sdk.providers.anthropic :as anthropic]
+            [llm.sdk.providers.anthropic.vertex :as vertex]))
 
 (deftest test-build-request-basic
   (let [t (anthropic/make-transport)
@@ -401,3 +402,301 @@
       (is (= 2 (count tools)))
       (is (nil? (:cache_control (first tools))))
       (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last tools)))))))
+
+(deftest test-current-structured-output-and-strict-tool-wire-shape
+  (let [t (anthropic/make-transport)
+        profile (provider/get-provider :anthropic)
+        schema {:type "object"
+                :properties {:answer {:type "integer"}}
+                :required ["answer"]
+                :additionalProperties false}
+        built (transport/build-request
+               t profile
+               {:request/model "claude-opus-4-8"
+                :request/messages [{:message/role :user
+                                    :message/content "What is 2+2?"}]
+                :request/tools [{:type :function
+                                 :function {:name "record_answer"
+                                            :description "Record the answer"
+                                            :strict true
+                                            :parameters schema}}]
+                :request/response-format {:type :json_schema
+                                          :name "answer"
+                                          :strict true
+                                          :json-schema schema}
+                :request/reasoning {:enabled true :effort :xhigh}
+                :request/stream? true})
+        json-object (transport/build-request
+                     t profile
+                     {:request/model "claude-opus-4-8"
+                      :request/messages [{:message/role :user
+                                          :message/content "Return JSON"}]
+                      :request/response-format {:type :json_object}})]
+    (is (= {:effort "xhigh"
+
+            :format {:type "json_schema" :schema schema}}
+           (get-in built [:body :output_config])))
+    (is (= {:type "json_schema" :schema {}}
+           (get-in json-object [:body :output_config :format])))
+    (is (= true (get-in built [:body :tools 0 :strict])))
+    (is (= true (get-in built [:body :stream])))
+    (is (nil? (get-in built [:headers "anthropic-beta"])))))
+
+(deftest test-beta-message-routing-and-requested-headers
+  (let [built (anthropic/build-request-anthropic
+               (provider/get-provider :anthropic)
+               {:request/model "claude-opus-4-8"
+                :request/messages
+                [{:message/role :system :message/content "Global"}
+                 {:message/role :user :message/content "First turn"}
+                 {:message/role :system :message/content "Updated policy"}
+                 {:message/role :assistant :message/content "Acknowledged"}]
+                :request/provider-options
+                {:anthropic
+                 {:betas ["files-api-2025-04-14"
+                          "fine-grained-tool-streaming-2025-05-14"]}}})]
+    (is (= "https://api.anthropic.com/v1/messages?beta=true" (:url built)))
+    (is (= ["user" "system" "assistant"]
+           (mapv :role (get-in built [:body :messages]))))
+    (is (= "Updated policy"
+           (get-in built [:body :messages 1 :content 0 :text])))
+    (is (= (str "files-api-2025-04-14,"
+                "fine-grained-tool-streaming-2025-05-14")
+           (get-in built [:headers "anthropic-beta"])))))
+
+(deftest test-current-thinking-model-rules
+  (let [t (anthropic/make-transport)
+        profile (provider/get-provider :anthropic)
+        build-thinking
+        (fn [model reasoning]
+          (:body
+           (transport/build-request
+            t profile
+            {:request/model model
+             :request/messages [{:message/role :user :message/content "Think"}]
+             :request/reasoning reasoning})))]
+    (testing "new adaptive-only and adaptive-recommended models use adaptive thinking"
+      (is (= "adaptive"
+             (get-in (build-thinking "claude-opus-4-8"
+                                     {:enabled true :effort :minimal})
+                     [:thinking :type])))
+      (is (= "low"
+             (get-in (build-thinking "claude-opus-4-8"
+                                     {:enabled true :effort :minimal})
+                     [:output_config :effort])))
+      (is (= "adaptive"
+             (get-in (build-thinking "claude-sonnet-5"
+                                     {:enabled true :effort :xhigh})
+                     [:thinking :type])))
+      (is (= "disabled"
+             (get-in (build-thinking "claude-sonnet-5" {:enabled false})
+                     [:thinking :type]))))
+    (testing "legacy extended thinking honors an explicit canonical budget"
+      (is (= {:type "enabled" :budget_tokens 1234}
+             (:thinking
+              (build-thinking "claude-haiku-4-5"
+                              {:enabled true :effort :low :budget 1234})))))))
+
+(deftest test-files-api-image-file-id-wire-shape
+  (let [built (transport/build-request
+               (anthropic/make-transport)
+               (provider/get-provider :anthropic)
+               {:request/model "claude-opus-4-8"
+                :request/messages
+                [{:message/role :user
+                  :message/content [{:part/type :file
+                                     :file/id "file_image"
+                                     :file/mime-type "image/png"}]}]})]
+    (is (= {:type "image"
+            :source {:type "file" :file_id "file_image"}}
+           (get-in built [:body :messages 0 :content 0])))
+    (is (= "files-api-2025-04-14"
+           (get-in built [:headers "anthropic-beta"])))))
+
+(deftest test-response-citations-native-block-preservation-and-replay
+  (let [server-block {:type "server_tool_use"
+                      :id "srv_1"
+                      :name "web_search"
+                      :input {:query "Clojure"}}
+        redacted-block {:type "redacted_thinking" :data "opaque"}
+        raw {:id "msg_current"
+             :model "claude-opus-4-8"
+             :content
+             [{:type "text"
+               :text "Clojure is a Lisp."
+               :citations
+               [{:type "web_search_result_location"
+                 :url "https://clojure.org/"
+                 :title "Clojure"
+                 :cited_text "Clojure is a dynamic language"
+                 :encrypted_index "enc_1"}
+                {:type "char_location"
+                 :document_index 0
+                 :start_char_index 0
+                 :end_char_index 7
+                 :cited_text "Clojure"}]}
+              redacted-block
+              server-block]
+             :stop_reason "pause_turn"
+             :stop_details {:type "refusal" :reason "paused"}
+             :container {:id "container_1"}
+             :usage {:input_tokens 10 :output_tokens 4}}
+        parsed (anthropic/parse-response-anthropic {} raw)
+        parts (:response/parts parsed)
+        replay-parts (filterv #(contains? #{:provider-state
+                                           :unknown/provider-native}
+                                         (:part/type %))
+                              parts)
+        replay (anthropic/build-request-anthropic
+                (provider/get-provider :anthropic)
+                {:request/model "claude-opus-4-8"
+                 :request/messages [{:message/role :assistant
+                                     :message/content replay-parts}]})]
+    (is (= :incomplete (:response/finish-reason parsed)))
+    (is (= {:part/type :citation
+            :citation/url "https://clojure.org/"
+            :citation/title "Clojure"
+            :citation/snippet "Clojure is a dynamic language"
+            :citation/source-id "enc_1"}
+           (second parts)))
+    (is (= :provider-state (:part/type (nth parts 2))))
+    (is (= :unknown/provider-native (:part/type (nth parts 3))))
+    (is (= 2 (count (get-in parsed [:response/provider-data :citations]))))
+    (is (= (:stop_details raw)
+           (get-in parsed [:response/provider-data :stop_details])))
+    (is (= (:container raw)
+           (get-in parsed [:response/provider-data :container])))
+    (is (= [redacted-block server-block]
+           (get-in replay [:body :messages 0 :content])))))
+
+(deftest test-current-stream-event-surfaces
+  (let [parse #(anthropic/parse-stream-event-anthropic
+                {}
+                (str "data: " (json/generate-string %)))
+        citation (parse {:type "content_block_delta"
+                         :index 1
+                         :delta {:type "citations_delta"
+                                 :citation
+                                 {:type "web_search_result_location"
+                                  :url "https://example.com"
+                                  :title "Example"
+                                  :cited_text "Evidence"}}})
+        opaque-citation (parse {:type "content_block_delta"
+                                :index 1
+                                :delta {:type "citations_delta"
+                                        :citation
+                                        {:type "page_location"
+                                         :document_index 0
+                                         :start_page_number 1
+                                         :end_page_number 1
+                                         :cited_text "Evidence"}}})
+        server-start (parse {:type "content_block_start"
+                             :index 2
+                             :content_block
+                             {:type "server_tool_use"
+                              :id "srv_1"
+                              :name "web_search"
+                              :input {}}})
+        compaction (parse {:type "content_block_delta"
+                           :index 3
+                           :delta {:type "compaction_delta"
+                                   :content "summary"
+                                   :encrypted_content "opaque"}})
+        error (parse {:type "error"
+                      :error {:type "overloaded_error"
+                              :message "Overloaded"}})]
+    (is (= :stream/citation (:event/type citation)))
+    (is (= "https://example.com" (:citation/url citation)))
+    (is (= :stream/provider-state (:event/type opaque-citation)))
+    (is (= :stream/provider-state (:event/type server-start)))
+    (is (= "server_tool_use"
+           (get-in server-start
+                   [:provider-state/data :content-blocks 2 :block :type])))
+    (is (= "opaque"
+           (get-in compaction
+                   [:provider-state/data :content-blocks 3
+                    :compaction :encrypted_content])))
+    (is (= :stream/error (:event/type error)))
+    (is (= "overloaded_error" (get-in error [:error/error :type])))))
+
+(deftest test-vertex-anthropic-current-routing-envelope
+  (let [t (vertex/make-transport)
+        profile (provider/get-provider :vertex-anthropic)
+        request {:request/model "anthropic/claude-opus-4-8"
+                 :request/messages [{:message/role :user
+                                     :message/content "Hello"}]
+                 :request/response-format
+                 {:type :json_schema
+                  :json-schema {:type "object"}}
+                 :request/stream? true
+                 :request/provider-options
+                 {:vertex {:project "project-1"
+                           :location "us"
+                           :access-token "token-1"}}}
+        built (transport/build-request t profile request)]
+    (is (= (str "https://aiplatform.us.rep.googleapis.com/v1/projects/"
+                "project-1/locations/us/publishers/anthropic/models/"
+                "claude-opus-4-8:streamRawPredict")
+           (:url built)))
+    (is (= "Bearer token-1" (get-in built [:headers "Authorization"])))
+    (is (nil? (get-in built [:headers "anthropic-version"])))
+    (is (nil? (get-in built [:body :model])))
+    (is (= "vertex-2023-10-16" (get-in built [:body :anthropic_version])))
+    (is (= true (get-in built [:body :stream])))
+    (is (= {:type "json_schema" :schema {:type "object"}}
+           (get-in built [:body :output_config :format])))))
+
+(deftest test-vertex-anthropic-retags-provider-native-response-and-stream-state
+  (let [profile (provider/get-provider :vertex-anthropic)
+        raw-block {:type "server_tool_use"
+                   :id "srv_1"
+                   :name "web_search"
+                   :input {:query "test"}}
+        response (vertex/parse-response-vertex-anthropic
+                  profile
+                  {:id "msg_vertex"
+                   :model "claude-opus-4-8"
+                   :content [raw-block]
+                   :stop_reason "pause_turn"
+                   :usage {:input_tokens 1 :output_tokens 1}})
+        stream-event (vertex/parse-stream-event-vertex-anthropic
+                      profile
+                      (str "data: "
+                           (json/generate-string
+                            {:type "content_block_start"
+                             :index 0
+                             :content_block raw-block})))]
+    (is (= :vertex-anthropic (:response/provider response)))
+    (is (= :vertex-anthropic
+           (get-in response [:response/parts 0 :unknown/provider])))
+    (is (= :vertex-anthropic
+           (:provider-state/provider stream-event)))))
+
+(deftest test-vertex-anthropic-rejects-unsupported-input-sources
+  (let [t (vertex/make-transport)
+        profile (provider/get-provider :vertex-anthropic)
+        base {:request/model "claude-opus-4-8"
+              :request/provider-options
+              {:vertex {:project "project-1"
+                        :location "global"
+                        :access-token "token-1"}}}]
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"does not support image-url"
+         (transport/build-request
+          t profile
+          (assoc base
+                 :request/messages
+                 [{:message/role :user
+                   :message/content [{:part/type :image
+                                      :image/url "https://example.com/a.png"}]}]))))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"does not support files-api"
+         (transport/build-request
+          t profile
+          (assoc base
+                 :request/messages
+                 [{:message/role :user
+                   :message/content [{:part/type :file
+                                      :file/id "file_1"}]}]))))))

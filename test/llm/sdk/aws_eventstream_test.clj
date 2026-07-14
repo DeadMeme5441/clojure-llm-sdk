@@ -88,3 +88,17 @@
 
 (deftest test-empty-stream
   (is (empty? (es/frame-seq (ByteArrayInputStream. (byte-array 0))))))
+
+(deftest test-decode-bedrock-exception-frame
+  (let [frame-bytes
+        (encode-frame {":message-type" "exception"
+                       ":exception-type" "validationException"
+                       ":content-type" "application/json"}
+                      (json-bytes {:message "Invalid Converse request"}))
+        [frame] (es/frame-seq (ByteArrayInputStream. frame-bytes))
+        decoded (es/frame->json frame)]
+    (is (nil? (:event-type decoded)))
+    (is (= "exception" (get-in decoded [:headers ":message-type"])))
+    (is (= "validationException"
+           (get-in decoded [:headers ":exception-type"])))
+    (is (= "Invalid Converse request" (get-in decoded [:data :message])))))

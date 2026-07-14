@@ -2,6 +2,7 @@
   (:require [cheshire.core]
             [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
+            [llm.sdk.schema :as schema]
             [llm.sdk.transport :as transport]
             [llm.sdk.providers.gemini-native :as gemini]))
 
@@ -35,6 +36,92 @@
             :stopSequences ["END"]
             :thinkingConfig {:includeThoughts true}}
            (get-in built [:body :generationConfig])))))
+
+(deftest test-build-request-structured-output-and-provider-options
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        schema {:type "object"
+                :properties {:answer {:type "string"}}
+                :required ["answer"]
+                :additionalProperties false}
+        built (transport/build-request
+               t profile
+               {:request/model "gemini-3.5-flash"
+                :request/messages [{:message/role :developer
+                                    :message/content "Return a record."}
+                                   {:message/role :user
+                                    :message/content "Hi"}]
+                :request/response-format {:type :json_schema
+                                          :json-schema schema}
+                :request/provider-options
+                {:extra_body
+                 {:serviceTier "PRIORITY"
+                  :store false
+                  :safetySettings
+                  [{:category "HARM_CATEGORY_HARASSMENT"
+                    :threshold "BLOCK_ONLY_HIGH"}]
+                  :generationConfig
+                  {:routingConfig
+                   {:autoMode {:modelRoutingPreference "BALANCED"}}}}}})
+        body (:body built)]
+    (is (= "Return a record."
+           (get-in body [:systemInstruction :parts 0 :text])))
+    (is (= 1 (count (:contents body)))
+        "developer instructions are not duplicated as user content")
+    (is (= "application/json"
+           (get-in body [:generationConfig :responseMimeType])))
+    (is (= schema
+           (get-in body [:generationConfig :responseJsonSchema])))
+    (is (= {:autoMode {:modelRoutingPreference "BALANCED"}}
+           (get-in body [:generationConfig :routingConfig])))
+    (is (= "PRIORITY" (:serviceTier body)))
+    (is (false? (:store body)))
+    (is (= "BLOCK_ONLY_HIGH"
+           (get-in body [:safetySettings 0 :threshold])))))
+
+(deftest test-build-request-current-thinking-controls
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        build (fn [model reasoning]
+                (transport/build-request
+                 t profile
+                 {:request/model model
+                  :request/messages [{:message/role :user
+                                      :message/content "Think"}]
+                  :request/reasoning reasoning}))]
+    (is (= {:includeThoughts true :thinkingBudget 2048}
+           (get-in (build "gemini-2.5-flash"
+                          {:enabled true :budget 2048})
+                   [:body :generationConfig :thinkingConfig])))
+    (is (= {:includeThoughts false :thinkingBudget 0}
+           (get-in (build "gemini-2.5-flash" {:enabled false})
+                   [:body :generationConfig :thinkingConfig])))
+    (is (= {:includeThoughts true :thinkingLevel "minimal"}
+           (get-in (build "gemini-3.5-flash"
+                          {:enabled true :effort :minimal})
+                   [:body :generationConfig :thinkingConfig])))
+    (is (= {:includeThoughts true :thinkingLevel "high"}
+           (get-in (build "gemini-3.1-pro"
+                          {:enabled true :effort :xhigh})
+                   [:body :generationConfig :thinkingConfig])))))
+
+(deftest test-build-request-replays-reasoning-signature
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        built (transport/build-request
+               t profile
+               {:request/model "gemini-3.5-flash"
+                :request/messages
+                [{:message/role :assistant
+                  :message/content
+                  [{:part/type :reasoning
+                    :reasoning/text "summary"
+                    :reasoning/signature "opaque-signature"}]}
+                 {:message/role :user :message/content "Continue"}]})]
+    (is (= {:text "summary"
+            :thought true
+            :thoughtSignature "opaque-signature"}
+           (get-in built [:body :contents 0 :parts 0])))))
 
 (deftest test-build-request-string-stop-sequence-is-not-split
   (let [t (gemini/make-transport)
@@ -175,11 +262,21 @@
         req {:request/model "gemini-2.5-pro"
              :request/messages [{:message/role :user :message/content "Hi"}]
              :request/tools [{:type :function
-                              :function {:name "get_weather"
-                                         :parameters {:type :object
-                                                      :properties {:location {:type :string}}}}}]}
+                              :function
+                              {:name "get_weather"
+                               :parameters
+                               {:type :object
+                                :properties {:location {:type :string}}}}}]}
         built (transport/build-request t profile req)]
-    (is (= 1 (count (get-in built [:body :tools 0 :functionDeclarations]))))))
+    (is (= 1 (count (get-in built
+                            [:body :tools 0 :functionDeclarations]))))
+    (is (= {:type :object
+            :properties {:location {:type :string}}}
+           (get-in built
+                   [:body :tools 0 :functionDeclarations 0
+                    :parametersJsonSchema])))
+    (is (nil? (get-in built
+                      [:body :tools 0 :functionDeclarations 0 :parameters])))))
 
 (deftest test-parse-response-text
   (let [t (gemini/make-transport)
@@ -217,6 +314,75 @@
            (get-in resp [:response/tool-calls 0
                          :tool-call/provider-data
                          :gemini/thought-signature])))))
+
+(deftest test-parse-and-replay-signature-on-ordinary-part
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        parsed (transport/parse-response
+                t profile
+                {:candidates
+                 [{:content {:parts [{:text "final"
+                                      :thoughtSignature "text-signature"}]}
+                   :finishReason "STOP"}]
+                 :modelVersion "gemini-3.5-flash"})
+        rebuilt (transport/build-request
+                 t profile
+                 {:request/model "gemini-3.5-flash"
+                  :request/messages
+                  [{:message/role :assistant
+                    :message/content (:response/parts parsed)}
+                   {:message/role :user :message/content "Continue"}]})]
+    (is (= :provider-state
+           (get-in parsed [:response/parts 1 :part/type])))
+    (is (= {:text "final" :thoughtSignature "text-signature"}
+           (get-in rebuilt [:body :contents 0 :parts 0])))))
+
+(deftest test-parse-response-current-parts-safety-usage-and-finish
+  (let [t (gemini/make-transport)
+        raw {:candidates
+             [{:content
+               {:parts
+                [{:inlineData {:mimeType "image/png" :data "iVBORw=="}}
+                 {:executableCode {:language "PYTHON" :code "print(1)"}}]}
+               :finishReason "MALFORMED_RESPONSE"
+               :safetyRatings
+               [{:category "HARM_CATEGORY_HARASSMENT"
+                 :probability "LOW"
+                 :blocked false}]}]
+             :usageMetadata {:promptTokenCount 10
+                             :candidatesTokenCount 4
+                             :thoughtsTokenCount 3
+                             :totalTokenCount 17}
+             :modelVersion "gemini-3.5-flash"
+             :responseId "response-1"}
+        resp (transport/parse-response t {} raw)]
+    (is (= :incomplete (:response/finish-reason resp)))
+    (is (= {:part/type :image
+            :image/data "iVBORw=="
+            :image/mime-type "image/png"}
+           (first (:response/parts resp))))
+    (is (= :unknown/provider-native
+           (get-in resp [:response/parts 1 :part/type])))
+    (is (= "HARM_CATEGORY_HARASSMENT"
+           (get-in resp [:response/parts 2 :safety/category])))
+    (is (schema/validate-response resp))
+    (is (= 3 (get-in resp [:response/usage :usage/reasoning-tokens])))
+    (is (= "response-1"
+           (get-in resp [:response/provider-data :gemini/response-id])))))
+
+(deftest test-parse-response-prompt-block-without-candidate
+  (let [t (gemini/make-transport)
+        raw {:promptFeedback
+             {:blockReason "PROHIBITED_CONTENT"
+              :safetyRatings
+              [{:category "HARM_CATEGORY_DANGEROUS_CONTENT"
+                :probability "MEDIUM"
+                :blocked true}]}}
+        resp (transport/parse-response t {} raw)]
+    (is (= :content-filter (:response/finish-reason resp)))
+    (is (true? (get-in resp [:response/parts 0 :safety/blocked])))
+    (is (= :prompt
+           (get-in resp [:response/parts 0 :safety/details :source])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Caching wiring (explicit cachedContent)

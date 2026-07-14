@@ -22,6 +22,7 @@
    "tool_use" :tool-calls
    "max_tokens" :length
    "stop_sequence" :stop
+   "pause_turn" :incomplete
    "refusal" :content-filter
    "model_context_window_exceeded" :length})
 
@@ -80,20 +81,24 @@
 
     (t/file-text-content part)
     {:type "text"
-     :media_type (t/file-mime-type part)
+     :media_type "text/plain"
      :data (t/file-text-content part)}
 
     :else
     (t/missing-file-source! :anthropic part)))
 
-(defn- file->anthropic-document [part]
-  (cond-> {:type "document"
-           :source (file-source part)}
-    (:file/name part) (assoc :title (:file/name part))
-    (:file/title part) (assoc :title (:file/title part))
-    (:file/context part) (assoc :context (:file/context part))
-    (contains? part :file/citations)
-    (assoc :citations {:enabled (boolean (:file/citations part))})))
+(defn- file->anthropic-block [part]
+  (if (and (:file/id part)
+           (str/starts-with? (or (:file/mime-type part) "") "image/"))
+    {:type "image"
+     :source {:type "file" :file_id (:file/id part)}}
+    (cond-> {:type "document"
+             :source (file-source part)}
+      (:file/name part) (assoc :title (:file/name part))
+      (:file/title part) (assoc :title (:file/title part))
+      (:file/context part) (assoc :context (:file/context part))
+      (contains? part :file/citations)
+      (assoc :citations {:enabled (boolean (:file/citations part))}))))
 
 (defn- content->anthropic-blocks [content]
   (cond
@@ -108,7 +113,7 @@
             (case (:part/type part)
               :text {:type "text" :text (:text part)}
               :image {:type "image" :source (image-source part)}
-              :file (file->anthropic-document part)
+              :file (file->anthropic-block part)
               :reasoning (cond-> {:type "thinking"
                                    :thinking (:reasoning/text part)}
                             (:reasoning/signature part)
@@ -118,6 +123,18 @@
                             :tool_use_id (:tool-result/id part)
                             :content (:tool-result/content part)
                             :is_error (:tool-result/is-error part)}
+              :provider-state
+              (if (and (contains? #{:anthropic :vertex-anthropic}
+                                  (:provider-state/provider part))
+                       (map? (get-in part [:provider-state/data :content-block])))
+                (get-in part [:provider-state/data :content-block])
+                {:type "text" :text (str part)})
+              :unknown/provider-native
+              (if (and (contains? #{:anthropic :vertex-anthropic}
+                                  (:unknown/provider part))
+                       (map? (:unknown/data part)))
+                (:unknown/data part)
+                {:type "text" :text (str part)})
               {:type "text" :text (str part)}))
           content)
 
@@ -126,7 +143,8 @@
 (defn- message->anthropic [msg]
   (let [role (case (:message/role msg)
                (:user :tool) "user"
-               (:assistant) "assistant"
+               :assistant "assistant"
+               :system "system"
                "user")]
     (cond
       (= (:message/role msg) :tool)
@@ -156,9 +174,11 @@
 
 (defn- tool->anthropic [tool]
   (let [fn-data (:function tool)]
-    {:name (:name fn-data)
-     :description (or (:description fn-data) "")
-     :input_schema (or (:parameters fn-data) {:type "object" :properties {}})}))
+    (cond-> {:name (:name fn-data)
+             :description (or (:description fn-data) "")
+             :input_schema (or (:parameters fn-data) {:type "object" :properties {}})}
+      (contains? fn-data :strict)
+      (assoc :strict (boolean (:strict fn-data))))))
 
 (defn- tool-choice->anthropic [tc]
   (case tc
@@ -267,6 +287,13 @@
                   (some file-id-attachment? content))))
          messages)))
 
+(defn- messages-use-beta-api? [messages]
+  (boolean
+   (some #(= :system (:message/role %))
+         (if (= :system (:message/role (first messages)))
+           (rest messages)
+           messages))))
+
 (defn- add-beta-header [headers beta]
   (update headers "anthropic-beta"
           (fn [existing]
@@ -282,29 +309,62 @@
 
 (defn- adaptive-thinking-model? [model]
   (let [m (str/lower-case (or model ""))]
-    (some #(str/includes? m %) ["4-6" "4.6" "4-7" "4.7"])))
+    (some #(str/includes? m %)
+          ["claude-opus-4-6" "claude-sonnet-4-6"
+           "claude-opus-4-7" "claude-opus-4-8"
+           "claude-sonnet-5" "claude-fable-5"
+           "claude-mythos-preview" "claude-mythos-5"])))
 
 (defn- xhigh-supported? [model]
   (let [m (str/lower-case (or model ""))]
-    (some #(str/includes? m %) ["4-7" "4.7"])))
+    (some #(str/includes? m %)
+          ["claude-opus-4-7" "claude-opus-4-8"
+           "claude-sonnet-5" "claude-fable-5"
+           "claude-mythos-5"])))
 
 (defn- no-sampling-params? [model]
   (let [m (str/lower-case (or model ""))]
-    (some #(str/includes? m %) ["4-7" "4.7"])))
+    (some #(str/includes? m %)
+          ["claude-sonnet-4-6" "claude-opus-4-7" "claude-opus-4-8"
+           "claude-sonnet-5" "claude-fable-5"
+           "claude-mythos-preview" "claude-mythos-5"])))
 
 (defn- build-thinking-config [model reasoning]
-  (when (and reasoning (:enabled reasoning true))
+  (cond
+    (and reasoning
+         (false? (:enabled reasoning))
+         (str/includes? model "claude-sonnet-5"))
+    {:thinking {:type "disabled"}}
+
+    (and reasoning (:enabled reasoning true))
     (if (adaptive-thinking-model? model)
-      (let [effort (name (get reasoning :effort :medium))
+      (let [requested (get reasoning :effort :medium)
+            effort (case requested
+                     :minimal "low"
+                     (name requested))
             effort (if (and (= effort "xhigh") (not (xhigh-supported? model)))
                      "max"
                      effort)]
         {:thinking {:type "adaptive" :display "summarized"}
          :output_config {:effort effort}})
       {:thinking {:type "enabled"
-                  :budget_tokens (get {:xhigh 32000 :high 16000 :medium 8000 :low 4000}
-                                      (get reasoning :effort :medium)
-                                      8000)}})))
+                  :budget_tokens (or (:budget reasoning)
+                                     (get {:xhigh 32000 :high 16000
+                                           :medium 8000 :low 4000
+                                           :minimal 1024}
+                                          (get reasoning :effort :medium)
+                                          8000))}})
+
+    :else nil))
+
+(defn- build-output-format [response-format]
+  (when-let [schema (case (:type response-format)
+                      :json_schema (or (:json-schema response-format) {})
+                      :json_object {}
+                      nil)]
+    {:output_config
+     {:format {:type "json_schema"
+               :schema schema}}}))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
@@ -333,6 +393,10 @@
         tools (when (seq (:request/tools request))
                 (mapv tool->anthropic (:request/tools request)))
         thinking (build-thinking-config model-norm (:request/reasoning request))
+        output-format (build-output-format (:request/response-format request))
+        output-config (merge (:output_config thinking)
+                             (:output_config output-format))
+        thinking (dissoc thinking :output_config)
         tool-choice (tool-choice->anthropic (:request/tool-choice request))
         ;; Clamp to the model's known output ceiling: Anthropic rejects
         ;; max_tokens above a model's cap (e.g. haiku-4-5 tops out at 64000,
@@ -380,6 +444,13 @@
                 (cache/apply-tools-cache tools cache-opts)
                 tools)
         files-api? (messages-use-files-api? messages)
+        beta-api? (messages-use-beta-api? messages)
+        configured-betas (get-in request
+                                  [:request/provider-options :anthropic :betas])
+        configured-betas (cond
+                           (string? configured-betas) [configured-betas]
+                           (sequential? configured-betas) configured-betas
+                           :else [])
         ;; Build headers
         headers (if oauth?
                   (merge (:profile/default-headers profile {})
@@ -387,6 +458,7 @@
                   (merge (provider/auth-headers profile token)
                          (:profile/default-headers profile {})
                          {"anthropic-dangerous-direct-browser-access" "true"}))
+        headers (reduce add-beta-header headers configured-betas)
         headers (cond-> headers
                   files-api?
                   (add-beta-header "files-api-2025-04-14"))
@@ -394,6 +466,10 @@
               {:model model-norm
                :messages anthropic-messages
                :max_tokens max-tokens}
+              (when (:request/stream? request)
+                {:stream true})
+              (when (seq output-config)
+                {:output_config output-config})
               (when (seq system-blocks)
                 {:system system-blocks})
               (when tools
@@ -413,7 +489,9 @@
               (when (:request/metadata request)
                 {:metadata (:request/metadata request)}))]
     {:method :post
-     :url (str (:profile/base-url profile) "/messages")
+     :url (str (:profile/base-url profile)
+               "/messages"
+               (when beta-api? "?beta=true"))
      :headers headers
      :body body}))
 
@@ -421,36 +499,89 @@
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
 
+(defn- citation->canonical [citation]
+  (let [url (case (:type citation)
+              "web_search_result_location" (:url citation)
+              "search_result_location" (:source citation)
+              nil)]
+    (when (seq url)
+      (cond-> {:part/type :citation
+               :citation/url url}
+        (:title citation) (assoc :citation/title (:title citation))
+        (:cited_text citation) (assoc :citation/snippet (:cited_text citation))
+        (:encrypted_index citation) (assoc :citation/source-id
+                                           (:encrypted_index citation))))))
+
+(defn- native-provider-state-part [block]
+  {:part/type :provider-state
+   :provider-state/provider :anthropic
+   :provider-state/data {:content-block block}})
+
+(defn- block->canonical-parts [block]
+  (case (:type block)
+    "text"
+    (into [{:part/type :text :text (:text block)}]
+          (keep citation->canonical)
+          (:citations block))
+
+    "thinking"
+    [(cond-> {:part/type :reasoning
+              :reasoning/text (:thinking block)}
+       (:signature block)
+       (assoc :reasoning/signature (:signature block)))]
+
+    "redacted_thinking"
+    [(native-provider-state-part block)]
+
+    "tool_use"
+    [{:part/type :tool-call
+      :tool-call/id (:id block)
+      :tool-call/name (:name block)
+      :tool-call/arguments (json/generate-string (:input block))
+      :tool-call/provider-data {:anthropic/input (:input block)}}]
+
+    [{:part/type :unknown/provider-native
+      :unknown/provider :anthropic
+      :unknown/data block}]))
+
+(defn- one-or-many [events]
+  (let [events (vec (remove nil? events))]
+    (case (count events)
+      0 nil
+      1 (first events)
+      events)))
+
+(defn- citation->stream-event [index citation]
+  (if-let [part (citation->canonical citation)]
+    (stream/citation-event (:citation/url part)
+                           :title (:citation/title part)
+                           :snippet (:citation/snippet part))
+    (stream/provider-state-event
+     :anthropic
+     {:content-blocks
+      {index {:citations
+              {(or (:encrypted_index citation)
+                   (str (hash citation)))
+               citation}}}})))
+
 (defn parse-response-anthropic
   [_profile raw]
-  (let [parts (vec
-               (keep (fn [block]
-                       (case (:type block)
-                         "text"
-                         {:part/type :text :text (:text block)}
-
-                         "thinking"
-                         (cond-> {:part/type :reasoning
-                                  :reasoning/text (:thinking block)}
-                           (:signature block)
-                           (assoc :reasoning/signature (:signature block)))
-
-                         "tool_use"
-                         {:part/type :tool-call
-                          :tool-call/id (:id block)
-                          :tool-call/name (:name block)
-                          :tool-call/arguments (json/generate-string (:input block))
-                          :tool-call/provider-data {:anthropic/input (:input block)}}
-
-                         nil))
-                     (:content raw)))
+  (let [content (:content raw)
+        parts (vec (mapcat block->canonical-parts content))
         reasoning-details (vec (keep #(when (= (:type %) "thinking") %) (:content raw)))
         tool-calls (vec (filter #(= (:part/type %) :tool-call) parts))
-        finish-reason (get stop-reason-map (:stop_reason raw) :stop)
+        finish-reason (get stop-reason-map (:stop_reason raw) :unknown)
         usage-raw (:usage raw)
+        citations (vec (mapcat #(or (:citations %) []) content))
         provider-data (cond-> {}
-                      (seq reasoning-details)
-                      (assoc :reasoning_details reasoning-details))]
+                        (seq reasoning-details)
+                        (assoc :reasoning_details reasoning-details)
+                        (seq citations)
+                        (assoc :citations citations)
+                        (:stop_details raw)
+                        (assoc :stop_details (:stop_details raw))
+                        (:container raw)
+                        (assoc :container (:container raw)))]
     (cond-> {:response/id (:id raw)
              :response/provider :anthropic
              :response/model (:model raw)
@@ -486,16 +617,37 @@
                                :anthropic
                                {:content-blocks
                                 {(:index data 0) {:signature (:signature delta)}}})
+            "citations_delta" (citation->stream-event
+                               (:index data 0)
+                               (:citation delta))
+            "compaction_delta" (stream/provider-state-event
+                                :anthropic
+                                {:content-blocks
+                                 {(:index data 0)
+                                  {:compaction delta}}})
             nil))
 
         (= t "content_block_start")
-        (when (= (get-in data [:content_block :type]) "tool_use")
-          (let [block (:content_block data)
-                idx (:index data 0)]
-            (stream/tool-call-start idx (:id block) (:name block))))
+        (let [block (:content_block data)
+              idx (:index data 0)]
+          (if (= (:type block) "tool_use")
+            (stream/tool-call-start idx (:id block) (:name block))
+            (stream/provider-state-event
+             :anthropic
+             {:content-blocks {idx {:block block}}})))
 
         (= t "content_block_stop")
         (stream/tool-call-end (:index data 0))
+
+        (= t "message_start")
+        (let [message (:message data)
+              provider-ev (stream/provider-state-event
+                           :anthropic
+                           {:message (dissoc message :content :usage)})
+              usage-ev (when-let [usage-raw (:usage message)]
+                         (stream/usage-event
+                          (usage/normalize-usage :anthropic usage-raw)))]
+          (one-or-many [provider-ev usage-ev]))
 
         (= t "message_stop")
         (when-let [stop-reason (get-in data [:message :stop_reason])]
@@ -511,12 +663,12 @@
                           (stream/end-event
                            :finish-reason (get stop-reason-map
                                                stop-reason
-                                               :stop)))
-              events (vec (remove nil? [usage-ev finish-ev]))]
-          (case (count events)
-            0 nil
-            1 (first events)
-            events))
+                                               :unknown)))
+              events (one-or-many [usage-ev finish-ev])]
+          events)
+
+        (= t "error")
+        (stream/error-event (:error data))
 
         :else nil))))
 

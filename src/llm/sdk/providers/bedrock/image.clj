@@ -1,21 +1,11 @@
 (ns llm.sdk.providers.bedrock.image
-  "Bedrock image-generation adapter (Titan Image Generator + Stability
-   SD3 / SDXL). All use bedrock-runtime /model/{id}/invoke with SigV4.
-   Each model has a different body shape:
+  "Bedrock Runtime image-generation adapter.
 
-     amazon.titan-image-generator-v1 / -v2:0
-       {:taskType \"TEXT_IMAGE\"
-        :textToImageParams {:text \"...\"}
-        :imageGenerationConfig {:numberOfImages N :width W :height H :cfgScale 8 :seed 0}}
-       response {:images [\"b64\", ...]}
-
-     stability.stable-diffusion-xl-v1
-       {:text_prompts [{:text \"...\" :weight 1.0}]
-        :cfg_scale N :seed N :steps 30}
-       response {:artifacts [{:base64 \"...\"}]}
-
-   We dispatch on a substring match against the model id and route to
-   the matching builder/parser pair."
+   Amazon Titan Image Generator and Nova Canvas use the taskType /
+   imageGenerationConfig request family. Stability SDXL uses the legacy
+   text_prompts/artifacts contract, while Stable Image Core, Ultra, and
+   SD3.5 use the prompt/images contract. All models are invoked through
+   /model/{modelId}/invoke with SigV4."
   (:require [clojure.string :as str]
             [llm.sdk.transport.image :as it]
             [llm.sdk.provider :as provider]
@@ -30,7 +20,12 @@
 (defn- bedrock-base-url [] (str "https://bedrock-runtime." (aws-region) ".amazonaws.com"))
 
 (defn- titan? [model] (str/starts-with? (str model) "amazon.titan-image"))
-(defn- stability? [model] (str/starts-with? (str model) "stability."))
+(defn- nova-canvas? [model] (str/starts-with? (str model) "amazon.nova-canvas"))
+(defn- legacy-stability? [model]
+  (str/starts-with? (str model) "stability.stable-diffusion-xl"))
+(defn- modern-stability? [model]
+  (and (str/starts-with? (str model) "stability.")
+       (not (legacy-stability? model))))
 
 ;; ---------------------------------------------------------------------------
 ;; Body shapes per model family
@@ -42,22 +37,54 @@
       (when (= 2 (count parts))
         (mapv #(Integer/parseInt %) parts)))))
 
-(defn- titan-body [request]
+(def ^:private stability-aspect-ratios
+  #{"16:9" "1:1" "21:9" "2:3" "3:2" "4:5" "5:4" "9:16" "9:21"})
+
+(defn- gcd [a b]
+  (if (zero? b) a (recur b (mod a b))))
+
+(defn- size->aspect-ratio [size]
+  (when-let [[w h] (parse-size size)]
+    (let [divisor (gcd w h)
+          ratio (str (quot w divisor) ":" (quot h divisor))]
+      (when (contains? stability-aspect-ratios ratio)
+        ratio))))
+
+(defn- bedrock-options [request]
+  (get-in request [:image/provider-options :bedrock] {}))
+
+(defn- quality-value [quality]
+  (case quality
+    (:hd :high) "premium"
+    (:standard :low :medium :auto) "standard"
+    nil))
+
+(defn- task-image-body [request cfg-default]
   (let [[w h] (or (parse-size (:image/size request)) [1024 1024])
-        opts (get-in request [:image/provider-options :bedrock] {})]
+        opts (bedrock-options request)
+        quality (or (:quality opts) (quality-value (:image/quality request)))]
     {:taskType "TEXT_IMAGE"
-     :textToImageParams {:text (:image/prompt request)}
+     :textToImageParams
+     (cond-> {:text (:image/prompt request)}
+       (:negative-prompt opts) (assoc :negativeText (:negative-prompt opts))
+       (:style opts) (assoc :style (:style opts)))
      :imageGenerationConfig
      (cond-> {:numberOfImages (or (:image/n request) 1)
               :width w
               :height h
-              :cfgScale (or (:cfg-scale opts) 8.0)}
+              :cfgScale (or (:cfg-scale opts) cfg-default)}
        (:seed opts) (assoc :seed (:seed opts))
-       (:image/quality request) (assoc :quality (name (:image/quality request))))}))
+       quality (assoc :quality quality))}))
 
-(defn- stability-body [request]
+(defn- titan-body [request]
+  (task-image-body request 8.0))
+
+(defn- nova-canvas-body [request]
+  (task-image-body request 6.5))
+
+(defn- legacy-stability-body [request]
   (let [[w h] (or (parse-size (:image/size request)) [1024 1024])
-        opts (get-in request [:image/provider-options :bedrock] {})]
+        opts (bedrock-options request)]
     (cond-> {:text_prompts [{:text (:image/prompt request) :weight 1.0}]
              :width w
              :height h
@@ -66,14 +93,36 @@
       (:seed opts) (assoc :seed (:seed opts))
       (:image/n request) (assoc :samples (:image/n request)))))
 
+(defn- modern-stability-body [request]
+  (let [opts (bedrock-options request)
+        aspect-ratio (or (:aspect-ratio opts)
+                         (size->aspect-ratio (:image/size request)))
+        output-format (some-> (:output-format opts) name)
+        image (:image opts)
+        mode (or (:mode opts) (when image "image-to-image"))]
+    (cond-> {:prompt (:image/prompt request)}
+      aspect-ratio (assoc :aspect_ratio aspect-ratio)
+      output-format (assoc :output_format output-format)
+      (:seed opts) (assoc :seed (:seed opts))
+      (:negative-prompt opts) (assoc :negative_prompt (:negative-prompt opts))
+      image (assoc :image image)
+      (:strength opts) (assoc :strength (:strength opts))
+      mode (assoc :mode mode))))
+
 (defn build-image-request-bedrock
   [_profile request]
   (let [canonical (or (:image/model request) "amazon.titan-image-generator-v2:0")
         model (bedrock/resolve-model-id canonical)
         body (cond
                (titan? model) (titan-body request)
-               (stability? model) (stability-body request)
-               :else (titan-body request))]
+               (nova-canvas? model) (nova-canvas-body request)
+               (legacy-stability? model) (legacy-stability-body request)
+               (modern-stability? model) (modern-stability-body request)
+               :else
+               (throw (ex-info "Unsupported Bedrock image model family"
+                               {:provider :bedrock
+                                :model model
+                                :error/type :request/unsupported-model})))]
     {:method :post
      :url (str (bedrock-base-url) "/model/" model "/invoke")
      :headers {"Content-Type" "application/json"
@@ -86,15 +135,14 @@
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
 
-(defn- titan-parse [raw]
-  (mapv (fn [b64] {:image/b64 b64
-                   :image/mime-type "image/png"})
-        (:images raw)))
+(defn- images-parse [raw]
+  (mapv (fn [b64] {:image/b64 b64}) (:images raw)))
 
-(defn- stability-parse [raw]
-  (mapv (fn [a] (cond-> {}
-                  (:base64 a) (assoc :image/b64 (:base64 a))
-                  (:finishReason a) (assoc :image/finish-reason (:finishReason a))))
+(defn- artifacts-parse [raw]
+  (into []
+        (keep (fn [artifact]
+                (when-let [b64 (:base64 artifact)]
+                  {:image/b64 b64})))
         (:artifacts raw)))
 
 (defn parse-image-response-bedrock
@@ -102,8 +150,8 @@
   {:image/provider :bedrock
    :image/model nil
    :image/images (cond
-                   (:artifacts raw) (stability-parse raw)
-                   (:images raw) (titan-parse raw)
+                   (:artifacts raw) (artifacts-parse raw)
+                   (:images raw) (images-parse raw)
                    :else [])
    :image/raw raw})
 

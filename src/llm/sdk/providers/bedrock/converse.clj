@@ -41,14 +41,18 @@
    "claude-3-haiku" "anthropic.claude-3-haiku-20240307-v1:0"
    "claude-3-7-sonnet" "anthropic.claude-3-7-sonnet-20250219-v1:0"
    "claude-sonnet-4" "anthropic.claude-sonnet-4-20250514-v1:0"
-   "claude-sonnet-4-5" "anthropic.claude-sonnet-4-5-20250101-v1:0"
+   "claude-sonnet-4-5" "anthropic.claude-sonnet-4-5-20250929-v1:0"
+   "claude-sonnet-4-6" "anthropic.claude-sonnet-4-6"
    "claude-opus-4" "anthropic.claude-opus-4-20250514-v1:0"
    "claude-opus-4-1" "anthropic.claude-opus-4-1-20250805-v1:0"
+   "claude-opus-4-5" "anthropic.claude-opus-4-5-20251101-v1:0"
+   "claude-opus-4-6" "anthropic.claude-opus-4-6-v1"
    "claude-haiku-4-5" "anthropic.claude-haiku-4-5-20251001-v1:0"
    "nova-micro" "amazon.nova-micro-v1:0"
    "nova-lite" "amazon.nova-lite-v1:0"
    "nova-pro" "amazon.nova-pro-v1:0"
    "nova-premier" "amazon.nova-premier-v1:0"
+   "nova-canvas" "amazon.nova-canvas-v1:0"
    "command-r" "cohere.command-r-v1:0"
    "command-r-plus" "cohere.command-r-plus-v1:0"
    "llama3-1-8b" "meta.llama3-1-8b-instruct-v1:0"
@@ -95,10 +99,8 @@
         output (->int (:outputTokens u))
         total (present-int u :totalTokens)
         cache-read (present-int u :cacheReadInputTokens)
-        cache-write (present-int u :cacheWriteInputTokens)
-        cr (or cache-read 0)
-        cw (or cache-write 0)]
-    (cond-> {:usage/input-tokens (max 0 (- input-total cr cw))
+        cache-write (present-int u :cacheWriteInputTokens)]
+    (cond-> {:usage/input-tokens input-total
              :usage/output-tokens output
              :usage/total-tokens (or total (+ input-total output))
              :usage/request-count 1
@@ -116,7 +118,10 @@
    "max_tokens" :length
    "stop_sequence" :stop
    "guardrail_intervened" :content-filter
-   "content_filtered" :content-filter})
+   "content_filtered" :content-filter
+   "malformed_model_output" :incomplete
+   "malformed_tool_use" :incomplete
+   "model_context_window_exceeded" :incomplete})
 
 ;; ---------------------------------------------------------------------------
 ;; Message conversion
@@ -144,6 +149,63 @@
     :else
     (t/missing-file-source! :bedrock part)))
 
+(defn- bedrock-image-format [part]
+  (let [format (or (some-> (:image/mime-type part)
+                           (str/split #"/")
+                           second
+                           str/lower-case)
+                   (case (get part :image/detail :auto)
+                     (:auto :low) "jpeg"
+                     "png"))
+        format (if (= format "jpg") "jpeg" format)]
+    (if (#{"png" "jpeg" "gif" "webp"} format)
+      format
+      (throw (ex-info "Unsupported Bedrock Converse image format"
+                      {:provider :bedrock
+                       :format format
+                       :error/type :request/unsupported-image-format})))))
+
+(defn- bedrock-image-source [part]
+  (let [url (:image/url part)]
+    (cond
+      (:image/data part)
+      {:bytes (:image/data part)}
+
+      (and url (str/starts-with? url "data:"))
+      (if-let [[_ data] (str/split url #"," 2)]
+        {:bytes data}
+        (t/missing-file-source! :bedrock part))
+
+      (and url (str/starts-with? url "s3://"))
+      {:s3Location {:uri url}}
+
+      :else
+      (t/missing-file-source! :bedrock part))))
+
+(defn- reasoning->bedrock [part]
+  {:reasoningContent
+   (if (:reasoning/encrypted part)
+     {:redactedContent (:reasoning/text part)}
+     {:reasoningText
+      (cond-> {:text (:reasoning/text part)}
+        (:reasoning/signature part)
+        (assoc :signature (:reasoning/signature part)))})})
+
+(defn- tool-call->bedrock [part]
+  {:toolUse
+   {:toolUseId (:tool-call/id part)
+    :name (:tool-call/name part)
+    :input (try
+             (json/parse-string (:tool-call/arguments part))
+             (catch Exception _ {}))}})
+
+(defn- tool-result->bedrock [part]
+  {:toolResult
+   (cond-> {:toolUseId (:tool-result/id part)
+            :content [{:text (:tool-result/content part)}]}
+     (contains? part :tool-result/is-error)
+     (assoc :status (if (:tool-result/is-error part) "error" "success")))})
+
 (defn- file->bedrock-document [part]
   (cond-> {:document {:format (t/file-extension part)
                       :name (bedrock-document-name part)
@@ -164,15 +226,16 @@
     (mapv (fn [part]
             (case (:part/type part)
               :text {:text (:text part)}
-              :image {:image {:format (or (some-> (:image/mime-type part)
-                                                   (str/split #"/")
-                                                   second)
-                                          (case (get part :image/detail :auto)
-                                            (:auto :low) "jpeg"
-                                            "png"))
-                              :source {:bytes (or (:image/data part)
-                                                  (:image/url part))}}}
+              :image {:image {:format (bedrock-image-format part)
+                              :source (bedrock-image-source part)}}
               :file (file->bedrock-document part)
+              :reasoning (reasoning->bedrock part)
+              :tool-call (tool-call->bedrock part)
+              :tool-result (tool-result->bedrock part)
+              :unknown/provider-native
+              (if (= :bedrock (:unknown/provider part))
+                (:unknown/data part)
+                {:text (str part)})
               {:text (str part)}))
           content)
     :else [{:text (str content)}]))
@@ -183,11 +246,14 @@
                :assistant "assistant"
                "user")]
     (cond
+
       (= (:message/role msg) :tool)
       {:role "user"
        :content [{:toolResult
-                  {:toolUseId (or (:message/tool-call-id msg) "tool_0")
-                   :content [{:text (t/content->string (:message/content msg))}]}}]}
+                  (cond-> {:toolUseId (or (:message/tool-call-id msg) "tool_0")
+                           :content [{:text (t/content->string (:message/content msg))}]}
+                    (some? (get-in msg [:message/provider-data :bedrock/status]))
+                    (assoc :status (get-in msg [:message/provider-data :bedrock/status])))}]}
 
       (seq (:message/tool-calls msg))
       {:role "assistant"
@@ -226,6 +292,68 @@
     {:tool {:name (get-in tc [:function :name])}}
     :else nil))
 
+(defn- bedrock-provider-options [request]
+  (let [options (or (:request/provider-options request) {})]
+    (merge (dissoc options :bedrock)
+           (or (:bedrock options) {}))))
+
+(defn- reasoning-fields [model reasoning]
+  (when reasoning
+    (cond
+      (and (= false (:enabled reasoning))
+           (not (str/includes? model "anthropic.")))
+      nil
+
+      (not (str/includes? model "anthropic."))
+      (throw (ex-info "Canonical Bedrock reasoning is only translated for Anthropic Claude models"
+                      {:provider :bedrock
+                       :model model
+                       :error/type :request/unsupported-reasoning}))
+
+      (= false (:enabled reasoning))
+      {:thinking {:type "disabled"}}
+
+      (:budget reasoning)
+      {:thinking {:type "enabled"
+                  :budget_tokens (:budget reasoning)}}
+
+      (and (not= false (:enabled reasoning))
+           (str/includes? model "-4-6"))
+      (cond-> {:thinking {:type "adaptive"}}
+        (:effort reasoning)
+        (assoc :output_config
+               {:effort (case (:effort reasoning)
+                          (:minimal :low) "low"
+                          :medium "medium"
+                          :high "high"
+                          :xhigh "max")}))
+
+      (:enabled reasoning)
+      (throw (ex-info "Bedrock Claude extended thinking requires :request/reasoning :budget"
+                      {:provider :bedrock
+                       :model model
+                       :error/type :request/invalid-reasoning}))
+
+      :else nil)))
+
+(defn- response-format->output-config [response-format]
+  (when (and (= :json_schema (:type response-format))
+             (:json-schema response-format))
+    {:textFormat
+     {:type "json_schema"
+      :structure
+      {:jsonSchema
+       (cond-> {:schema (json/generate-string (:json-schema response-format))}
+         (:name response-format) (assoc :name (:name response-format))
+         (:description response-format) (assoc :description (:description response-format)))}}}))
+
+(defn- metadata->bedrock [metadata]
+  (when metadata
+    (into {}
+          (map (fn [[k v]]
+                 [(if (keyword? k) (name k) (str k)) (str v)]))
+          metadata)))
+
 ;; ---------------------------------------------------------------------------
 ;; Request building
 ;; ---------------------------------------------------------------------------
@@ -238,28 +366,29 @@
 (defn- bedrock-base-url []
   (str "https://bedrock-runtime." (aws-region) ".amazonaws.com"))
 
-(defn- cache-point-block []
-  {:cachePoint {:type "default"}})
+(defn- cache-point-block [ttl]
+  {:cachePoint (cond-> {:type "default"}
+                 ttl (assoc :ttl ttl))})
 
 (defn- append-cache-point
   "Append a cachePoint sentinel to the end of an array (system or message
    content list). Bedrock Converse interprets a cachePoint block as
    'cache everything up to and including the previous block'."
-  [items]
+  [items ttl]
   (when (sequential? items)
-    (conj (vec items) (cache-point-block))))
+    (conj (vec items) (cache-point-block ttl))))
 
 (defn- mark-last-message-cachable
   "Append a cachePoint block to the last message's content array.
    Used to pin a breakpoint at the end of the message history so all
    prior turns (and any prior breakpoints) become cache-resumable."
-  [messages]
+  [messages ttl]
   (if (and (sequential? messages) (seq messages))
     (let [messages (vec messages)
           last-idx (dec (count messages))
           last-msg (nth messages last-idx)]
       (assoc messages last-idx
-             (update last-msg :content append-cache-point)))
+             (update last-msg :content append-cache-point ttl)))
     messages))
 
 (defn build-request-bedrock
@@ -267,26 +396,29 @@
   (let [stream? (boolean (:request/stream? request))
         canonical-model (:request/model request)
         model (resolve-model-id canonical-model)
+        options (bedrock-provider-options request)
         messages (remove #(= (:message/role %) :system) (:request/messages request))
         system-texts (keep #(when (= (:message/role %) :system)
                               (t/content->string (:message/content %)))
                            (:request/messages request))
-        cache-on? (and (cache/cache-enabled? request)
-                       (not= :none (get-in request [:request/cache :strategy])))
+        cache-on? (cache/cache-enabled? request)
+        cache-ttl (get-in request [:request/cache :ttl])
         system-content (when (seq system-texts) (mapv #(hash-map :text %) system-texts))
         system-content (if (and cache-on? system-content)
-                         (append-cache-point system-content)
+                         (append-cache-point system-content cache-ttl)
                          system-content)
         native-messages (build-messages messages)
         native-messages (if cache-on?
-                          (mark-last-message-cachable native-messages)
+                          (mark-last-message-cachable native-messages cache-ttl)
                           native-messages)
-        tool-config (when (seq (:request/tools request))
-                      (cond-> {:tools (mapv tool->bedrock (:request/tools request))}
-                        (:request/tool-choice request)
-                        (assoc :toolChoice
-                               (tool-choice->bedrock
-                                (:request/tool-choice request)))))
+        tool-choice (tool-choice->bedrock (:request/tool-choice request))
+        tools (when (seq (:request/tools request))
+                (cond-> (mapv tool->bedrock (:request/tools request))
+                  (and cache-on? (cache/tools-cache? request))
+                  (conj (cache-point-block cache-ttl))))
+        tool-config (when tools
+                      (cond-> {:tools tools}
+                        tool-choice (assoc :toolChoice tool-choice)))
         inference-config
         (cond-> {}
           (:request/temperature request)
@@ -297,13 +429,34 @@
           (assoc :topP (:request/top-p request))
           (:request/stop request)
           (assoc :stopSequences (t/stop-sequences (:request/stop request))))
+        additional-model-fields
+        (merge (reasoning-fields model (:request/reasoning request))
+               (:additional-model-request-fields options))
+        output-config (or (:output-config options)
+                          (response-format->output-config (:request/response-format request)))
+        request-metadata (merge (metadata->bedrock (:request/metadata request))
+                                (:request-metadata options))
         body (cond-> {:messages native-messages}
                (seq system-content) (assoc :system system-content)
                tool-config (assoc :toolConfig tool-config)
                (seq inference-config) (assoc :inferenceConfig inference-config)
-               (seq (get-in request [:request/provider-options :additional-model-request-fields]))
-               (assoc :additionalModelRequestFields
-                      (get-in request [:request/provider-options :additional-model-request-fields])))
+               (seq additional-model-fields)
+               (assoc :additionalModelRequestFields additional-model-fields)
+               (seq (:additional-model-response-field-paths options))
+               (assoc :additionalModelResponseFieldPaths
+                      (:additional-model-response-field-paths options))
+               (:guardrail-config options)
+               (assoc :guardrailConfig (:guardrail-config options))
+               output-config
+               (assoc :outputConfig output-config)
+               (:performance-config options)
+               (assoc :performanceConfig (:performance-config options))
+               (:prompt-variables options)
+               (assoc :promptVariables (:prompt-variables options))
+               (seq request-metadata)
+               (assoc :requestMetadata request-metadata)
+               (:service-tier options)
+               (assoc :serviceTier (:service-tier options)))
         path (if stream? "/converse-stream" "/converse")
         url (str (bedrock-base-url) "/model/" model path)]
     {:method :post
@@ -319,28 +472,45 @@
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
 
+(defn- content-block->canonical [part]
+  (cond
+    (:text part)
+    [{:part/type :text :text (:text part)}]
+
+    (:toolUse part)
+    (let [tu (:toolUse part)]
+      [{:part/type :tool-call
+        :tool-call/id (:toolUseId tu)
+        :tool-call/name (:name tu)
+        :tool-call/arguments (json/generate-string (:input tu))}])
+
+    (get-in part [:reasoningContent :reasoningText])
+    (let [reasoning (get-in part [:reasoningContent :reasoningText])]
+      [(cond-> {:part/type :reasoning
+                :reasoning/text (:text reasoning)}
+         (:signature reasoning)
+         (assoc :reasoning/signature (:signature reasoning)))])
+
+    (get-in part [:reasoningContent :redactedContent])
+    [{:part/type :reasoning
+      :reasoning/text (get-in part [:reasoningContent :redactedContent])
+      :reasoning/encrypted true}]
+
+    (:citationsContent part)
+    (mapv (fn [generated]
+            {:part/type :text :text (:text generated)})
+          (keep #(when (:text %) %) (get-in part [:citationsContent :content])))
+
+    :else []))
+
 (defn parse-response-bedrock
   [_profile raw]
   (let [output (:output raw)
         msg (:message output)
         content (:content msg)
-        parts (vec
-               (keep (fn [part]
-                       (cond
-                         (:text part)
-                         {:part/type :text :text (:text part)}
-
-                         (:toolUse part)
-                         (let [tu (:toolUse part)]
-                           {:part/type :tool-call
-                            :tool-call/id (:toolUseId tu)
-                            :tool-call/name (:name tu)
-                            :tool-call/arguments (json/generate-string (:input tu))})
-
-                         :else nil))
-                     content))
+        parts (into [] (mapcat content-block->canonical) content)
         tool-calls (vec (filter #(= (:part/type %) :tool-call) parts))
-        stop-reason (get stop-reason-map (:stopReason raw) :stop)
+        stop-reason (get stop-reason-map (:stopReason raw) :unknown)
         usage-raw (:usage raw)]
     (cond-> {:response/provider :bedrock
              :response/model (:modelId raw)
@@ -366,15 +536,36 @@
   [{:keys [event-type data] :as _frame}]
   (case event-type
     "contentBlockDelta"
-    (let [delta (:delta data)]
+    (let [delta (:delta data)
+          reasoning (:reasoningContent delta)
+          index (or (:contentBlockIndex data) 0)]
       (cond
-        (:text delta) (stream/content-delta (:text delta))
-        (:reasoningContent delta)
-        (when-let [rt (get-in delta [:reasoningContent :text])]
-          (stream/reasoning-delta rt))
+        (:text delta)
+        (stream/content-delta (:text delta))
+
+        (:text reasoning)
+        (stream/reasoning-delta (:text reasoning))
+
+        (:redactedContent reasoning)
+        (stream/reasoning-delta (:redactedContent reasoning) :encrypted true)
+
+        (:signature reasoning)
+        (stream/provider-state-event
+         :bedrock
+         {:content-block-index index
+          :reasoning/signature (:signature reasoning)})
+
         (:toolUse delta)
-        (stream/tool-call-delta (or (:contentBlockIndex data) 0)
-                                (get-in delta [:toolUse :input]))))
+        (stream/tool-call-delta index (get-in delta [:toolUse :input]))
+
+        (:citation delta)
+        (stream/provider-state-event :bedrock {:citation (:citation delta)})
+
+        (:image delta)
+        (stream/provider-state-event :bedrock {:image-delta (:image delta)})
+
+        (:toolResult delta)
+        (stream/provider-state-event :bedrock {:tool-result-delta (:toolResult delta)})))
 
     "contentBlockStart"
     (let [block (get-in data [:start :toolUse])]
@@ -386,20 +577,38 @@
     "messageStart" nil
     "messageStop"
     (stream/end-event :finish-reason
-                      (get stop-reason-map (:stopReason data) :stop))
+                      (get stop-reason-map (:stopReason data) :unknown))
 
     "metadata"
-    (when-let [u (:usage data)]
-      (stream/usage-event (normalize-bedrock-usage u)))
+    (let [usage-event (when-let [u (:usage data)]
+                        (stream/usage-event (normalize-bedrock-usage u)))
+          provider-data (not-empty (dissoc data :usage))
+          state-event (when provider-data
+                        (stream/provider-state-event :bedrock provider-data))]
+      (cond
+        (and usage-event state-event) [usage-event state-event]
+        usage-event usage-event
+        state-event state-event))
 
-    nil))
+    (when (and event-type (str/ends-with? event-type "Exception"))
+      (stream/error-event {:provider :bedrock
+                           :type event-type
+                           :data data}))))
 
 (defn parse-stream-event-bedrock
   [_profile input]
   (cond
-    ;; Frame map produced by aws-eventstream/frame->json
+    ;; Normal event frame produced by aws-eventstream/frame->json.
     (and (map? input) (:event-type input))
     (frame->event input)
+
+    ;; EventStream exception frames use :exception-type instead of
+    ;; :event-type; frame->json retains it in the decoded headers.
+    (and (map? input) (get-in input [:headers ":exception-type"]))
+    (stream/error-event
+     {:provider :bedrock
+      :type (get-in input [:headers ":exception-type"])
+      :data (:data input)})
 
     ;; Legacy: caller passed a JSON line shaped like the older
     ;; intermediate format used by the prior scaffold. Translate it
@@ -444,7 +653,8 @@
     (normalize-bedrock-usage raw))
 
   (request-capabilities [_]
-    #{:chat :streaming :tools :guardrails :cache :file-attachments}))
+    #{:chat :streaming :tools :json-schema :reasoning :guardrails :cache
+      :multimodal :file-attachments}))
 
 (defn make-transport []
   (->BedrockTransport))
@@ -457,7 +667,8 @@
   :profile/auth-strategy :aws-sigv4
   :profile/aws-service "bedrock"
   :profile/supports-model-listing false
-  :profile/capabilities #{:chat :streaming :tools :guardrails :cache :file-attachments}
+  :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning
+                          :guardrails :cache :multimodal :file-attachments}
   :profile/env-var-names ["AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_REGION"]
   :profile/binary-stream :aws-eventstream
   :profile/transport-constructor make-transport})
