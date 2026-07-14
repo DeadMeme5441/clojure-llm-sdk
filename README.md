@@ -96,7 +96,7 @@ The SDK currently registers 37 provider profiles across seven canonical modaliti
 | Embeddings | `sdk/embed` | OpenAI, Cohere, Voyage, Mistral, Together, Jina, Ollama |
 | Moderation | `sdk/moderate` | OpenAI |
 | Rerank | `sdk/rerank` | Cohere, Voyage, Jina |
-| Image generation | `sdk/generate-image` | OpenAI, Vertex Imagen, Bedrock image models |
+| Image generation | `sdk/generate-image` | OpenAI, Vertex Gemini image generation (`:vertex-imagen`), Bedrock image models |
 | Audio transcription | `sdk/transcribe` | OpenAI Whisper, Groq Whisper |
 | Text-to-speech | `sdk/speak` | OpenAI TTS, ElevenLabs |
 

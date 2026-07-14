@@ -20,7 +20,7 @@ The goal is to provide the provider-abstraction pieces that applications need di
 | Embeddings | OpenAI, Cohere, Voyage, Mistral, Together, Jina, Ollama. |
 | Moderation | OpenAI. |
 | Rerank | Cohere, Voyage, Jina. |
-| Image generation | OpenAI, Vertex Imagen, Bedrock image models. |
+| Image generation | OpenAI, Vertex Gemini image generation (`:vertex-imagen`), Bedrock image models. |
 | Audio transcription | OpenAI Whisper, Groq Whisper. |
 | Text-to-speech | OpenAI TTS, ElevenLabs. |
 | Model metadata | Live provider catalogs, LiteLLM-derived snapshot, models.dev snapshot, and caller overrides. |

@@ -91,7 +91,7 @@ Provider implementation namespaces are split by provider family. For example, Op
 | Provider | ID | Auth |
 |---|---|---|
 | OpenAI | `:openai` | `OPENAI_API_KEY` |
-| Vertex Imagen | `:vertex-imagen` | ADC / `GOOGLE_OAUTH_ACCESS_TOKEN` |
+| Vertex Gemini image generation | `:vertex-imagen` | ADC / `GOOGLE_OAUTH_ACCESS_TOKEN` |
 | AWS Bedrock Image | `:bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
 
 ### Audio Transcription

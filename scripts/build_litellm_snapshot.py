@@ -157,6 +157,10 @@ def normalize_entry(key: str, raw: dict):
         return None  # skip providers we don't have
 
     model_id = strip_model_prefix(key, litellm_provider)
+    # Vertex/Gemini Imagen endpoints were discontinued on 2026-06-30.
+    # The SDK's image adapter now uses Gemini image-generation models.
+    if sdk_provider == "gemini-native" and model_id.startswith("imagen-"):
+        return None
     if (sdk_provider in ROUTING_LITERAL_PROVIDERS) and ("/" in model_id):
         return None  # skip routing-curio entries
 
@@ -284,7 +288,7 @@ def main():
         json.dump(out, f, separators=(",", ":"), sort_keys=True)
     sizes = {p: len(m) for p, m in out.items()}
     total = sum(sizes.values())
-    print(f"wrote {dest} — {total} entries across {len(out)} providers")
+    print(f"wrote resources/litellm-snapshot.json — {total} entries across {len(out)} providers")
     for p, c in sorted(sizes.items(), key=lambda kv: -kv[1]):
         print(f"  {p}: {c}")
     print(f"skipped (not in PROVIDER_MAP or empty): {skipped}")

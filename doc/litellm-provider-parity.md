@@ -48,38 +48,38 @@ than stringifying maps into prompts.
 |---|---|---|---|
 | `:openai` | `openai` | chat, streaming, tools, JSON schema, reasoning, file attachments on Chat Completions, embeddings, moderation, image generation, transcription, TTS | general Responses public surface, text completions, image edits/variations, realtime, assistants, vector stores, batches, fine tuning, containers, RAG |
 | `:anthropic` | `anthropic` | messages-backed chat, streaming, tools, JSON schema, thinking, OAuth/OAT, file/document attachments, native cache markers | count tokens, batches, file lifecycle APIs, skills, public raw messages/responses pass-through |
-| `:bedrock` | `bedrock` | Converse chat, streaming eventstream, tools, guardrails, cachePoint, file/document attachments, image generation, rerank | embeddings, count tokens, invoke-model variants, vector search/RAG, provider-specific invoke transforms |
-| `:cohere` | `cohere` | native chat, streaming, tools, citations, textual file/document attachments via `documents`, embeddings, rerank | responses/messages wrappers and a2a/interactions are not SDK surfaces; keep v1/v2 embed/rerank variants fixture-backed |
+| `:bedrock` | `bedrock` | Converse chat, streaming eventstream, tools, JSON schema, reasoning, guardrails, cachePoint, multimodal file/document attachments, image generation, rerank | embeddings, count tokens, vector search/RAG, and provider-specific invoke transforms outside the implemented image families |
+| `:cohere` | `cohere` | native v2 chat, streaming, tools, JSON schema, reasoning, citations, textual file/document attachments via `documents`, v2 embeddings, v2 rerank | responses/messages wrappers and a2a/interactions are not SDK surfaces |
 | `:gemini-native` | `gemini` | native chat, streaming, tools, multimodal, file/document attachments, reasoning, cachedContent handling | count tokens, file lifecycle APIs, vector search/RAG, realtime, public generateContent pass-through |
 | `:vertex-gemini` | `vertex_ai` | Vertex Gemini chat, streaming, tools, multimodal, file/document attachments, reasoning | embeddings, TTS, OCR, count tokens, fine tuning, RAG/vector stores, realtime, public generateContent pass-through |
 | `:vertex-anthropic` | `vertex_ai` | Claude-on-Vertex messages chat, streaming, tools, JSON schema, thinking, file/document attachments, native cache markers (reuses Anthropic body/parse with GCP OAuth) | count tokens, batches, file lifecycle APIs, model listing, public rawPredict pass-through |
-| `:vertex-imagen` | `vertex_ai` | image generation | image edits/videos and other Vertex AI endpoint families |
+| `:vertex-imagen` | `vertex_ai` | Gemini image generation over Vertex `generateContent` (compatibility provider id) | image edits/videos and other Vertex AI endpoint families |
 | `:openrouter` | `openrouter` | chat, streaming, tools, JSON schema, reasoning, provider routing, embeddings, image generation, live model/pricing lookup | responses, image edit, messages/a2a/interactions |
-| `:perplexity` | `perplexity` | chat, streaming, JSON schema, web-search-shaped response/citations | dedicated search endpoint, responses/messages/a2a/interactions |
+| `:perplexity` | `perplexity` | Sonar chat, streaming, JSON schema, reasoning, web-search-shaped response/citations | dedicated search endpoint, responses/messages/a2a/interactions |
 | `:codex` | `openai` | OpenAI Responses-shaped Codex chat, streaming, tools, file attachments, reasoning, encrypted reasoning | not a general OpenAI Responses API surface |
 | `:codex-backend` | `chatgpt` | ChatGPT backend Responses/SSE path, OAuth auth-json cache, tools, file attachments, reasoning | not a general ChatGPT automation surface |
-| `:ollama-native` | `ollama` | native chat, streaming, tools, multimodal, embeddings | responses/messages/a2a/interactions wrappers |
-| `:voyage` | `voyage` | embeddings, rerank | contextual embedding variants need fixture/live coverage |
-| `:jina` | `jina_ai` | embeddings, rerank | LiteLLM only declares embeddings in endpoint matrix; rerank is kept because Jina exposes it and fixtures cover it |
+| `:ollama-native` | `ollama` | native chat, streaming, tools, JSON schema, reasoning, multimodal input, embeddings | responses/messages/a2a/interactions wrappers |
+| `:voyage` | `voyage` | dedicated text embeddings and rerank transports | contextualized and multimodal embedding endpoints require distinct canonical input shapes |
+| `:jina` | `jina_ai` | dedicated dense/base64 embeddings and rerank transports | sparse, multivector, and multimodal outputs require distinct canonical result shapes |
 | `:elevenlabs` | `elevenlabs` | TTS | LiteLLM also declares chat/messages/responses; this SDK currently treats ElevenLabs as a voice provider only |
-| `:mistral` | `mistral` | OpenAI-compatible chat, streaming, tools, JSON schema, embeddings | OCR and audio transcription |
+| `:mistral` | `mistral` | OpenAI-compatible chat, streaming, tools, JSON schema, reasoning, embeddings | OCR and audio transcription |
 | `:groq` | `groq` | OpenAI-compatible chat, streaming, tools, JSON schema, reasoning, transcription | responses/messages/a2a/interactions |
 | `:deepseek` | `deepseek` | OpenAI-compatible chat, streaming, tools, reasoning | responses/messages/a2a/interactions |
 | `:kimi` | `moonshot` | OpenAI-compatible chat, streaming, tools, reasoning | responses/messages/a2a/interactions |
-| `:kimi-code` | `anthropic` | Kimi Code OpenAI-compatible coding endpoint, streaming, tools, reasoning, CLI identity headers | Anthropic endpoint families are not implied by Kimi Code |
-| `:cerebras` | `cerebras` | OpenAI-compatible chat, streaming, tools, reasoning | responses/messages/a2a/interactions |
-| `:together` | `together_ai` | OpenAI-compatible chat, streaming, tools, JSON schema, embeddings | responses/messages/a2a/interactions |
+| `:kimi-code` | `anthropic` | Kimi Code OpenAI-compatible coding endpoint, streaming, tools, reasoning | Anthropic endpoint families are not implied by Kimi Code |
+| `:cerebras` | `cerebras` | OpenAI-compatible chat, streaming, tools, JSON schema, reasoning | responses/messages/a2a/interactions |
+| `:together` | `together_ai` | OpenAI-compatible chat, streaming, tools, JSON schema, reasoning, embeddings | responses/messages/a2a/interactions |
 | `:xai` | `xai` | OpenAI-compatible chat, streaming, tools, JSON schema, reasoning | realtime and responses/messages/a2a/interactions |
 | `:huggingface` | `huggingface` | OpenAI-compatible chat, streaming, tools, JSON schema | embeddings and rerank |
-| `:sambanova` | `sambanova` | OpenAI-compatible chat, streaming, tools, JSON schema | responses/messages/a2a/interactions |
-| `:deepinfra` | `deepinfra` | OpenAI-compatible chat, streaming, tools, JSON schema | responses/messages/a2a/interactions |
-| `:lambda` | `lambda_ai` | OpenAI-compatible chat, streaming, JSON schema | responses/messages/a2a/interactions |
+| `:sambanova` | `sambanova` | OpenAI-compatible chat, streaming, tools, JSON schema, reasoning | responses/messages/a2a/interactions |
+| `:deepinfra` | `deepinfra` | OpenAI-compatible chat, streaming, tools, JSON schema, reasoning | responses/messages/a2a/interactions |
+| `:lambda` | `lambda_ai` | OpenAI-compatible chat, streaming, tools | responses/messages/a2a/interactions |
 | `:nebius` | `nebius` | OpenAI-compatible chat, streaming, tools, JSON schema, embeddings | responses/messages/a2a/interactions |
-| `:hyperbolic` | `hyperbolic` | OpenAI-compatible chat, streaming, JSON schema | responses/messages/a2a/interactions |
+| `:hyperbolic` | `hyperbolic` | OpenAI-compatible chat, streaming, tools | responses/messages/a2a/interactions |
 | `:novita` | `novita` | OpenAI-compatible chat, streaming, tools, JSON schema | responses/messages/a2a/interactions |
-| `:friendliai` | `friendliai` | OpenAI-compatible chat, streaming, JSON schema | responses/messages/a2a/interactions |
-| `:featherless` | `featherless_ai` | OpenAI-compatible chat, streaming, JSON schema | responses/messages/a2a/interactions |
-| `:cloudflare` | `cloudflare` | OpenAI-compatible chat, streaming, JSON schema with caller-supplied account base URL | responses/messages/a2a/interactions; account-scoped model listing |
+| `:friendliai` | `friendliai` | OpenAI-compatible chat, streaming, tools | responses/messages/a2a/interactions |
+| `:featherless` | `featherless_ai` | OpenAI-compatible chat, streaming, tools | responses/messages/a2a/interactions |
+| `:cloudflare` | `cloudflare` | OpenAI-compatible chat, streaming, tools with caller-supplied account base URL | responses/messages/a2a/interactions; account-scoped model listing |
 | `:dashscope` | `dashscope` | OpenAI-compatible chat, streaming, tools, JSON schema | responses/messages/a2a/interactions |
 | `:volcengine` | `volcengine` | OpenAI-compatible chat, streaming, tools, JSON schema | responses/messages/a2a/interactions |
 | `:fake` | none | deterministic test transport only | excluded from LiteLLM parity |

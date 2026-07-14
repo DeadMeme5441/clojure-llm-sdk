@@ -2,6 +2,31 @@
 
 All notable user-visible changes are tracked here.
 
+## Unreleased
+
+### Changed
+
+- Refreshed every built-in provider adapter against current official wire
+  schemas, including request/response/stream parsing, usage and cost metadata,
+  tools, structured output, reasoning, caching, media, citations, and reranking.
+- Migrated Cohere embedding and rerank to v2, Perplexity Sonar to `/v1/sonar`,
+  OpenRouter image generation to `/images`, and Vertex image generation from
+  discontinued Imagen endpoints to `gemini-2.5-flash-image` over
+  `generateContent`.
+- Added dedicated OpenRouter, Voyage, and Jina embedding transports; refreshed
+  OpenAI-compatible provider endpoints and capabilities from official sources.
+- Removed Kimi Code CLI identity spoofing. Third-party clients now send their
+  own normal identity with Bearer authentication.
+- Refreshed the bundled LiteLLM model/pricing snapshot and filter discontinued
+  Imagen model IDs from future refreshes.
+
+### Fixed
+
+- Preserve provider-reported streaming and image costs instead of replacing
+  them with estimates.
+- Correct Anthropic cache-token accounting and retain current provider-native
+  blocks rather than silently dropping unknown response content.
+
 ## 0.2.1
 
 ### Added

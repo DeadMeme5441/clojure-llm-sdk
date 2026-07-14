@@ -65,9 +65,9 @@ Coverage markers:
 | Rerank | Jina | `:jina` | `request-golden`, `response-fixture`, `live-smoke` | Provider id tagging and document return shape. |
 | Rerank | Bedrock | `:bedrock` | `request-golden`, `response-fixture` | Bedrock Agent Runtime `/rerank` requires SigV4 and model ARN routing. |
 | Image | OpenAI | `:openai` | `request-golden`, `response-fixture` | gpt-image-1 usage and b64-only behavior need live proof. |
-| Image | OpenRouter | `:openrouter` | `request-golden`, `response-fixture` | Uses chat completions with `message.images`, not `/images/generations`. |
-| Image | Vertex Imagen | `:vertex-imagen` | `request-golden`, `response-fixture` | ADC/project routing and Imagen 3/4 differences. |
-| Image | Bedrock | `:bedrock` | `request-golden`, `response-fixture` | Titan vs Stability request variants. |
+| Image | OpenRouter | `:openrouter` | `request-golden`, `response-fixture` | Native `/images` parameters, usage, media type, and provider-reported cost must stay pinned. |
+| Image | Vertex Gemini | `:vertex-imagen` | `request-golden`, `response-fixture` | Compatibility id now targets `gemini-2.5-flash-image` over Vertex `generateContent`; discontinued `imagen-*` models fail explicitly. |
+| Image | Bedrock | `:bedrock` | `request-golden`, `response-fixture` | Titan, Nova Canvas, legacy Stability SDXL, and current Stability Core/Ultra/SD3.5 use distinct request families. |
 | Transcription | OpenAI | `:openai` | `request-golden`, `response-fixture` | Multipart boundary and verbose JSON variants. |
 | Transcription | Groq | `:groq` | `request-golden`, `response-fixture` | Groq endpoint/base URL and model aliases. |
 | TTS | OpenAI | `:openai` | `request-golden`, `response-fixture` | Raw byte response headers. |
