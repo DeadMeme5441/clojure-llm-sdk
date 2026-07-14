@@ -16,7 +16,7 @@
     (is (= "https://api.openai.com/v1/chat/completions" (:url built)))
     (is (= "gpt-4o" (get-in built [:body :model])))
     (is (= 0.5 (get-in built [:body :temperature])))
-    (is (= 100 (get-in built [:body :max_tokens])))
+    (is (= 100 (get-in built [:body :max_completion_tokens])))
     (is (= 2 (count (get-in built [:body :messages]))))))
 
 (deftest test-build-request-tools
@@ -77,6 +77,24 @@
                                 {:message/role :user :message/content "Hello"}]}
         built (transport/build-request t profile req)]
     (is (= "developer" (get-in built [:body :messages 0 :role])))))
+
+(deftest test-build-request-current-openai-fields
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        built (transport/build-request
+               t profile
+               {:request/model "gpt-5"
+                :request/messages [{:message/role :user :message/content "Hi"}]
+                :request/reasoning {:enabled true :effort :high}
+                :request/metadata {:trace "abc"}
+                :request/provider-options
+                {:extra_body {:verbosity "low"
+                              :service_tier "flex"}}})]
+    (is (= "high" (get-in built [:body :reasoning_effort])))
+    (is (= {:trace "abc"} (get-in built [:body :metadata])))
+    (is (= "low" (get-in built [:body :verbosity])))
+    (is (= "flex" (get-in built [:body :service_tier])))
+    (is (nil? (get-in built [:body :extra_body])))))
 
 (deftest test-build-request-file-attachment
   (let [t (openai/make-transport)
@@ -142,6 +160,31 @@
     (is (= 1 (count (:response/tool-calls resp))))
     (is (= "get_weather" (get-in resp [:response/tool-calls 0 :tool-call/name])))))
 
+(deftest test-parse-response-current-custom-tool-and-message-state
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        raw {:id "chatcmpl-custom"
+             :model "gpt-5"
+             :choices [{:message
+                        {:content nil
+                         :refusal "I cannot do that."
+                         :audio {:id "audio-1" :transcript "No."}
+                         :moderation {:output {:flagged false}}
+                         :tool_calls [{:id "call_custom"
+                                       :type "custom"
+                                       :custom {:name "shell"
+                                                :input "pwd"}}]}
+                        :finish_reason "tool_calls"}]}
+        resp (transport/parse-response t profile raw)]
+    (is (= "shell" (get-in resp [:response/tool-calls 0 :tool-call/name])))
+    (is (= "pwd" (get-in resp [:response/tool-calls 0 :tool-call/arguments])))
+    (is (= "custom"
+           (get-in resp [:response/tool-calls 0 :tool-call/provider-data :wire_type])))
+    (is (= "I cannot do that."
+           (get-in resp [:response/provider-data :refusal])))
+    (is (= "audio-1"
+           (get-in resp [:response/provider-data :audio :id])))))
+
 (deftest test-parse-stream-event-content
   (let [t (openai/make-transport)
         profile (provider/get-provider :openai)
@@ -159,6 +202,26 @@
     (is (= 0 (:tool-call/index ev)))
     (is (= "call_1" (:tool-call/id ev)))
     (is (= "get_weather" (:tool-call/name ev)))))
+
+(deftest test-parse-stream-event-current-custom-tool-call
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        line "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"custom\",\"custom\":{\"name\":\"shell\",\"input\":\"pwd\"}}]}}]}"
+        events (transport/parse-stream-event t profile line)]
+    (is (= [:stream/tool-call-start :stream/tool-call-delta]
+           (mapv :event/type events)))
+    (is (= "shell" (:tool-call/name (first events))))
+    (is (= "pwd" (:tool-call/arguments-delta (second events))))))
+
+(deftest test-parse-stream-event-preserves-audio-state
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        line "data: {\"choices\":[{\"delta\":{\"audio\":{\"id\":\"audio-1\",\"data\":\"AAAA\"}}}]}"
+        ev (transport/parse-stream-event t profile line)]
+    (is (= :stream/provider-state (:event/type ev)))
+    (is (= "audio-1"
+           (get-in ev [:provider-state/data
+                       :chat-completion/delta :audio :id])))))
 
 (deftest test-parse-stream-event-multiple-tool-deltas
   (let [t (openai/make-transport)

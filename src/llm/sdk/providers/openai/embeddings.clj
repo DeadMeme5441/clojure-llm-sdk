@@ -10,7 +10,9 @@
             [llm.sdk.transport.embed :as et]
             [llm.sdk.provider :as provider]
             [llm.sdk.usage :as usage]
-            [llm.sdk.errors :as errors]))
+            [llm.sdk.errors :as errors])
+  (:import [java.nio ByteBuffer ByteOrder]
+           [java.util Base64]))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
@@ -62,6 +64,23 @@
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
 
+(defn- decode-base64-embedding [encoded]
+  (let [bytes (.decode (Base64/getDecoder) ^String encoded)]
+    (when-not (zero? (mod (alength bytes) Float/BYTES))
+      (throw (ex-info "Invalid base64 embedding byte length"
+                      {:byte-length (alength bytes)})))
+    (let [buffer (doto (ByteBuffer/wrap bytes)
+                   (.order ByteOrder/LITTLE_ENDIAN))]
+      (loop [values (transient [])]
+        (if (.hasRemaining buffer)
+          (recur (conj! values (.getFloat buffer)))
+          (persistent! values))))))
+
+(defn- parse-embedding [embedding]
+  (if (string? embedding)
+    (decode-base64-embedding embedding)
+    embedding))
+
 (defn parse-embed-response-openai
   [profile raw]
   (let [;; OpenAI returns data already in :index order, but a couple of
@@ -69,7 +88,7 @@
         data (->> (:data raw)
                   (sort-by #(or (:index %) 0))
                   vec)
-        vectors (mapv :embedding data)
+        vectors (mapv (comp parse-embedding :embedding) data)
         first-vec (first vectors)
         usage-raw (:usage raw)]
     (cond-> {:embed/provider (:profile/id profile)

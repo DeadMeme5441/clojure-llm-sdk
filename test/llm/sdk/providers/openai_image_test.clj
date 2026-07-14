@@ -59,8 +59,35 @@
                  t profile
                  {:image/prompt "a cat"
                   :image/provider-options
-                  {:extra_body {:background "transparent"}}}))]
-    (is (= "transparent" (get-in built [:body :background])))))
+                  {:extra_body {:background "transparent"
+                                :output_format "webp"
+                                :output_compression 80
+                                :moderation "low"
+                                :stream true
+                                :partial_images 2}}}))]
+    (is (= "transparent" (get-in built [:body :background])))
+    (is (= "webp" (get-in built [:body :output_format])))
+    (is (= 80 (get-in built [:body :output_compression])))
+    (is (= "low" (get-in built [:body :moderation])))
+    (is (true? (get-in built [:body :stream])))
+    (is (= 2 (get-in built [:body :partial_images])))))
+
+(deftest test-parse-current-image-stream-events
+  (let [profile (provider/get-provider :openai)
+        partial (oai-img/parse-image-stream-event-openai
+                 profile
+                 "data: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"abc\",\"partial_image_index\":0,\"size\":\"1024x1024\"}")
+        completed (oai-img/parse-image-stream-event-openai
+                   profile
+                   "data: {\"type\":\"image_generation.completed\",\"b64_json\":\"xyz\",\"usage\":{\"input_tokens\":4,\"output_tokens\":6,\"total_tokens\":10}}")]
+    (is (= :stream/provider-state (:event/type partial)))
+    (is (= "abc"
+           (get-in partial
+                   [:provider-state/data :image-generation/partial :b64_json])))
+    (is (= [:stream/provider-state :stream/usage :stream/end]
+           (mapv :event/type completed)))
+    (is (= 10
+           (get-in (second completed) [:usage :usage/total-tokens])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing

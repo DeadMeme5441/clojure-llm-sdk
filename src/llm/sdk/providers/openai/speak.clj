@@ -3,7 +3,10 @@
    returns raw audio bytes."
   (:require [llm.sdk.transport.speak :as st]
             [llm.sdk.provider :as provider]
-            [llm.sdk.errors :as errors]))
+            [llm.sdk.errors :as errors]
+            [llm.sdk.sse :as sse]
+            [llm.sdk.stream :as stream]
+            [llm.sdk.usage :as usage]))
 
 (defn build-request
   [profile request]
@@ -33,6 +36,25 @@
     {:audio/bytes (:body resp)
      :audio/content-type ct
      :response/raw (:headers resp)}))
+
+(defn parse-stream-event
+  "Normalize current speech.audio.delta/done SSE events."
+  [profile line]
+  (when-let [data (sse/parse-json-data line)]
+    (case (:type data)
+      "speech.audio.delta"
+      (stream/provider-state-event (:profile/id profile)
+                                   {:speech/audio-delta (:audio data)})
+
+      "speech.audio.done"
+      (cond-> []
+        (:usage data)
+        (conj (stream/usage-event
+               (usage/normalize-openai-usage (:usage data))))
+        true
+        (conj (stream/end-event :finish-reason :stop)))
+
+      nil)))
 
 (defn parse-error
   [profile status body]

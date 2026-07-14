@@ -111,6 +111,17 @@
       (is (= [[0.1 0.2] [0.5 0.6] [0.3 0.4]]
              (:embed/vectors resp))))))
 
+(deftest test-parse-response-decodes-base64-float-embeddings
+  (let [t (openai-embed/make-transport)
+        profile (provider/get-provider :openai)
+        raw {:object "list"
+             :model "text-embedding-3-small"
+             :data [{:index 0 :embedding "AACAPwAAIMA="}]
+             :usage {:prompt_tokens 1 :total_tokens 1}}
+        resp (et/parse-embed-response t profile raw)]
+    (is (= [1.0 -2.5] (mapv double (first (:embed/vectors resp)))))
+    (is (= 2 (:embed/dimensions resp)))))
+
 ;; ---------------------------------------------------------------------------
 ;; Error classification
 ;; ---------------------------------------------------------------------------
@@ -141,9 +152,9 @@
   [{:id :voyage    :base "https://api.voyageai.com/v1"   :env "VOYAGE_API_KEY"}
    {:id :jina      :base "https://api.jina.ai/v1"        :env "JINA_API_KEY"}
    {:id :mistral   :base "https://api.mistral.ai/v1"     :env "MISTRAL_API_KEY"}
-   {:id :together  :base "https://api.together.xyz/v1"   :env "TOGETHER_API_KEY"}
+   {:id :together  :base "https://api.together.ai/v1"    :env "TOGETHER_API_KEY"}
    {:id :openrouter :base "https://openrouter.ai/api/v1" :env "OPENROUTER_API_KEY"}
-   {:id :nebius    :base "https://api.studio.nebius.com/v1" :env "NEBIUS_API_KEY"}])
+   {:id :nebius    :base "https://api.tokenfactory.nebius.com/v1" :env "NEBIUS_API_KEY"}])
 
 (deftest test-openai-shape-embed-providers-registered
   (doseq [{:keys [id base env]} openai-shape-embed-providers]

@@ -42,6 +42,32 @@
     (is (bytes? (:content file-part)))
     (is (= "fake.wav" (:file-name file-part)))))
 
+(deftest test-openai-build-request-current-diarization-and-stream-fields
+  (let [t (openai-tx/make-transport)
+        profile (provider/get-provider :openai)
+        built (tt/build-transcribe-request
+               t profile
+               {:transcribe/file (.getBytes "fake audio")
+                :transcribe/filename "meeting.wav"
+                :transcribe/model "gpt-4o-transcribe-diarize"
+                :transcribe/response-format :diarized_json
+                :transcribe/chunking-strategy :auto
+                :transcribe/stream true
+                :transcribe/include [:logprobs]
+                :transcribe/known-speaker-names ["agent"]
+                :transcribe/known-speaker-references
+                ["data:audio/wav;base64,AAAA"]})
+        parts (:multipart built)
+        values (fn [field]
+                 (mapv :content (filter #(= field (:name %)) parts)))]
+    (is (= ["diarized_json"] (values "response_format")))
+    (is (= ["auto"] (values "chunking_strategy")))
+    (is (= ["true"] (values "stream")))
+    (is (= ["logprobs"] (values "include[]")))
+    (is (= ["agent"] (values "known_speaker_names[]")))
+    (is (= ["data:audio/wav;base64,AAAA"]
+           (values "known_speaker_references[]")))))
+
 (deftest test-groq-attached
   (let [profile (provider/get-provider :groq)
         ctor (:profile/transcribe-transport-constructor profile)]
@@ -80,6 +106,46 @@
     (is (= 1 (count (:transcription/segments parsed))))
     (is (= 2 (count (:transcription/words parsed))))
     (is (schema/validate-transcribe-response parsed))))
+
+(deftest test-parse-response-current-diarized-json-and-token-usage
+  (let [t (openai-tx/make-transport)
+        profile (provider/get-provider :openai)
+        raw {:task "transcribe"
+             :duration 2.5
+             :text "Hello."
+             :segments [{:type "transcript.text.segment"
+                         :id "seg_1"
+                         :speaker "agent"
+                         :start 0.0
+                         :end 2.5
+                         :text "Hello."}]
+             :usage {:type "tokens"
+                     :input_tokens 7
+                     :output_tokens 2
+                     :total_tokens 9
+                     :input_token_details {:audio_tokens 7}}}
+        parsed (tt/parse-transcribe-response t profile raw)]
+    (is (= "agent" (get-in parsed [:transcription/segments 0 :speaker])))
+    (is (= 7 (get-in parsed [:response/usage :usage/input-tokens])))
+    (is (= 2 (get-in parsed [:response/usage :usage/output-tokens])))
+    (is (schema/validate-transcribe-response parsed))))
+
+(deftest test-parse-current-transcription-stream-events
+  (let [profile (provider/get-provider :openai)
+        delta (openai-tx/parse-stream-event
+               profile
+               "data: {\"type\":\"transcript.text.delta\",\"delta\":\"Hi\"}")
+        segment (openai-tx/parse-stream-event
+                 profile
+                 "data: {\"type\":\"transcript.text.segment\",\"id\":\"seg_1\",\"speaker\":\"A\",\"text\":\"Hi\",\"start\":0,\"end\":1}")
+        done (openai-tx/parse-stream-event
+              profile
+              "data: {\"type\":\"transcript.text.done\",\"text\":\"Hi\",\"logprobs\":[],\"usage\":{\"type\":\"tokens\",\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}")]
+    (is (= :stream/content-delta (:event/type delta)))
+    (is (= :stream/provider-state (:event/type segment)))
+    (is (= [:stream/provider-state :stream/usage :stream/end]
+           (mapv :event/type done)))
+    (is (= 4 (get-in (second done) [:usage :usage/total-tokens])))))
 
 (deftest test-parse-response-plain-text
   (let [t (openai-tx/make-transport)

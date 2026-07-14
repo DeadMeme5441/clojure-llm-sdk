@@ -5,3 +5,5 @@
 
 (def make-speak-transport speak/make-transport)
 (def make-transcribe-transport transcribe/make-transport)
+(def parse-speech-stream-event speak/parse-stream-event)
+(def parse-transcription-stream-event transcribe/parse-stream-event)

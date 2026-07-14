@@ -5,7 +5,7 @@
    OpenAI-compat host in one map literal. The tests below verify:
      - every shipped alias resolves to the right base-url, env-vars,
        capabilities, and transport constructor
-     - the :drops quirk strips body keys for Mistral
+     - current Mistral penalty fields survive compatibility serialization
      - existing aliases (:deepseek :kimi :kimi-code) still work after the move out
        of provider.clj's built-ins
      - models/supported-providers + catalog provider-preference-order
@@ -67,25 +67,30 @@
 ;; ---------------------------------------------------------------------------
 
 (def ^:private new-aliases
-  [{:id :mistral     :base "https://api.mistral.ai/v1"           :env "MISTRAL_API_KEY"}
-   {:id :groq        :base "https://api.groq.com/openai/v1"      :env "GROQ_API_KEY"}
-   {:id :cerebras    :base "https://api.cerebras.ai/v1"          :env "CEREBRAS_API_KEY"}
-   {:id :together    :base "https://api.together.xyz/v1"         :env "TOGETHER_API_KEY"}
-   {:id :xai         :base "https://api.x.ai/v1"                 :env "XAI_API_KEY"}
-   ;; HuggingFace Inference Router is a plain OpenAI-compat alias.
-   ;; TGI / self-hosted endpoints register their own profile.
-   {:id :huggingface :base "https://router.huggingface.co/v1"    :env "HF_TOKEN"}])
+  [{:id :mistral     :base "https://api.mistral.ai/v1"      :env "MISTRAL_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
+   {:id :groq        :base "https://api.groq.com/openai/v1" :env "GROQ_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
+   {:id :cerebras    :base "https://api.cerebras.ai/v1"     :env "CEREBRAS_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
+   {:id :together    :base "https://api.together.ai/v1"     :env "TOGETHER_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
+   {:id :xai         :base "https://api.x.ai/v1"            :env "XAI_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
+   {:id :huggingface :base "https://router.huggingface.co/v1" :env "HF_TOKEN"
+    :capabilities #{:chat :streaming :tools :json-schema}}])
 
 (deftest test-new-aliases-registered
   (testing "each new alias has a profile with the expected URL and env-var"
-    (doseq [{:keys [id base env]} new-aliases]
+    (doseq [{:keys [id base env capabilities]} new-aliases]
       (let [p (provider/get-provider id)]
         (is (some? p) (str id " profile is registered"))
         (is (= base (:profile/base-url p)) (str id " base-url"))
         (is (= [env] (:profile/env-var-names p)) (str id " env-var"))
         (is (= :bearer (:profile/auth-strategy p)) (str id " auth-strategy"))
         (is (fn? (:profile/transport-constructor p)) (str id " has transport"))
-        (is (contains? (:profile/capabilities p) :chat) (str id " can chat"))))))
+        (is (every? (:profile/capabilities p) capabilities)
+            (str id " required capabilities"))))))
 
 (deftest test-deepseek-kimi-carry-transport-constructor
   (testing "deepseek, kimi, and kimi-code get a constructor"
@@ -93,9 +98,13 @@
           k (provider/get-provider :kimi)
           kc (provider/get-provider :kimi-code)]
       (is (= "https://api.deepseek.com/v1" (:profile/base-url ds)))
+      (is (= #{:chat :streaming :tools :reasoning}
+             (:profile/capabilities ds)))
       (is (fn? (:profile/transport-constructor ds)))
       (is (= "https://api.moonshot.cn/v1" (:profile/base-url k)))
       (is (= ["MOONSHOT_API_KEY"] (:profile/env-var-names k)))
+      (is (= #{:chat :streaming :tools :reasoning}
+             (:profile/capabilities k)))
       ;; This was a latent bug: the doseq attaching
       ;; constructors only covered [:openai :openrouter :deepseek] and
       ;; silently skipped :kimi. The compat-provider-ids list closes
@@ -105,11 +114,13 @@
       (is (= "https://api.kimi.com/coding/v1" (:profile/base-url kc)))
       (is (= ["KIMI_API_KEY"] (:profile/env-var-names kc)))
       (is (false? (:profile/supports-model-listing kc)))
+      (is (= #{:chat :streaming :tools :reasoning}
+             (:profile/capabilities kc)))
       (is (fn? (:profile/transport-constructor kc))
           ":kimi-code carries a transport-constructor"))))
 
-(deftest test-kimi-code-build-request-url-auth-and-client-headers
-  (testing "Kimi Code uses the coding endpoint plus KimiCLI identity headers"
+(deftest test-kimi-code-build-request-url-auth-and-client-identity
+  (testing "Kimi Code uses the coding endpoint without impersonating Kimi CLI"
     (let [t (openai/make-transport)
           profile (provider/get-provider :kimi-code)
           built (with-redefs [provider/resolve-auth-token (constantly "stub-token")]
@@ -121,10 +132,10 @@
           headers (:headers built)]
       (is (= "https://api.kimi.com/coding/v1/chat/completions" (:url built)))
       (is (= "Bearer stub-token" (get headers "Authorization")))
-      (is (= "kimi_cli" (get headers "X-Msh-Platform")))
-      (is (string? (get headers "X-Msh-Version")))
-      (is (string? (get headers "X-Msh-Device-Id")))
-      (is (string? (get headers "User-Agent")))
+      (is (nil? (get headers "X-Msh-Platform")))
+      (is (nil? (get headers "X-Msh-Version")))
+      (is (nil? (get headers "X-Msh-Device-Id")))
+      (is (nil? (get headers "User-Agent")))
       (is (= "kimi-for-coding" (get-in built [:body :model]))))))
 
 ;; ---------------------------------------------------------------------------
@@ -177,34 +188,11 @@
                 (str id " error provider"))))))))
 
 ;; ---------------------------------------------------------------------------
-;; :drops quirk strips body keys (Mistral)
+;; Current Mistral parameters and reasoning profile
 ;; ---------------------------------------------------------------------------
 
-(deftest test-mistral-drops-penalty-fields
-  (testing "Mistral profile strips frequency_penalty/presence_penalty"
-    (let [t (openai/make-transport)
-          profile (provider/get-provider :mistral)
-          ;; Penalties land in body via :extra_body; verify both that
-          ;; path and a hypothetical top-level path are stripped.
-          built (transport/build-request
-                 t profile
-                 {:request/model "mistral-small-latest"
-                  :request/messages [{:message/role :user :message/content "Hi"}]
-                  :request/provider-options
-                  {:extra_body {:frequency_penalty 0.5
-                                :presence_penalty 0.5
-                                :random_seed 42}}})
-          body (:body built)]
-      (is (nil? (:frequency_penalty body)))
-      (is (nil? (:presence_penalty body)))
-      (is (nil? (get-in body [:extra_body :frequency_penalty])))
-      (is (nil? (get-in body [:extra_body :presence_penalty])))
-      ;; :random_seed survives - it's not in the drop list and Mistral
-      ;; accepts it.
-      (is (= 42 (get-in body [:extra_body :random_seed]))))))
-
-(deftest test-drops-clears-empty-extra-body
-  (testing "if every :extra_body key gets dropped, :extra_body itself goes"
+(deftest test-mistral-keeps-current-penalty-fields
+  (testing "Mistral accepts frequency_penalty and presence_penalty"
     (let [t (openai/make-transport)
           profile (provider/get-provider :mistral)
           built (transport/build-request
@@ -213,8 +201,13 @@
                   :request/messages [{:message/role :user :message/content "Hi"}]
                   :request/provider-options
                   {:extra_body {:frequency_penalty 0.5
-                                :presence_penalty 0.5}}})]
-      (is (nil? (get-in built [:body :extra_body]))))))
+                                :presence_penalty 0.4
+                                :random_seed 42}}})]
+      (is (= 0.5 (get-in built [:body :extra_body :frequency_penalty])))
+      (is (= 0.4 (get-in built [:body :extra_body :presence_penalty])))
+      (is (= 42 (get-in built [:body :extra_body :random_seed])))
+      (is (contains? (:profile/capabilities profile) :reasoning))
+      (is (true? (get-in profile [:profile/quirks :reasoning-effort]))))))
 
 (deftest test-non-mistral-keeps-penalty-fields
   (testing "providers without :drops keep extra_body intact"

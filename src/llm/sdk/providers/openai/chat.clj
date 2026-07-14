@@ -56,6 +56,10 @@
                                  :image {:type "image_url"
                                          :image_url {:url (:image/url part)
                                                      :detail (name (get part :image/detail :auto))}}
+                                 :input-audio {:type "input_audio"
+                                               :input_audio
+                                               {:data (:audio/data part)
+                                                :format (name (:audio/format part))}}
                                  :file (file->openai-chat profile part)
                                  ;; tool-call parts are surfaced via :tool_calls below,
                                  ;; not as a content fragment.
@@ -80,8 +84,11 @@
     :none "none"
     :required "required"
     (when (map? tc)
-      {:type "function"
-       :function {:name (get-in tc [:function :name])}})))
+      (case (:type tc)
+        :custom {:type "custom"
+                 :custom {:name (get-in tc [:custom :name])}}
+        {:type "function"
+         :function {:name (get-in tc [:function :name])}}))))
 
 (defn- response-format->openai [fmt]
   (case (:type fmt)
@@ -107,27 +114,30 @@
        (let [prefs (get-in request [:request/provider-options :provider])]
          (when prefs {:provider prefs})))
 
-     ;; Reasoning
+     ;; OpenAI Chat Completions uses the scalar reasoning_effort field.
+     ;; Several compatible providers use the older nested reasoning object.
      (when (and reasoning (not= provider-id :anthropic))
        (cond
-         ;; DeepSeek: explicit thinking type
          (get quirks :thinking-explicit)
          {:thinking {:type (if (:enabled reasoning false) "enabled" "disabled")}}
 
-         ;; Default OpenAI-style reasoning
+         (or (= provider-id :openai) (:reasoning-effort quirks))
+         (when (:enabled reasoning)
+           {:reasoning_effort (name (get reasoning :effort :medium))})
+
          :else
          (when (:enabled reasoning)
            {:reasoning {:enabled true
                         :effort (name (get reasoning :effort :medium))}})))
 
-     ;; Any caller-supplied provider options under extra_body key
+     ;; Provider-specific wire fields. For api.openai.com these are merged
+     ;; directly into the JSON body below; compatibility profiles retain the
+     ;; established :extra_body envelope expected by their transports.
      (get-in request [:request/provider-options :extra_body]))))
 
 (defn- apply-drops
-  "Honour the :drops quirk by removing the named keys from the top-level
-   body and from :extra_body. Lets alias profiles strip request fields
-   the upstream provider 400s on (e.g. Mistral rejects
-   frequency_penalty / presence_penalty)."
+  "Honour the :drops quirk by removing unsupported fields from the
+   top-level body and from :extra_body."
   [body drops]
   (if (seq drops)
     (let [drop-set (set drops)
@@ -184,26 +194,34 @@
                                     (= (:strategy cache-decision) :prompt-key)
                                     (cache/scope-id request))
                            (cache/scope-id request))
-        body (merge
-              {:model model
-               :messages messages}
-              (when tools {:tools tools})
-              (when prompt-cache-key {:prompt_cache_key prompt-cache-key})
-              (when (:request/tool-choice request)
-                {:tool_choice (tool-choice->openai (:request/tool-choice request))})
-              (when (:request/temperature request)
-                {:temperature (:request/temperature request)})
-              (when (:request/top-p request)
-                {:top_p (:request/top-p request)})
-              (when (:request/max-tokens request)
-                {:max_tokens (:request/max-tokens request)})
-              (when (:request/stop request)
-                {:stop (:request/stop request)})
-              (when (:request/response-format request)
-                {:response_format
-                 (response-format->openai (:request/response-format request))})
-              (when (seq extra-body)
-                {:extra_body extra-body}))
+        base-body (merge
+                   {:model model
+                    :messages messages}
+                   (when tools {:tools tools})
+                   (when prompt-cache-key {:prompt_cache_key prompt-cache-key})
+                   (when (:request/tool-choice request)
+                     {:tool_choice (tool-choice->openai (:request/tool-choice request))})
+                   (when (:request/temperature request)
+                     {:temperature (:request/temperature request)})
+                   (when (:request/top-p request)
+                     {:top_p (:request/top-p request)})
+                   (when (:request/max-tokens request)
+                     {(if (= :openai (:profile/id profile))
+                        :max_completion_tokens
+                        :max_tokens)
+                      (:request/max-tokens request)})
+                   (when (:request/stop request)
+                     {:stop (:request/stop request)})
+                   (when (:request/response-format request)
+                     {:response_format
+                      (response-format->openai (:request/response-format request))})
+                   (when (:request/metadata request)
+                     {:metadata (:request/metadata request)}))
+        body (if (seq extra-body)
+               (if (= :openai (:profile/id profile))
+                 (merge base-body extra-body)
+                 (assoc base-body :extra_body extra-body))
+               base-body)
         body (apply-drops body (get-in profile [:profile/quirks :drops]))]
     {:method :post
      :url (complete-url profile request)
@@ -216,13 +234,16 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- parse-tool-call [tc]
-  (let [fn-data (:function tc)]
+  (let [fn-data (:function tc)
+        custom-data (:custom tc)
+        custom? (= "custom" (:type tc))]
     {:part/type :tool-call
      :tool-call/id (:id tc)
-     :tool-call/name (:name fn-data)
-     :tool-call/arguments (:arguments fn-data)
+     :tool-call/name (if custom? (:name custom-data) (:name fn-data))
+     :tool-call/arguments (if custom? (:input custom-data) (:arguments fn-data))
      :tool-call/provider-data
-     (cond-> {}
+     (cond-> {:wire_type (or (:type tc) "function")}
+       custom-data (assoc :custom custom-data)
        (:extra_content tc) (assoc :extra_content (:extra_content tc))
        (:call_id tc) (assoc :call_id (:call_id tc))
        (:response_item_id tc) (assoc :response_item_id (:response_item_id tc)))}))
@@ -245,8 +266,12 @@
                         :unknown)
         usage-raw (:usage raw)
         provider-data (cond-> {}
-                      reasoning-content (assoc :reasoning_content reasoning-content)
-                      (:reasoning_details msg) (assoc :reasoning_details (:reasoning_details msg)))]
+                        reasoning-content (assoc :reasoning_content reasoning-content)
+                        (:reasoning_details msg) (assoc :reasoning_details (:reasoning_details msg))
+                        (contains? msg :audio) (assoc :audio (:audio msg))
+                        (contains? msg :refusal) (assoc :refusal (:refusal msg))
+                        (contains? msg :moderation) (assoc :moderation (:moderation msg))
+                        (contains? msg :annotations) (assoc :annotations (:annotations msg)))]
     (cond-> {:response/id (:id raw)
              :response/provider (:profile/id profile)
              :response/model (:model raw)
@@ -277,19 +302,21 @@
           tool-events (mapcat
                        (fn [tc]
                          (let [idx (:index tc 0)
-                               fn-data (:function tc)
-                               args-present? (and (map? fn-data)
-                                                  (contains? fn-data :arguments))
-                               start? (or (:id tc) (:name fn-data))
+                               custom? (= "custom" (:type tc))
+                               wire-data (if custom? (:custom tc) (:function tc))
+                               args-key (if custom? :input :arguments)
+                               args-present? (and (map? wire-data)
+                                                  (contains? wire-data args-key))
+                               start? (or (:id tc) (:name wire-data))
                                start-ev (when start?
                                           (stream/tool-call-start
                                            idx
                                            (or (:id tc) (str "tool_call_" idx))
-                                           (or (:name fn-data) "")))
+                                           (or (:name wire-data) "")))
                                delta-ev (when args-present?
                                           (stream/tool-call-delta
                                            idx
-                                           (or (:arguments fn-data) "")))]
+                                           (or (get wire-data args-key) "")))]
                            (remove nil? [start-ev delta-ev])))
                        tc-deltas)
           events (cond-> []
@@ -302,6 +329,12 @@
                    (seq (:reasoning delta))
                    (conj (stream/reasoning-delta (:reasoning delta))))
           events (into events tool-events)
+          provider-delta (select-keys delta [:audio :refusal :moderation])
+          events (cond-> events
+                   (seq provider-delta)
+                   (conj (stream/provider-state-event
+                          (:profile/id profile)
+                          {:chat-completion/delta provider-delta})))
           events (cond-> events
                    (:usage data)
                    (conj (stream/usage-event

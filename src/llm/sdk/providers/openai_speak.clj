@@ -5,4 +5,5 @@
 (def make-transport impl/make-transport)
 (def build-request impl/build-request)
 (def parse-response impl/parse-response)
+(def parse-stream-event impl/parse-stream-event)
 (def parse-error impl/parse-error)

@@ -229,7 +229,9 @@
     {:role "user" :content (content->input-items (:message/content msg))}
 
     :assistant
-    (let [items (concat
+    (let [phase (or (:message/phase msg)
+                    (get-in msg [:message/provider-data :phase]))
+          items (concat
                  ;; Replay encrypted reasoning items from previous turns
                  (when-let [reasoning (:codex_reasoning_items (:message/provider-data msg))]
                    (mapv #(dissoc % :id) reasoning))
@@ -238,9 +240,14 @@
                    msg-items)
                  ;; Current turn content
                  (when (seq (:message/content msg))
-                   [{:type "message" :role "assistant"
-                     :status "completed"
-                     :content [{:type "output_text" :text (t/content->string (:message/content msg))}]}])
+                   [(cond-> {:type "message" :role "assistant"
+                             :status "completed"
+                             :content [{:type "output_text"
+                                        :text (t/content->string (:message/content msg))}]}
+                      phase
+                      (assoc :phase (if (keyword? phase)
+                                      (str/replace (name phase) "-" "_")
+                                      phase)))])
                  ;; Replay tool calls as function_call input items so the
                  ;; matching function_call_output (from a later :tool
                  ;; message) can be linked. Required by the Responses
@@ -262,14 +269,21 @@
      :call_id (or (:message/tool-call-id msg) "call_0")
      :output (t/content->string (:message/content msg))}
 
-    ;; fallback for system/developer roles (should be stripped before here)
-    {:role "user" :content (t/content->string (:message/content msg))}))
+    :system
+    {:role "system" :content (content->input-items (:message/content msg))}
+
+    :developer
+    {:role "developer" :content (content->input-items (:message/content msg))}
+
+    ;; Unknown roles remain user input rather than producing an invalid role.
+    {:role "user" :content (content->input-items (:message/content msg))}))
 
 (defn- messages->responses-input [messages]
-  (mapcat (fn [msg]
-            (let [converted (message->responses-input msg)]
-              (if (sequential? converted) converted [converted])))
-          messages))
+  (into []
+        (mapcat (fn [msg]
+                  (let [converted (message->responses-input msg)]
+                    (if (sequential? converted) converted [converted]))))
+        messages))
 
 ;; ---------------------------------------------------------------------------
 ;; Tool conversion
@@ -277,11 +291,33 @@
 
 (defn- tool->codex [tool]
   (let [fn-data (:function tool)]
-    {:type "function"
-     :name (:name fn-data)
-     :description (or (:description fn-data) "")
-     :strict false
-     :parameters (or (:parameters fn-data) {:type "object"})}))
+    (cond-> {:type "function"
+             :name (:name fn-data)
+             :description (or (:description fn-data) "")
+             :parameters (or (:parameters fn-data) {:type "object"})}
+      (contains? fn-data :strict) (assoc :strict (:strict fn-data)))))
+
+(defn- tool-choice->codex [choice]
+  (case choice
+    :auto "auto"
+    :none "none"
+    :required "required"
+    (when (map? choice)
+      {:type "function"
+       :name (get-in choice [:function :name])})))
+
+(defn- response-format->codex [fmt]
+  {:format
+   (case (:type fmt)
+     :json_schema
+     (cond-> {:type "json_schema"
+              :name (or (:name fmt) "response")
+              :schema (:json-schema fmt)}
+       (:description fmt) (assoc :description (:description fmt))
+       (contains? fmt :strict) (assoc :strict (:strict fmt)))
+
+     :json_object {:type "json_object"}
+     {:type "text"})})
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
@@ -325,6 +361,7 @@
         tools (when (seq (:request/tools request))
                 (mapv tool->codex (:request/tools request)))
         reasoning-config (:request/reasoning request)
+        provider-extra-body (get-in request [:request/provider-options :extra_body])
         reasoning-enabled (if (nil? reasoning-config) false (:enabled reasoning-config true))
         ;; Caching wiring:
         ;;   * api.openai.com/v1/responses → top-level prompt_cache_key
@@ -353,7 +390,8 @@
                 {:instructions instructions})
               (when tools
                 {:tools tools
-                 :tool_choice "auto"
+                 :tool_choice (or (tool-choice->codex (:request/tool-choice request))
+                                  "auto")
                  :parallel_tool_calls true})
               (when reasoning-enabled
                 {:reasoning {:effort (name (get reasoning-config :effort :medium))
@@ -362,6 +400,12 @@
               ;; Codex backend does NOT support max_output_tokens
               (when (and (:request/max-tokens request) (not backend?))
                 {:max_output_tokens (:request/max-tokens request)})
+              (when (:request/temperature request)
+                {:temperature (:request/temperature request)})
+              (when (:request/top-p request)
+                {:top_p (:request/top-p request)})
+              (when (:request/response-format request)
+                {:text (response-format->codex (:request/response-format request))})
               ;; Codex backend requires stream=true
               (when backend?
                 {:stream true})
@@ -370,7 +414,8 @@
               (when xai-extra-body
                 {:extra_body xai-extra-body})
               (when (:request/metadata request)
-                {:metadata (:request/metadata request)}))
+                {:metadata (:request/metadata request)})
+              provider-extra-body)
         ;; Auth headers
         base-headers (if backend?
                        (merge (require-codex-backend-auth-headers)
@@ -400,12 +445,15 @@
                          (:text texts) (assoc :extracted_text (str/join "" texts)))})
 
       "reasoning"
-      (let [encrypted (:encrypted_content item)]
-        {:reasoning (when (and (string? encrypted) (seq encrypted)) encrypted)
-         :reasoning-details (when (seq encrypted)
-                              (cond-> {:type "reasoning" :encrypted_content encrypted}
-                                (:id item) (assoc :id (:id item))
-                                (:summary item) (assoc :summary (:summary item))))})
+      (let [encrypted (:encrypted_content item)
+            summary-text (->> (:summary item)
+                              (keep #(when (= "summary_text" (:type %)) (:text %)))
+                              (str/join ""))]
+        {:reasoning (cond
+                      (seq summary-text) summary-text
+                      (and (string? encrypted) (seq encrypted)) encrypted)
+         :reasoning-details (select-keys item
+                                        [:id :type :encrypted_content :summary :content :status])})
 
       "function_call"
       ;; Skip incomplete function_calls — they lack arguments
@@ -425,6 +473,17 @@
                        :name fn-name
                        :arguments arguments-str}
            :response-item-id response-item-id}))
+
+      "custom_tool_call"
+      (when-not incomplete?
+        (let [tool-input (or (:input item) "")
+              call-id (or (:call_id item) (:id item)
+                          (deterministic-call-id (:name item) tool-input 0))]
+          {:tool-call {:id call-id
+                       :name (or (:name item) "")
+                       :arguments tool-input}
+           :response-item-id (:id item)
+           :wire-type "custom_tool_call"}))
 
       nil)))
 
@@ -506,7 +565,8 @@
                                     :tool-call/arguments (:arguments tc)
                                     :tool-call/provider-data
                                     (cond-> {}
-                                      (:response-item-id %) (assoc :response_item_id (:response-item-id %)))})
+                                      (:response-item-id %) (assoc :response_item_id (:response-item-id %))
+                                      (:wire-type %) (assoc :wire_type (:wire-type %)))})
                                 parsed))
           status (:status raw)
           finish-reason (if (seq tool-calls)
@@ -514,7 +574,12 @@
                           (get status-map status :unknown))
           provider-data (cond-> {}
                           (seq reasoning-details) (assoc :codex_reasoning_items reasoning-details)
-                          (seq message-items) (assoc :codex_message_items message-items))]
+                          (seq message-items) (assoc :codex_message_items message-items)
+                          (:error raw) (assoc :error (:error raw))
+                          (:incomplete_details raw) (assoc :incomplete_details (:incomplete_details raw))
+                          (:moderation raw) (assoc :moderation (:moderation raw))
+                          (:service_tier raw) (assoc :service_tier (:service_tier raw))
+                          (:conversation raw) (assoc :conversation (:conversation raw)))]
       (cond-> {:response/id (:id raw)
                :response/provider provider-id
                :response/model (:model raw)
@@ -535,59 +600,54 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-stream-event-codex
-  [_profile line]
+  [profile line]
   (when-let [data (parse-sse-line line)]
-    (let [t (:type data)]
+    (let [t (:type data)
+          provider-id (or (:profile/id profile) :codex)]
       (cond
-        ;; Text content delta
         (= t "response.output_text.delta")
-        (stream/content-delta (get-in data [:delta]))
+        (stream/content-delta (:delta data))
 
-        ;; Reasoning delta (encrypted)
+        ;; Public Responses events carry visible reasoning text and summaries.
+        (contains? #{"response.reasoning_summary_text.delta"
+                     "response.reasoning_text.delta"} t)
+        (stream/reasoning-delta (:delta data))
+
+        ;; The ChatGPT Codex backend also emits encrypted reasoning deltas.
         (= t "response.reasoning.delta")
-        (stream/reasoning-delta (get-in data [:delta]) :encrypted true)
+        (stream/reasoning-delta (:delta data) :encrypted true)
 
-        ;; Tool call: item added (start)
         (= t "response.output_item.added")
         (let [item (:item data)]
-          (when (= (:type item) "function_call")
+          (when (contains? #{"function_call" "custom_tool_call"} (:type item))
             (stream/tool-call-start (stream-index data)
                                     (or (:call_id item) (:id item)
                                         (str "tool_call_" (stream-index data)))
                                     (or (:name item) ""))))
 
-        ;; Tool call: arguments delta
         (= t "response.function_call_arguments.delta")
         (stream/tool-call-delta (stream-index data) (:delta data))
 
-        ;; Tool call: arguments done (end)
         (= t "response.function_call_arguments.done")
         (stream/tool-call-end (stream-index data))
 
-        ;; Tool call: output item done (alternative start signal)
-        (= t "response.output_item.done")
-        (let [item (:item data)]
-          (case (:type item)
-            "function_call"
-            (stream/tool-call-start (stream-index data)
-                                    (or (:call_id item) (:id item)
-                                        (str "tool_call_" (stream-index data)))
-                                    (or (:name item) ""))
-            nil))
+        (= t "response.custom_tool_call_input.delta")
+        (stream/tool-call-delta (stream-index data) (:delta data))
 
-        ;; Usage event
+        (= t "response.custom_tool_call_input.done")
+        (stream/tool-call-end (stream-index data))
+
         (= t "response.usage")
         (when-let [u (:usage data)]
           (stream/usage-event (usage/normalize-usage :codex u)))
 
-        ;; Error event
-        (= t "response.error")
+        (contains? #{"error" "response.error"} t)
         (stream/error-event {:error/type :provider
                              :error/message (or (get-in data [:error :message])
+                                                (:message data)
                                                 "Unknown provider error")
                              :error/raw data})
 
-        ;; Completion events
         (= t "response.completed")
         (response-completion-events data :stop)
 
@@ -595,7 +655,20 @@
         (response-completion-events data :incomplete)
 
         (= t "response.failed")
-        (response-completion-events data :unknown)
+        (maybe-many
+         (concat
+          [(when-let [error (get-in data [:response :error])]
+             (stream/error-event {:error/type :provider
+                                  :error/message (or (:message error)
+                                                     "Response generation failed")
+                                  :error/raw error}))]
+          (event->seq (response-completion-events data :unknown))))
+
+        ;; Preserve current lifecycle, content-part, annotation, refusal, and
+        ;; tool events that have no canonical stream equivalent.
+        (and (string? t) (str/starts-with? t "response."))
+        (stream/provider-state-event provider-id
+                                     {:responses/event data})
 
         :else nil))))
 

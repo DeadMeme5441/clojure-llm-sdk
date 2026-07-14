@@ -14,59 +14,71 @@
 
 (def ^:private aggregators
   [{:id :sambanova   :base "https://api.sambanova.ai/v1"
-    :env "SAMBANOVA_API_KEY"}
+    :env "SAMBANOVA_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
    {:id :deepinfra   :base "https://api.deepinfra.com/v1/openai"
-    :env "DEEPINFRA_API_KEY"}
+    :env "DEEPINFRA_TOKEN"
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
    {:id :lambda      :base "https://api.lambda.ai/v1"
-    :env "LAMBDA_API_KEY"}
-   {:id :nebius      :base "https://api.studio.nebius.com/v1"
-    :env "NEBIUS_API_KEY"}
+    :env "LAMBDA_API_KEY"
+    :capabilities #{:chat :streaming :tools}}
+   {:id :nebius      :base "https://api.tokenfactory.nebius.com/v1"
+    :env "NEBIUS_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema}}
    {:id :hyperbolic  :base "https://api.hyperbolic.xyz/v1"
-    :env "HYPERBOLIC_API_KEY"}
-   {:id :novita      :base "https://api.novita.ai/v3/openai"
-    :env "NOVITA_API_KEY"}
+    :env "HYPERBOLIC_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema}}
+   {:id :novita      :base "https://api.novita.ai/openai"
+    :env "NOVITA_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema}}
    {:id :friendliai  :base "https://api.friendli.ai/serverless/v1"
-    :env "FRIENDLI_TOKEN"}
+    :env "FRIENDLI_TOKEN"
+    :capabilities #{:chat :streaming :tools :json-schema}}
    {:id :featherless :base "https://api.featherless.ai/v1"
-    :env "FEATHERLESS_API_KEY"}
+    :env "FEATHERLESS_API_KEY"
+    :capabilities #{:chat :streaming :tools}}
    {:id :dashscope   :base "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-    :env "DASHSCOPE_API_KEY"}
+    :env "DASHSCOPE_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema}}
    {:id :volcengine  :base "https://ark.cn-beijing.volces.com/api/v3"
-    :env "ARK_API_KEY"}
-   ;; :cloudflare is intentionally tested separately — its base-url
-   ;; contains an account-id placeholder users must replace.
-   ])
+    :env "ARK_API_KEY"
+    :capabilities #{:chat :streaming :tools :json-schema}}])
 
 (deftest test-aggregator-profiles-registered
-  (doseq [{:keys [id base env]} aggregators]
+  (doseq [{:keys [id base env capabilities]} aggregators]
     (let [p (provider/get-provider id)]
       (is (some? p) (str id))
       (is (= base (:profile/base-url p)) (str id " base-url"))
       (is (= [env] (:profile/env-var-names p)) (str id " env-var"))
       (is (fn? (:profile/transport-constructor p)) (str id " transport"))
-      (is (contains? (:profile/capabilities p) :chat) (str id " chat")))))
+      (is (every? (:profile/capabilities p) capabilities)
+          (str id " required capabilities")))))
 
 (deftest test-cloudflare-profile-has-account-placeholder
-  (testing "Cloudflare base-url ships with REPLACE-WITH-ACCOUNT-ID"
+  (testing "Cloudflare base-url is account-scoped and has no global model list"
     (let [p (provider/get-provider :cloudflare)]
       (is (some? p))
       (is (re-find #"REPLACE-WITH-ACCOUNT-ID" (:profile/base-url p))
           "users have to substitute their account id before use")
+      (is (= #{:chat :streaming :tools :json-schema}
+             (:profile/capabilities p)))
+      (is (false? (:profile/supports-model-listing p)))
       (is (fn? (:profile/transport-constructor p))))))
 
-(deftest test-aggregator-request-uses-its-own-base-url
-  (testing "build-request for SambaNova goes to api.sambanova.ai"
+(deftest test-aggregator-requests-use-provider-base-url
+  (doseq [{:keys [id base]} aggregators]
     (let [t (openai/make-transport)
-          profile (provider/get-provider :sambanova)
+          profile (provider/get-provider id)
           built (with-redefs [provider/resolve-auth-token
                               (constantly "stub")]
                   (transport/build-request
                    t profile
-                   {:request/model "Meta-Llama-3.1-8B-Instruct"
+                   {:request/model "test-model"
                     :request/messages [{:message/role :user
                                         :message/content "Hi"}]}))]
-      (is (= "https://api.sambanova.ai/v1/chat/completions" (:url built)))
-      (is (= "Bearer stub" (get-in built [:headers "Authorization"]))))))
+      (is (= (str base "/chat/completions") (:url built)) (str id " URL"))
+      (is (= "Bearer stub" (get-in built [:headers "Authorization"]))
+          (str id " auth")))))
 
 (deftest test-models-fetch-multimethods-registered
   (doseq [{:keys [id]} aggregators]

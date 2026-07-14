@@ -39,6 +39,52 @@
     (is (sequential? (get-in built [:body :input])))
     (is (= "user" (:role (first (get-in built [:body :input])))))))
 
+(deftest test-build-request-current-responses-fields
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex)
+        built (transport/build-request
+               t profile
+               {:request/model "gpt-5"
+                :request/messages [{:message/role :system :message/content "Sys"}
+                                   {:message/role :developer :message/content "Dev"}
+                                   {:message/role :user :message/content "Hi"}]
+                :request/temperature 0.2
+                :request/top-p 0.9
+                :request/tool-choice :required
+                :request/response-format
+                {:type :json_schema
+                 :name "answer"
+                 :strict true
+                 :json-schema {:type "object"}}
+                :request/provider-options
+                {:extra_body {:service_tier "flex"
+                              :truncation "auto"}}})]
+    (is (= "Sys" (get-in built [:body :instructions])))
+    (is (= "developer" (get-in built [:body :input 0 :role])))
+    (is (= "user" (get-in built [:body :input 1 :role])))
+    (is (= 0.2 (get-in built [:body :temperature])))
+    (is (= 0.9 (get-in built [:body :top_p])))
+    (is (= {:format {:type "json_schema"
+                     :name "answer"
+                     :schema {:type "object"}
+                     :strict true}}
+           (get-in built [:body :text])))
+    (is (= "flex" (get-in built [:body :service_tier])))
+    (is (= "auto" (get-in built [:body :truncation])))))
+
+(deftest test-build-request-preserves-assistant-phase
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex)
+        built (transport/build-request
+               t profile
+               {:request/model "gpt-5.3-codex"
+                :request/messages
+                [{:message/role :assistant
+                  :message/content "Working..."
+                  :message/phase :commentary}
+                 {:message/role :user :message/content "Continue"}]})]
+    (is (= "commentary" (get-in built [:body :input 0 :phase])))))
+
 (deftest test-build-request-tools
   (let [t (codex/make-transport)
         profile (provider/get-provider :codex)
@@ -47,13 +93,15 @@
              :request/tools [{:type :function
                               :function {:name "get_weather"
                                          :description "Get weather"
+                                         :strict true
                                          :parameters {:type :object
                                                       :properties {:location {:type :string}}}}}]}
         built (transport/build-request t profile req)]
     (is (= 1 (count (get-in built [:body :tools]))))
     (is (= "auto" (get-in built [:body :tool_choice])))
     (is (= true (get-in built [:body :parallel_tool_calls])))
-    (is (= "get_weather" (get-in built [:body :tools 0 :name])))))
+    (is (= "get_weather" (get-in built [:body :tools 0 :name])))
+    (is (true? (get-in built [:body :tools 0 :strict])))))
 
 (deftest test-build-request-file-input
   (let [t (codex/make-transport)
@@ -266,6 +314,33 @@
     (is (= "{\"location\":\"NYC\"}" (get-in resp [:response/tool-calls 0 :tool-call/arguments])))
     (is (= "fc_123" (get-in resp [:response/tool-calls 0 :tool-call/provider-data :response_item_id])))))
 
+(deftest test-parse-response-current-reasoning-summary-and-custom-tool
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex)
+        raw {:id "resp-current"
+             :model "gpt-5"
+             :output [{:type "reasoning"
+                       :id "rs_1"
+                       :summary [{:type "summary_text"
+                                  :text "Checked the constraints."}]}
+                      {:type "custom_tool_call"
+                       :id "ct_1"
+                       :call_id "call_custom"
+                       :name "shell"
+                       :input "pwd"
+                       :status "completed"}]
+             :status "completed"
+             :incomplete_details {:reason nil}
+             :service_tier "flex"}
+        resp (transport/parse-response t profile raw)]
+    (is (= "Checked the constraints."
+           (get-in resp [:response/parts 0 :reasoning/text])))
+    (is (= "shell" (get-in resp [:response/tool-calls 0 :tool-call/name])))
+    (is (= "pwd" (get-in resp [:response/tool-calls 0 :tool-call/arguments])))
+    (is (= "custom_tool_call"
+           (get-in resp [:response/tool-calls 0 :tool-call/provider-data :wire_type])))
+    (is (= "flex" (get-in resp [:response/provider-data :service_tier])))))
+
 (deftest test-parse-response-empty-output
   (testing "empty output with output_text synthesizes a message item"
     (let [t (codex/make-transport)
@@ -354,6 +429,24 @@
     (is (= "thinking..." (:event/delta ev)))
     (is (= true (:event/encrypted ev)))))
 
+(deftest test-parse-stream-current-reasoning-summary-delta
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex)
+        line "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"checking\"}"
+        ev (transport/parse-stream-event t profile line)]
+    (is (= :stream/reasoning-delta (:event/type ev)))
+    (is (= "checking" (:event/delta ev)))
+    (is (false? (:event/encrypted ev)))))
+
+(deftest test-parse-stream-preserves-unmapped-current-event
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex)
+        line "data: {\"type\":\"response.output_text.annotation.added\",\"annotation\":{\"type\":\"url_citation\"}}"
+        ev (transport/parse-stream-event t profile line)]
+    (is (= :stream/provider-state (:event/type ev)))
+    (is (= "response.output_text.annotation.added"
+           (get-in ev [:provider-state/data :responses/event :type])))))
+
 (deftest test-parse-stream-tool-call
   (let [t (codex/make-transport)
         profile (provider/get-provider :codex)
@@ -369,6 +462,23 @@
     (is (= :stream/tool-call-delta (:event/type delta-ev)))
     (is (= "{\"loc\"" (:tool-call/arguments-delta delta-ev)))
     (is (= :stream/tool-call-end (:event/type end-ev)))))
+
+(deftest test-parse-stream-current-custom-tool-call
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex)
+        start (transport/parse-stream-event
+               t profile
+               "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"custom_tool_call\",\"call_id\":\"call_2\",\"name\":\"shell\"}}")
+        delta (transport/parse-stream-event
+               t profile
+               "data: {\"type\":\"response.custom_tool_call_input.delta\",\"output_index\":1,\"delta\":\"pwd\"}")
+        done (transport/parse-stream-event
+              t profile
+              "data: {\"type\":\"response.custom_tool_call_input.done\",\"output_index\":1,\"input\":\"pwd\"}")]
+    (is (= :stream/tool-call-start (:event/type start)))
+    (is (= "shell" (:tool-call/name start)))
+    (is (= "pwd" (:tool-call/arguments-delta delta)))
+    (is (= :stream/tool-call-end (:event/type done)))))
 
 (deftest test-parse-stream-tool-call-index
   (let [t (codex/make-transport)

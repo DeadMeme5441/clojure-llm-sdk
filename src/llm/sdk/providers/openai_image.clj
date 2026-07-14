@@ -5,4 +5,5 @@
 (def make-transport impl/make-transport)
 (def build-image-request-openai impl/build-image-request-openai)
 (def parse-image-response-openai impl/parse-image-response-openai)
+(def parse-image-stream-event-openai impl/parse-image-stream-event-openai)
 (def parse-image-error-openai impl/parse-image-error-openai)

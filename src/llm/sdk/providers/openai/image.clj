@@ -12,6 +12,8 @@
   (:require [llm.sdk.transport.image :as it]
             [llm.sdk.provider :as provider]
             [llm.sdk.errors :as errors]
+            [llm.sdk.sse :as sse]
+            [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]))
 
 ;; ---------------------------------------------------------------------------
@@ -63,6 +65,31 @@
       (:created raw) (assoc :image/created (:created raw))
       (:usage raw) (assoc :response/usage
                           (usage/normalize-openai-usage (:usage raw))))))
+
+(defn parse-image-stream-event-openai
+  "Normalize current image_generation.partial_image/completed SSE events.
+   ImageTransport is request/response-only, so this function is also exposed
+   directly for callers opting into `:stream true` via provider-options."
+  [profile line]
+  (when-let [data (sse/parse-json-data line)]
+    (case (:type data)
+      "image_generation.partial_image"
+      (stream/provider-state-event
+       (:profile/id profile)
+       {:image-generation/partial data})
+
+      "image_generation.completed"
+      (cond-> [(stream/provider-state-event
+                (:profile/id profile)
+                {:image-generation/completed
+                 (dissoc data :usage)})]
+        (:usage data)
+        (conj (stream/usage-event
+               (usage/normalize-openai-usage (:usage data))))
+        true
+        (conj (stream/end-event :finish-reason :stop)))
+
+      nil)))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing
