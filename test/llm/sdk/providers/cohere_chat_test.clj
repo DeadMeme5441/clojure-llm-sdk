@@ -40,6 +40,38 @@
       (is (= "get_weather" (get-in tools [0 :function :name])))
     (is (= "REQUIRED" (get-in built [:body :tool_choice])))))
 
+(deftest test-build-request-current-v2-options
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        built (transport/build-request
+               t profile
+               {:request/model "command-a-reasoning-08-2025"
+                :request/messages [{:message/role :user
+                                    :message/content "solve"}]
+                :request/tools [{:type :function
+                                 :function {:name "lookup"
+                                            :parameters {:type "object"}
+                                            :strict true}}]
+                :request/tool-choice :auto
+                :request/response-format
+                {:type :json_schema
+                 :json-schema {:type "object"
+                               :properties {:answer {:type "string"}}}}
+                :request/reasoning {:enabled true :budget 256}
+                :request/provider-options
+                {:cohere {:priority 2 :logprobs true}}})]
+    (is (nil? (get-in built [:body :tool_choice]))
+        "Cohere automatic tool selection is represented by omission")
+    (is (true? (get-in built [:body :strict_tools])))
+    (is (= {:type "json_object"
+            :json_schema {:type "object"
+                          :properties {:answer {:type "string"}}}}
+           (get-in built [:body :response_format])))
+    (is (= {:type "enabled" :token_budget 256}
+           (get-in built [:body :thinking])))
+    (is (= 2 (get-in built [:body :priority])))
+    (is (true? (get-in built [:body :logprobs])))))
+
 (deftest test-build-request-stop-sequence-is-not-split
   (let [t (cohere/make-transport)
         profile (provider/get-provider :cohere)
@@ -150,10 +182,11 @@
                                     :text "1827"
                                     :sources [{:type "document"
                                                :id "doc_1"
-                                               :url "https://example.com/b"
-                                               :title "Bio"}]}]}
+                                               :document {:url "https://example.com/b"
+                                                          :title "Bio"}}]}]}
              :usage {:billed_units {:input_tokens 10 :output_tokens 7}
-                     :tokens {:input_tokens 12 :output_tokens 7}}}
+                     :tokens {:input_tokens 12 :output_tokens 7}
+                     :cached_tokens 3}}
         parsed (transport/parse-response t profile raw)
         parts (:response/parts parsed)]
     (is (= :stop (:response/finish-reason parsed)))
@@ -161,8 +194,10 @@
     (is (= :text (:part/type (first parts))))
     (is (= :citation (:part/type (second parts))))
     (is (= "https://example.com/b" (:citation/url (second parts))))
-    (is (= 10 (get-in parsed [:response/usage :usage/input-tokens])))
-    (is (= 7 (get-in parsed [:response/usage :usage/output-tokens])))))
+    (is (= "doc_1" (:citation/source-id (second parts))))
+    (is (= 12 (get-in parsed [:response/usage :usage/input-tokens])))
+    (is (= 7 (get-in parsed [:response/usage :usage/output-tokens])))
+    (is (= 3 (get-in parsed [:response/usage :usage/cached-input-tokens])))))
 
 (deftest test-parse-response-tool-calls
   (let [t (cohere/make-transport)
@@ -181,6 +216,23 @@
     (is (= 1 (count (:response/tool-calls parsed))))
     (is (= "tc_a" (:tool-call/id (first (:response/tool-calls parsed)))))))
 
+(deftest test-parse-response-thinking-content
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        parsed (transport/parse-response
+                t profile
+                {:id "resp"
+                 :finish_reason "TIMEOUT"
+                 :message {:role "assistant"
+                           :content [{:type "thinking"
+                                      :thinking "I should inspect the evidence."}
+                                     {:type "text" :text "Answer"}]}})]
+    (is (= :unknown (:response/finish-reason parsed)))
+    (is (= [{:part/type :text :text "Answer"}
+            {:part/type :reasoning
+             :reasoning/text "I should inspect the evidence."}]
+           (:response/parts parsed)))))
+
 (deftest test-stream-content-delta
   (let [t (cohere/make-transport)
         profile (provider/get-provider :cohere)
@@ -190,6 +242,19 @@
         ev (transport/parse-stream-event t profile line)]
     (is (= :stream/content-delta (:event/type ev)))
     (is (= "Hello" (:event/delta ev)))))
+
+(deftest test-stream-thinking-delta
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        line (str "data: "
+                  (json/generate-string
+                   {:type "content-delta"
+                    :delta {:message
+                            {:content {:type "thinking"
+                                       :thinking "Checking"}}}}))
+        ev (transport/parse-stream-event t profile line)]
+    (is (= :stream/reasoning-delta (:event/type ev)))
+    (is (= "Checking" (:event/delta ev)))))
 
 (deftest test-stream-message-end-emits-usage-then-end
   (let [t (cohere/make-transport)

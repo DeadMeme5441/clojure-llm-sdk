@@ -1,23 +1,7 @@
 (ns llm.sdk.providers.perplexity.chat
-  "Perplexity transport — OpenAI-shape body + citation/search-results
-   surfacing.
-
-   Request building is identical to openai-chat. Response parsing
-   extends the OpenAI parser with two extractions:
-
-  - :search_results [{:url :title :snippet}, ...] → richer
-       CitationPart per result
-  - :citations [\"url\", ...]                       → URL-only
-       CitationPart when search_results isn't present
-
-   Usage normalization delegates to normalize-openai-usage, which
-   already picks up Perplexity's :citation_tokens and
-   :num_search_queries when present.
-
-   Streaming: the final SSE chunk on /chat/completions carries
-   :citations alongside :usage and :finish_reason. parse-stream-event
-   returns a vector of events in that case — sdk/complete flattens
-   multi-event return values."
+  "Perplexity Sonar transport.
+   Builds the current /v1/sonar request shape and normalizes grounded
+   citations, search results, usage/cost, and full or concise SSE streams."
   (:require [llm.sdk.sse :as sse]
             [llm.sdk.transport :as t]
             [llm.sdk.provider :as provider]
@@ -25,6 +9,22 @@
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
             [llm.sdk.errors :as errors]))
+
+(defn- normalize-perplexity-usage [raw]
+  (cond-> (usage/normalize-openai-usage raw)
+    (some? (:reasoning_tokens raw))
+    (assoc :usage/reasoning-tokens
+           (usage/->int (:reasoning_tokens raw)))))
+
+(defn- reported-cost [usage-raw]
+  (let [cost (:cost usage-raw)]
+    (when (number? (:total_cost cost))
+      {:cost/usd (:total_cost cost)
+       :cost/estimated? false
+       :cost/pricing-source :perplexity-reported
+       :cost/source-url
+       "https://docs.perplexity.ai/api-reference/sonar-post"
+       :cost/breakdown cost})))
 
 ;; ---------------------------------------------------------------------------
 ;; Citation extraction
@@ -51,13 +51,27 @@
     :else
     []))
 
-;; ---------------------------------------------------------------------------
-;; Request building — pure OpenAI delegation
+;; Request building
 ;; ---------------------------------------------------------------------------
 
 (defn build-request-perplexity
   [profile request]
-  (openai/build-request-openai profile request))
+  (let [base (openai/build-request-openai profile request)
+        base-body (:body base)
+        provider-extra (get-in request
+                               [:request/provider-options :extra_body])
+        reasoning (:request/reasoning request)
+        body (merge (dissoc base-body :extra_body)
+                    (:extra_body base-body)
+                    provider-extra)
+        body (cond-> (dissoc body :reasoning)
+               (and (:enabled reasoning) (:effort reasoning))
+               (assoc :reasoning_effort (name (:effort reasoning)))
+               (:request/stream? request)
+               (assoc :stream true))]
+    (assoc base
+           :url (str (:profile/base-url profile) "/v1/sonar")
+           :body body)))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing — extend OpenAI parser with citations
@@ -68,12 +82,19 @@
   (let [base (openai/parse-response-openai profile raw)
         citation-parts (extract-citation-parts raw)
         parts (:response/parts base [])
-        parts' (if (seq citation-parts)
-                 (into parts citation-parts)
-                 parts)]
-    (cond-> base
-      (seq citation-parts) (assoc :response/parts parts')
-      true (assoc :response/provider :perplexity))))
+        provider-data (merge (:response/provider-data base)
+                             (select-keys raw [:images :related_questions]))
+        usage-raw (:usage raw)
+        actual-cost (reported-cost usage-raw)]
+    (cond-> (assoc base :response/provider :perplexity)
+      (seq citation-parts)
+      (assoc :response/parts (into parts citation-parts))
+      usage-raw
+      (assoc :response/usage (normalize-perplexity-usage usage-raw))
+      (seq provider-data)
+      (assoc :response/provider-data provider-data)
+      actual-cost
+      (assoc :response/cost actual-cost))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing
@@ -98,44 +119,54 @@
     :else
     nil))
 
-(defn parse-stream-event-perplexity
-  "Parse a Perplexity SSE line into one or more StreamEvents.
+(defn- reasoning-events-from-data [data]
+  (->> (get-in data [:choices 0 :delta :reasoning_steps])
+       (keep :thought)
+       (filter string?)
+       (mapv stream/reasoning-delta)))
 
-   Perplexity streams the same shape as OpenAI for content deltas.
-   The final chunk packs citations, usage, and finish_reason together,
-   so this returns a vector of events for that line (and a single
-   event for the rest)."
+(defn parse-stream-event-perplexity
+  "Parse both full and concise Sonar SSE chunks.
+   Full-mode metadata can repeat on content chunks, so citations and usage are
+   emitted only when the choice finishes. Concise reasoning metadata is
+   translated to canonical reasoning deltas and final search results are
+   emitted from chat.completion.done."
   [_profile line]
   (when-let [data (parse-sse-line line)]
     (let [choice (first (:choices data))
           delta (:delta choice)
           finish (:finish_reason choice)
-          usage-raw (:usage data)
-          citations (citation-events-from-data data)]
-      (cond
-        ;; Final chunk with citations/usage/finish — emit all three.
-        (or (seq citations) usage-raw finish)
-        (cond-> []
-          (seq citations)
-          (into citations)
-          usage-raw
-          (conj (stream/usage-event
-                 (usage/normalize-usage :perplexity usage-raw)))
-          finish
-          (conj (stream/end-event
-                 :finish-reason
-                 (case finish
-                   ("stop" nil) :stop
-                   "length" :length
-                   "tool_calls" :tool-calls
-                   "content_filter" :content-filter
-                   :unknown))))
-
-        ;; Content delta — single event, same as OpenAI.
-        (seq (:content delta))
-        (stream/content-delta (:content delta))
-
-        :else nil))))
+          object (:object data)
+          final? (or (some? finish)
+                     (= "chat.completion.done" object))
+          content (:content delta)
+          reasoning-events (when (= "chat.reasoning" object)
+                             (reasoning-events-from-data data))
+          citations (when final? (citation-events-from-data data))
+          usage-raw (when final? (:usage data))
+          events (cond-> []
+                   (seq content)
+                   (conj (stream/content-delta content))
+                   (seq reasoning-events)
+                   (into reasoning-events)
+                   (seq citations)
+                   (into citations)
+                   usage-raw
+                   (conj (stream/usage-event
+                          (normalize-perplexity-usage usage-raw)
+                          :cost (reported-cost usage-raw)))
+                   final?
+                   (conj (stream/end-event
+                          :finish-reason
+                          (case finish
+                            "stop" :stop
+                            nil :stop
+                            "length" :length
+                            :unknown))))]
+      (case (count events)
+        0 nil
+        1 (first events)
+        events))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing
@@ -160,9 +191,9 @@
   (parse-error [_this profile status body]
     (parse-error-perplexity profile status body))
   (normalize-usage [_this _profile raw]
-    (usage/normalize-usage :perplexity raw))
+    (normalize-perplexity-usage raw))
   (request-capabilities [_]
-    #{:chat :streaming :json-schema :web-search}))
+    #{:chat :streaming :json-schema :web-search :reasoning}))
 
 (defn make-transport [] (->PerplexityTransport))
 
@@ -214,6 +245,8 @@
 ;; Register
 (when-let [p (provider/get-provider :perplexity)]
   (provider/register-provider
-   (assoc p
-          :profile/transport-constructor make-transport
-          :profile/cost-calculator perplexity-cost-calculator)))
+   (-> p
+       (assoc :profile/transport-constructor make-transport
+              :profile/cost-calculator perplexity-cost-calculator)
+       (update :profile/capabilities (fnil conj #{}) :reasoning)
+       (update :profile/supported-params (fnil conj #{}) :request/reasoning))))

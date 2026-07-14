@@ -14,9 +14,12 @@
        format). Usage is in :meta.billed_units.input_tokens.
 
    Live smoke is env-gated under COHERE_API_KEY."
-  (:require [llm.sdk.transport.embed :as et]
+  (:require [clojure.string :as str]
+            [llm.sdk.transport.embed :as et]
             [llm.sdk.provider :as provider]
-            [llm.sdk.errors :as errors]))
+            [llm.sdk.errors :as errors])
+  (:import (java.nio ByteBuffer ByteOrder)
+           (java.util Base64)))
 
 ;; ---------------------------------------------------------------------------
 ;; Usage normalization (Cohere-specific)
@@ -25,19 +28,36 @@
 (defn- ->int [x] (cond (int? x) x (number? x) (int x) :else 0))
 
 (defn normalize-cohere-embedding-usage
-  "Cohere /embed returns
-     {:meta {:billed_units {:input_tokens N} :api_version {...}}}"
+  "Normalize Cohere v2 meta tokens, retaining billed units in provider raw."
   [raw]
-  (let [input (->int (get-in raw [:meta :billed_units :input_tokens]))]
-    {:usage/input-tokens input
-     :usage/output-tokens 0
-     :usage/total-tokens input
-     :usage/request-count 1
-     :usage/provider-raw (:meta raw)}))
+  (let [meta (or (:meta raw) raw)
+        actual (:tokens meta)
+        billed (:billed_units meta)
+        input (->int (or (:input_tokens actual)
+                         (:input_tokens billed)))
+        output (->int (or (:output_tokens actual)
+                          (:output_tokens billed)))
+        image-tokens (->int (:image_tokens billed))]
+    (cond-> {:usage/input-tokens input
+             :usage/output-tokens output
+             :usage/total-tokens (+ input output)
+             :usage/request-count 1
+             :usage/provider-raw meta}
+      (pos? image-tokens) (assoc :usage/image-tokens image-tokens))))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
 ;; ---------------------------------------------------------------------------
+
+(defn- embed-url [profile]
+  (or (:profile/embed-url profile)
+      (let [base (:profile/base-url profile)]
+        (cond
+          (str/ends-with? base "/v1")
+          (str (subs base 0 (- (count base) 3)) "/v2/embed")
+
+          (str/ends-with? base "/v2") (str base "/embed")
+          :else (str base "/embed")))))
 
 (defn build-embed-request-cohere
   [profile request]
@@ -48,15 +68,19 @@
         body (cond-> {:model model
                       :texts inputs
                       :input_type input-type}
+               (:embed/dimensions request)
+               (assoc :output_dimension (:embed/dimensions request))
                (:embed/encoding-format request)
                (assoc :embedding_types
                       [(name (:embed/encoding-format request))])
-               (:truncate opts)
-               (assoc :truncate (:truncate opts)))
-        extra (get-in request [:embed/provider-options :extra_body])
+               (contains? opts :truncate)
+               (assoc :truncate (:truncate opts))
+               (:max-tokens opts) (assoc :max_tokens (:max-tokens opts))
+               (contains? opts :priority) (assoc :priority (:priority opts)))
+        extra (:extra_body opts)
         body (if (seq extra) (merge body extra) body)]
     {:method :post
-     :url (str (:profile/base-url profile) "/embed")
+     :url (embed-url profile)
      :headers (provider/default-headers profile
                                         (provider/resolve-auth-token profile))
      :body body}))
@@ -65,46 +89,41 @@
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
 
+(defn- decode-base64-floats [encoded]
+  (let [bytes (.decode (Base64/getDecoder) ^String encoded)
+        buffer (doto (ByteBuffer/wrap bytes)
+                 (.order ByteOrder/LITTLE_ENDIAN))]
+    (loop [values (transient [])]
+      (if (>= (.remaining buffer) Float/BYTES)
+        (recur (conj! values (double (.getFloat buffer))))
+        (persistent! values)))))
+
 (defn- extract-vectors
-  "Cohere /embed returns embeddings under :embeddings.float (multi-
-   format API) or directly under :embeddings (legacy / single format).
-   Always normalise to [[v1] [v2] ...]."
+  "Normalize all current Cohere v2 embedding encodings."
   [raw]
   (let [emb (:embeddings raw)]
     (cond
-      ;; Newer API: {:embeddings {:float [[...] [...]]}}
-      (and (map? emb) (seq (:float emb)))
-      (vec (:float emb))
-
-      ;; Newer API with a different requested encoding (e.g. :int8)
-      ;; — take whichever key holds the vector data
-      (map? emb)
-      (->> emb
-           vals
-           (some #(when (sequential? %) (vec %))))
-
-      ;; Legacy: {:embeddings [[...] [...]]}
-      (sequential? emb)
-      (vec emb)
-
-      :else
-      [])))
+      (sequential? emb) (vec emb)
+      (seq (:float emb)) (vec (:float emb))
+      (seq (:int8 emb)) (vec (:int8 emb))
+      (seq (:uint8 emb)) (vec (:uint8 emb))
+      (seq (:binary emb)) (vec (:binary emb))
+      (seq (:ubinary emb)) (vec (:ubinary emb))
+      (seq (:base64 emb)) (mapv decode-base64-floats (:base64 emb))
+      :else [])))
 
 (defn parse-embed-response-cohere
   [profile raw]
   (let [vectors (extract-vectors raw)
         first-vec (first vectors)]
     (cond-> {:embed/provider (:profile/id profile)
-             ;; Cohere doesn't echo the model in the response — leave
-             ;; this nil and let llm.sdk.embed/embed fill it in from
-             ;; the request. (:response_type is "embeddings_floats",
-             ;; not a model id, so it isn't a useful fallback.)
+             ;; Cohere does not echo the model in the v2 response.
              :embed/model (:model raw)
              :embed/vectors vectors
              :embed/raw raw}
-      first-vec
-      (assoc :embed/dimensions (count first-vec))
-      (get-in raw [:meta :billed_units])
+      (:id raw) (assoc :embed/id (:id raw))
+      first-vec (assoc :embed/dimensions (count first-vec))
+      (:meta raw)
       (assoc :response/usage (normalize-cohere-embedding-usage raw)))))
 
 ;; ---------------------------------------------------------------------------

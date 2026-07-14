@@ -30,13 +30,15 @@
                   :rerank/query "q"
                   :rerank/documents ["a" "b"]
                   :rerank/top-n 1
-                  :rerank/return-documents true}))]
+                  :rerank/return-documents true
+                  :rerank/provider-options {:truncation false}}))]
     (is (= "https://api.voyageai.com/v1/rerank" (:url built)))
     (is (= "Bearer stub" (get-in built [:headers "Authorization"])))
     (is (= 1 (get-in built [:body :top_k])))
     (is (nil? (get-in built [:body :top_n]))
         "Voyage uses :top_k, not :top_n")
-    (is (true? (get-in built [:body :return_documents])))))
+    (is (true? (get-in built [:body :return_documents])))
+    (is (false? (get-in built [:body :truncation])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing — data array, document as plain string

@@ -1,99 +1,149 @@
 (ns llm.sdk.providers.openrouter.chat
-  "OpenRouter transport adapter.
-   Builds on OpenAI Chat Completions with OpenRouter-specific quirks:
-   - provider preferences routing in extra_body
-   - Pareto Code router plugin
-   - reasoning config in extra_body (not top-level)
-   - special model naming and error handling."
+  "OpenRouter chat-completions transport.
+   OpenRouter extends the OpenAI wire shape with top-level provider routing,
+   plugins, reasoning, session routing, and detailed usage."
   (:require [clojure.string :as str]
             [llm.sdk.transport :as t]
             [llm.sdk.provider :as provider]
             [llm.sdk.providers.openai.chat :as openai]
+            [llm.sdk.providers.openrouter.embeddings]
             [llm.sdk.usage :as usage]
             [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
-;; OpenRouter-specific extra_body assembly
+;; OpenRouter top-level request extensions
 ;; ---------------------------------------------------------------------------
 
-(defn- build-openrouter-extra-body
-  "Build OpenRouter-specific extra_body fields.
-   Merges on top of any existing extra_body from the OpenAI adapter."
-  [profile request base-extra-body]
+(defn- build-openrouter-fields
+  "Build fields that OpenRouter accepts at the top level of ChatRequest.
+   `extra_body` is an OpenAI-client escape hatch, not an OpenRouter wire key,
+   so caller-supplied entries are flattened before the request is sent."
+  [profile request generic-extra]
   (let [model (:request/model request)
         reasoning (:request/reasoning request)
         provider-opts (:request/provider-options request)
-        quirks (:profile/quirks profile)
-        ;; Provider preferences for routing
-        prefs (get-in provider-opts [:provider])
-        ;; Pareto Code router plugin
+        prefs (:provider provider-opts)
         pareto-score (get-in provider-opts [:pareto :min-coding-score])
-        plugins (when (and (get quirks :pareto-router)
+        plugins (when (and (get-in profile [:profile/quirks :pareto-router])
                            (str/includes? model "pareto-code")
-                           pareto-score)
+                           (some? pareto-score))
                   [{:id "pareto-router"
                     :min_coding_score (double pareto-score)}])
-        ;; Reasoning in extra_body for OpenRouter (not top-level)
-        reasoning-extra (when (and reasoning (:enabled reasoning))
-                          {:reasoning {:enabled true
-                                       :effort (name (get reasoning :effort :medium))}})
-        ;; Cache routing key — OpenRouter forwards it to the upstream
-        ;; provider that supports prompt_cache_key (e.g. xAI Grok). It
-        ;; is harmless for providers that don't recognize the field.
-        cache-scope (when (cache/cache-enabled? request) (cache/scope-id request))
-        cache-extra (when cache-scope {:prompt_cache_key cache-scope})]
+        reasoning-wire (when reasoning
+                         (cond-> {}
+                           (contains? reasoning :enabled)
+                           (assoc :enabled (:enabled reasoning))
+                           (:effort reasoning)
+                           (assoc :effort (name (:effort reasoning)))
+                           (:budget reasoning)
+                           (assoc :max_tokens (:budget reasoning))
+                           (contains? reasoning :exclude)
+                           (assoc :exclude (:exclude reasoning))
+                           (:summary reasoning)
+                           (assoc :summary
+                                  (if (keyword? (:summary reasoning))
+                                    (name (:summary reasoning))
+                                    (:summary reasoning)))))
+        session-id (when (cache/cache-enabled? request)
+                     (cache/scope-id request))]
     (merge {}
-           base-extra-body
+           generic-extra
            (when prefs {:provider prefs})
            (when plugins {:plugins plugins})
-           reasoning-extra
-           cache-extra
-           ;; Any caller-supplied extra_body under provider-options
-           (get-in provider-opts [:extra_body]))))
+           (when (seq reasoning-wire) {:reasoning reasoning-wire})
+           (when session-id {:session_id session-id})
+           (when (:request/metadata request)
+             {:metadata (:request/metadata request)})
+           (:extra_body provider-opts))))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
 ;; ---------------------------------------------------------------------------
 
 (defn build-request-openrouter
-  "Build an OpenRouter request.
-   Delegates to OpenAI Chat adapter for base structure, then injects
-   OpenRouter-specific extra_body fields."
+  "Build an OpenRouter Chat Completions request.
+   The shared OpenAI adapter supplies the compatible core fields; OpenRouter
+   extensions are flattened into the top-level request object."
   [profile request]
-  (let [;; Build base request via OpenAI Chat adapter
-        base-req (openai/build-request-openai profile request)
-        ;; Extract existing extra_body (may contain provider prefs from OpenAI adapter)
-        base-extra-body (get-in base-req [:body :extra_body])
-        ;; Build OpenRouter-specific extra_body
-        or-extra-body (build-openrouter-extra-body profile request base-extra-body)
-        ;; Merge into body — always include extra_body as a map for OpenRouter
-        body (assoc (:body base-req) :extra_body (or or-extra-body {}))
-        ;; Add OpenRouter-specific headers
-        headers (merge (:headers base-req)
-                       {"HTTP-Referer" (or (System/getenv "OPENROUTER_HTTP_REFERER")
-                                           "https://github.com/DeadMeme5441/clojure-llm-sdk")
-                        "X-Title" (or (System/getenv "OPENROUTER_APP_NAME")
-                                      "clojure-llm-sdk")})]
-    (assoc base-req
-           :body body
-           :headers headers)))
+  (let [base-req (openai/build-request-openai profile request)
+        base-body (:body base-req)
+        openrouter-fields (build-openrouter-fields
+                           profile request (:extra_body base-body))
+        body (merge (dissoc base-body :extra_body) openrouter-fields)
+        body (cond-> body
+               (:max_tokens body)
+               (assoc :max_completion_tokens (:max_tokens body))
+               (:max_tokens body)
+               (dissoc :max_tokens)
+               (:request/stream? request)
+               (assoc :stream true))
+        metadata-level (get-in request
+                               [:request/provider-options :metadata-level])
+        headers (cond->
+                 (merge
+                  (:headers base-req)
+                  {"HTTP-Referer"
+                   (or (System/getenv "OPENROUTER_HTTP_REFERER")
+                       "https://github.com/DeadMeme5441/clojure-llm-sdk")
+                   "X-OpenRouter-Title"
+                   (or (System/getenv "OPENROUTER_APP_NAME")
+                       "clojure-llm-sdk")})
+                  (some? metadata-level)
+                  (assoc "X-OpenRouter-Metadata"
+                         (if (keyword? metadata-level)
+                           (name metadata-level)
+                           (str metadata-level))))]
+    (assoc base-req :body body :headers headers)))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing — delegate to OpenAI Chat
 ;; ---------------------------------------------------------------------------
 
+(defn- reported-cost [usage-raw]
+  (when (number? (:cost usage-raw))
+    {:cost/usd (:cost usage-raw)
+     :cost/estimated? false
+     :cost/pricing-source :openrouter-reported
+     :cost/source-url
+     "https://openrouter.ai/docs/cookbook/administration/usage-accounting"
+     :cost/breakdown
+     (select-keys usage-raw
+                  [:cost :cost_details :is_byok :server_tool_use])}))
+
 (defn parse-response-openrouter
   [profile raw]
-  (openai/parse-response-openai profile raw))
+  (let [base (openai/parse-response-openai profile raw)
+        provider-data (merge
+                       (:response/provider-data base)
+                       (select-keys raw
+                                    [:openrouter_metadata :service_tier])
+                       (when-let [native-finish
+                                  (get-in raw
+                                          [:choices 0 :native_finish_reason])]
+                         {:native_finish_reason native-finish}))
+        actual-cost (reported-cost (:usage raw))]
+    (cond-> base
+      (seq provider-data) (assoc :response/provider-data provider-data)
+      actual-cost (assoc :response/cost actual-cost))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing — delegate to OpenAI Chat
 ;; ---------------------------------------------------------------------------
 
+(defn- attach-stream-cost [event]
+  (if (= :stream/usage (:event/type event))
+    (if-let [cost (reported-cost (get-in event [:usage :usage/provider-raw]))]
+      (assoc event :cost cost)
+      event)
+    event))
+
 (defn parse-stream-event-openrouter
   [profile line]
-  (openai/parse-stream-event-openai profile line))
+  (let [parsed (openai/parse-stream-event-openai profile line)]
+    (if (sequential? parsed)
+      (mapv attach-stream-cost parsed)
+      (some-> parsed attach-stream-cost))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing

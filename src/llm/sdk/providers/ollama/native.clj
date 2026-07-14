@@ -52,30 +52,67 @@
                     (map :text)
                     (str/join ""))
                :else "")
+        thinking (when (sequential? content)
+                   (->> content
+                        (filter #(= (:part/type %) :reasoning))
+                        (map :reasoning/text)
+                        (str/join "")))
         images (collect-images content)
         base (cond-> {:role (name (:message/role msg))
                       :content text}
+               (seq thinking) (assoc :thinking thinking)
                (seq images) (assoc :images images))]
     (cond
       (= :tool (:message/role msg))
-      (assoc base
-             :role "tool"
-             :tool_call_id (or (:message/tool-call-id msg) "tool_0"))
+      (cond-> (assoc base :role "tool")
+        (:message/name msg) (assoc :tool_name (:message/name msg)))
 
       (seq (:message/tool-calls msg))
       (assoc base :tool_calls
-             (mapv (fn [tc]
-                     {:function {:name (:tool-call/name tc)
-                                 :arguments (try (json/parse-string
-                                                  (:tool-call/arguments tc) true)
-                                                 (catch Exception _ {}))}})
+             (mapv (fn [idx tc]
+                     {:type "function"
+                      :function {:index idx
+                                 :name (:tool-call/name tc)
+                                 :arguments (try
+                                              (json/parse-string
+                                               (:tool-call/arguments tc) true)
+                                              (catch Exception _ {}))}})
+                   (range)
                    (:message/tool-calls msg)))
 
       :else base)))
 
 (defn- tool->ollama [tool]
-  ;; Ollama accepts OpenAI-shaped tool definitions verbatim.
-  tool)
+  (let [function (:function tool)]
+    {:type "function"
+     :function (cond-> {:name (:name function)
+                        :parameters (or (:parameters function)
+                                        {:type "object" :properties {}})}
+                 (:description function)
+                 (assoc :description (:description function)))}))
+
+(defn- reasoning->ollama [reasoning]
+  (when reasoning
+    (cond
+      (false? (:enabled reasoning))
+      false
+
+      (:effort reasoning)
+      (case (:effort reasoning)
+        :low "low"
+        :medium "medium"
+        :high "high"
+        (throw (ex-info
+                (str "Ollama does not support reasoning effort "
+                     (name (:effort reasoning)))
+                {:provider :ollama-native
+                 :effort (:effort reasoning)
+                 :supported-efforts #{:low :medium :high}})))
+
+      (contains? reasoning :enabled)
+      (boolean (:enabled reasoning))
+
+      :else nil)))
 
 ;; ---------------------------------------------------------------------------
 ;; Chat request
@@ -85,27 +122,37 @@
   [profile request]
   (let [stream? (boolean (:request/stream? request))
         messages (mapv message->ollama (:request/messages request))
-        opts (cond-> {}
-               (:request/temperature request)
-               (assoc :temperature (:request/temperature request))
-               (:request/top-p request) (assoc :top_p (:request/top-p request))
-               (:request/max-tokens request)
-               (assoc :num_predict (:request/max-tokens request))
-               (:request/stop request)
-               (assoc :stop (t/stop-sequences (:request/stop request))))
         extras (get-in request [:request/provider-options :ollama] {})
+        opts (merge
+              (:options extras)
+              (cond-> {}
+                (contains? request :request/temperature)
+                (assoc :temperature (:request/temperature request))
+                (contains? request :request/top-p)
+                (assoc :top_p (:request/top-p request))
+                (contains? request :request/max-tokens)
+                (assoc :num_predict (:request/max-tokens request))
+                (contains? request :request/stop)
+                (assoc :stop (t/stop-sequences (:request/stop request)))))
+        reasoning (reasoning->ollama (:request/reasoning request))
+        format (case (get-in request [:request/response-format :type])
+                 :json_object "json"
+                 :json_schema (get-in request [:request/response-format :json-schema])
+                 nil)
         body (cond-> {:model (:request/model request)
                       :messages messages
                       :stream stream?}
                (seq opts) (assoc :options opts)
-               (:keep_alive extras) (assoc :keep_alive (:keep_alive extras))
+               (contains? extras :keep_alive)
+               (assoc :keep_alive (:keep_alive extras))
                (seq (:request/tools request))
                (assoc :tools (mapv tool->ollama (:request/tools request)))
-               (:request/response-format request)
-               (assoc :format (case (get-in request [:request/response-format :type])
-                                :json_object "json"
-                                :json_schema (get-in request [:request/response-format :json-schema])
-                                "json")))]
+               format (assoc :format format)
+               (some? reasoning) (assoc :think reasoning)
+               (contains? extras :think) (assoc :think (:think extras))
+               (contains? extras :logprobs) (assoc :logprobs (:logprobs extras))
+               (contains? extras :top_logprobs)
+               (assoc :top_logprobs (:top_logprobs extras)))]
     {:method :post
      :url (str (base-url profile) "/api/chat")
      :headers {"Content-Type" "application/json"}
@@ -133,25 +180,36 @@
                                               :prompt_eval_duration
                                               :eval_duration])})))
 
+(defn- tool-call->part [fallback-index tc]
+  (let [index (or (get-in tc [:function :index]) fallback-index)
+        arguments (get-in tc [:function :arguments])]
+    {:part/type :tool-call
+     :tool-call/id (or (:id tc) (str "ollama_call_" index))
+     :tool-call/name (or (get-in tc [:function :name]) "")
+     :tool-call/arguments (if (string? arguments)
+                            arguments
+                            (json/generate-string (or arguments {})))}))
+
 (defn parse-response-ollama
   [_profile raw]
   (let [msg (:message raw)
         text (:content msg)
-        tool-calls (vec
-                    (map-indexed (fn [idx tc]
-                            {:part/type :tool-call
-                             :tool-call/id (or (:id tc) (str "ollama_call_" idx))
-                             :tool-call/name (or (get-in tc [:function :name]) "")
-                             :tool-call/arguments
-                             (let [a (get-in tc [:function :arguments])]
-                               (if (string? a) a (json/generate-string a)))})
-                          (:tool_calls msg)))
+        thinking (:thinking msg)
+        images (mapv #(hash-map :part/type :image :image/data %)
+                     (:images msg))
+        tool-calls (mapv tool-call->part
+                         (range)
+                         (:tool_calls msg))
         finish (get finish-reason-map (:done_reason raw) :stop)
         usage (usage-from raw)]
     (cond-> {:response/provider :ollama-native
              :response/model (:model raw)
              :response/parts (cond-> []
+                               (seq thinking)
+                               (conj {:part/type :reasoning
+                                      :reasoning/text thinking})
                                (seq text) (conj {:part/type :text :text text})
+                               (seq images) (into images)
                                (seq tool-calls) (into tool-calls))
              :response/finish-reason finish
              :response/raw raw}
@@ -168,35 +226,42 @@
     (when-let [data (try (json/parse-string line true)
                          (catch Exception _ nil))]
       (let [msg (:message data)
-            done? (:done data)
-            tool-calls (get msg :tool_calls)
-            text (:content msg)]
-        (cond
-          (seq tool-calls)
-          (mapcat
-           (fn [[idx tc]]
-             [(stream/tool-call-start idx
-                                      (or (:id tc) (str "ollama_call_" idx))
-                                      (or (get-in tc [:function :name]) ""))
-              (stream/tool-call-delta idx
-                                      (let [a (get-in tc [:function :arguments])]
-                                        (if (string? a) a (json/generate-string (or a {})))))
-              (stream/tool-call-end idx)])
-           (map-indexed vector tool-calls))
-
-          (and (seq text) (not done?))
-          (stream/content-delta text)
-
-          done?
-          (let [u (usage-from data)
-                events []
-                events (cond-> events
-                         u (conj (stream/usage-event u)))
-                fr (or (get finish-reason-map (:done_reason data)) :stop)
-                events (conj events (stream/end-event :finish-reason fr))]
-            events)
-
-          :else nil)))))
+            tool-events
+            (mapcat
+             (fn [[fallback-index tc]]
+               (let [index (or (get-in tc [:function :index]) fallback-index)
+                     arguments (get-in tc [:function :arguments])]
+                 [(stream/tool-call-start
+                   index
+                   (or (:id tc) (str "ollama_call_" index))
+                   (or (get-in tc [:function :name]) ""))
+                  (stream/tool-call-delta
+                   index
+                   (if (string? arguments)
+                     arguments
+                     (json/generate-string (or arguments {}))))
+                  (stream/tool-call-end index)]))
+             (map-indexed vector (:tool_calls msg)))
+            events (cond-> []
+                     (seq (:thinking msg))
+                     (conj (stream/reasoning-delta (:thinking msg)))
+                     (seq (:content msg))
+                     (conj (stream/content-delta (:content msg))))
+            events (into events tool-events)
+            events (if (:done data)
+                     (cond-> events
+                       (usage-from data)
+                       (conj (stream/usage-event (usage-from data)))
+                       true
+                       (conj (stream/end-event
+                              :finish-reason
+                              (or (get finish-reason-map (:done_reason data))
+                                  :stop))))
+                     events)]
+        (case (count events)
+          0 nil
+          1 (first events)
+          events)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing
@@ -215,27 +280,42 @@
 
 (defn build-embed-request-ollama
   [profile request]
-  {:method :post
-   :url (str (base-url profile) "/api/embed")
-   :headers {"Content-Type" "application/json"}
-   :body {:model (:embed/model request)
-          :input (vec (:embed/inputs request))}})
+  (let [extras (get-in request [:embed/provider-options :ollama] {})
+        body (cond-> {:model (:embed/model request)
+                      :input (vec (:embed/inputs request))}
+               (contains? request :embed/dimensions)
+               (assoc :dimensions (:embed/dimensions request))
+               (contains? extras :truncate)
+               (assoc :truncate (:truncate extras))
+               (contains? extras :keep_alive)
+               (assoc :keep_alive (:keep_alive extras))
+               (seq (:options extras))
+               (assoc :options (:options extras)))]
+    {:method :post
+     :url (str (base-url profile) "/api/embed")
+     :headers {"Content-Type" "application/json"}
+     :body body}))
+
+(defn- embed-usage-from [raw]
+  (when (or (:prompt_eval_count raw) (:total_duration raw))
+    (let [input (or (:prompt_eval_count raw) 0)]
+      {:usage/input-tokens input
+       :usage/output-tokens 0
+       :usage/total-tokens input
+       :usage/request-count 1
+       :usage/provider-raw
+       (select-keys raw [:total_duration :load_duration])})))
 
 (defn parse-embed-response-ollama
   [_profile raw]
-  (let [vectors (:embeddings raw)]
-    {:embed/provider :ollama-native
-     :embed/model (:model raw)
-     :embed/vectors (mapv (fn [i v]
-                            {:embed/index i
-                             :embed/vector (vec v)})
-                          (range) vectors)
-     :response/usage (when (or (:prompt_eval_count raw) (:total_duration raw))
-                       {:usage/input-tokens (or (:prompt_eval_count raw) 0)
-                        :usage/output-tokens 0
-                        :usage/total-tokens (or (:prompt_eval_count raw) 0)
-                        :usage/request-count 1})
-     :response/raw raw}))
+  (let [vectors (mapv vec (:embeddings raw))
+        usage (embed-usage-from raw)]
+    (cond-> {:embed/provider :ollama-native
+             :embed/model (:model raw)
+             :embed/vectors vectors
+             :embed/raw raw}
+      (seq vectors) (assoc :embed/dimensions (count (first vectors)))
+      usage (assoc :response/usage usage))))
 
 (defn parse-embed-error-ollama
   [_profile status body]
@@ -255,7 +335,8 @@
   (parse-stream-event [_ profile line] (parse-stream-event-ollama profile line))
   (parse-error [_ profile status body] (parse-error-ollama profile status body))
   (normalize-usage [_ _ raw] (usage-from raw))
-  (request-capabilities [_] #{:chat :streaming :tools :multimodal}))
+  (request-capabilities [_]
+    #{:chat :streaming :tools :multimodal :json-schema :reasoning}))
 
 (defn make-transport [] (->OllamaNativeTransport))
 
@@ -264,7 +345,7 @@
   (build-embed-request [_ profile request] (build-embed-request-ollama profile request))
   (parse-embed-response [_ profile raw] (parse-embed-response-ollama profile raw))
   (parse-embed-error [_ profile status body] (parse-embed-error-ollama profile status body))
-  (normalize-embed-usage [_ _ raw] raw))
+  (normalize-embed-usage [_ _ raw] (embed-usage-from raw)))
 
 (defn make-embed-transport [] (->OllamaNativeEmbedTransport))
 
@@ -277,7 +358,8 @@
                         "http://localhost:11434")
   :profile/auth-strategy :none
   :profile/supports-model-listing false
-  :profile/capabilities #{:chat :streaming :tools :embedding :multimodal}
+  :profile/capabilities #{:chat :streaming :tools :embedding :multimodal
+                          :json-schema :reasoning}
   :profile/env-var-names []
   :profile/transport-constructor make-transport
   :profile/embed-transport-constructor make-embed-transport})

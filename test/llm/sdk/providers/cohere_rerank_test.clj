@@ -38,14 +38,15 @@
                   :rerank/documents ["python" "javascript" "clojure"]
                   :rerank/top-n 2
                   :rerank/return-documents true}))]
-    (is (= "https://api.cohere.com/v1/rerank" (:url built)))
+    (is (= "https://api.cohere.com/v2/rerank" (:url built)))
     (is (= "Bearer stub" (get-in built [:headers "Authorization"])))
     (is (= "rerank-english-v3.0" (get-in built [:body :model])))
     (is (= "clojure programming" (get-in built [:body :query])))
     (is (= ["python" "javascript" "clojure"]
            (get-in built [:body :documents])))
     (is (= 2 (get-in built [:body :top_n])))
-    (is (true? (get-in built [:body :return_documents])))))
+    (is (nil? (get-in built [:body :return_documents]))
+        "Cohere v2 does not accept return_documents")))
 
 (deftest test-build-request-extra-body-merges
   (let [t (ckr/make-transport)
@@ -59,6 +60,20 @@
                   :rerank/documents ["a"]
                   :rerank/provider-options {:extra_body {:rank_fields ["title"]}}}))]
     (is (= ["title"] (get-in built [:body :rank_fields])))))
+
+(deftest test-build-request-current-provider-options
+  (let [t (ckr/make-transport)
+        profile (provider/get-provider :cohere)
+        built (with-redefs [provider/resolve-auth-token (constantly "stub")]
+                (rt/build-rerank-request
+                 t profile
+                 {:rerank/model "rerank-v4.0-pro"
+                  :rerank/query "q"
+                  :rerank/documents ["a"]
+                  :rerank/provider-options {:max-tokens-per-doc 2048
+                                            :priority 3}}))]
+    (is (= 2048 (get-in built [:body :max_tokens_per_doc])))
+    (is (= 3 (get-in built [:body :priority])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing — fixture
@@ -79,6 +94,19 @@
       (is (= 2 (:rerank/index (first results)))))
     (testing "Cohere billed_units surfaces in usage"
       (is (= 1 (get-in resp [:response/usage :usage/request-count]))))))
+
+(deftest test-parse-cohere-v2-usage
+  (let [t (ckr/make-transport)
+        profile (provider/get-provider :cohere)
+        resp (rt/parse-rerank-response
+              t profile
+              {:id "rerank-1"
+               :results [{:index 0 :relevance_score 0.75}]
+               :meta {:tokens {:input_tokens 14 :output_tokens 0}
+                      :billed_units {:search_units 2}}})]
+    (is (= "rerank-1" (:rerank/id resp)))
+    (is (= 14 (get-in resp [:response/usage :usage/input-tokens])))
+    (is (= 1 (get-in resp [:response/usage :usage/request-count])))))
 
 (deftest test-parse-response-document-as-string
   (testing "document field already as a string also works"
@@ -105,6 +133,25 @@
     (is (= "jina-reranker-v2-base-multilingual" (:rerank/model resp)))
     (testing "Jina total_tokens surfaces in usage"
       (is (= 25 (get-in resp [:response/usage :usage/total-tokens]))))))
+
+(deftest test-jina-request-current-options
+  (let [t (ckr/make-transport)
+        profile (provider/get-provider :jina)
+        built (with-redefs [provider/resolve-auth-token (constantly "stub")]
+                (rt/build-rerank-request
+                 t profile
+                 {:rerank/model "jina-reranker-v3"
+                  :rerank/query "q"
+                  :rerank/documents ["a"]
+                  :rerank/return-documents true
+                  :rerank/provider-options {:truncation false
+                                            :max-doc-length 4096
+                                            :return-embeddings true}}))]
+    (is (= "https://api.jina.ai/v1/rerank" (:url built)))
+    (is (true? (get-in built [:body :return_documents])))
+    (is (false? (get-in built [:body :truncation])))
+    (is (= 4096 (get-in built [:body :max_doc_length])))
+    (is (true? (get-in built [:body :return_embeddings])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error classification

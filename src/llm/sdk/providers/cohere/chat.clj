@@ -24,7 +24,8 @@
    "MAX_TOKENS" :length
    "STOP_SEQUENCE" :stop
    "TOOL_CALL" :tool-calls
-   "ERROR" :unknown})
+   "ERROR" :unknown
+   "TIMEOUT" :unknown})
 
 ;; ---------------------------------------------------------------------------
 ;; Message conversion
@@ -102,11 +103,11 @@
                 :parameters (or (:parameters fn-data) {:type "object"})}}))
 
 (defn- tool-choice->cohere [tc]
-  (cond
-    (= tc :auto) "AUTO"
-    (= tc :required) "REQUIRED"
-    (= tc :none) "NONE"
-    :else nil))
+  (case tc
+    :required "REQUIRED"
+    :none "NONE"
+    ;; Omitting tool_choice is Cohere's documented automatic mode.
+    nil))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
@@ -119,6 +120,21 @@
   (mapv file->cohere-document
         (mapcat #(file-parts (:message/content %)) messages)))
 
+(defn- response-format->cohere [format]
+  (case (:type format)
+    :text {:type "text"}
+    :json_object {:type "json_object"}
+    :json_schema {:type "json_object"
+                  :json_schema (:json-schema format)}
+    nil))
+
+(defn- reasoning->cohere [reasoning]
+  (when reasoning
+    (cond-> {:type (if (false? (:enabled reasoning))
+                     "disabled"
+                     "enabled")}
+      (:budget reasoning) (assoc :token_budget (:budget reasoning)))))
+
 (defn build-request-cohere
   [profile request]
   (let [stream? (boolean (:request/stream? request))
@@ -129,12 +145,25 @@
         canonical-documents (file-documents (:request/messages request))
         documents (vec (concat (or (:documents extras) [])
                                canonical-documents))
-        body (cond-> {:model (:request/model request)
-                      :messages messages
-                      :stream stream?}
+        tool-choice (tool-choice->cohere (:request/tool-choice request))
+        response-format (response-format->cohere
+                         (:request/response-format request))
+        reasoning (reasoning->cohere (:request/reasoning request))
+        strict-tools? (or (:strict_tools extras)
+                          (some #(true? (get-in % [:function :strict]))
+                                (:request/tools request)))
+        provider-fields (select-keys
+                         extras
+                         [:citation_options :safety_mode :seed
+                          :frequency_penalty :presence_penalty :k
+                          :logprobs :priority])
+        body (cond-> (merge {:model (:request/model request)
+                             :messages messages
+                             :stream stream?}
+                            provider-fields)
                tools (assoc :tools tools)
-               (:request/tool-choice request)
-               (assoc :tool_choice (tool-choice->cohere (:request/tool-choice request)))
+               strict-tools? (assoc :strict_tools true)
+               tool-choice (assoc :tool_choice tool-choice)
                (:request/temperature request)
                (assoc :temperature (:request/temperature request))
                (:request/top-p request) (assoc :p (:request/top-p request))
@@ -143,13 +172,18 @@
                (:request/stop request)
                (assoc :stop_sequences (t/stop-sequences (:request/stop request)))
                (seq documents) (assoc :documents documents)
-               (:citation_options extras) (assoc :citation_options (:citation_options extras))
-               (:safety_mode extras) (assoc :safety_mode (:safety_mode extras)))
-        chat-url (or (:profile/chat-url profile) "https://api.cohere.com/v2/chat")]
+               response-format (assoc :response_format response-format)
+               reasoning (assoc :thinking reasoning))
+        body (if-let [extra-body (:extra_body extras)]
+               (merge body extra-body)
+               body)
+        chat-url (or (:profile/chat-url profile)
+                     "https://api.cohere.com/v2/chat")]
     {:method :post
      :url chat-url
-     :headers (provider/default-headers profile
-                                        (provider/resolve-auth-token profile))
+     :headers (provider/default-headers
+               profile
+               (provider/resolve-auth-token profile))
      :body body}))
 
 ;; ---------------------------------------------------------------------------
@@ -159,24 +193,34 @@
 (defn- usage->canonical [u]
   (when u
     (let [b (:billed_units u)
-          ;; Prefer billed_units; fall back to tokens.
-          input (or (:input_tokens b) (get-in u [:tokens :input_tokens]) 0)
-          output (or (:output_tokens b) (get-in u [:tokens :output_tokens]) 0)]
-      {:usage/input-tokens input
-       :usage/output-tokens output
-       :usage/total-tokens (+ input output)
-       :usage/request-count 1
-       :usage/provider-raw u})))
+          tokens (:tokens u)
+          input (long (or (:input_tokens tokens)
+                          (:input_tokens b)
+                          0))
+          output (long (or (:output_tokens tokens)
+                           (:output_tokens b)
+                           0))]
+      (cond-> {:usage/input-tokens input
+               :usage/output-tokens output
+               :usage/total-tokens (+ input output)
+               :usage/request-count 1
+               :usage/provider-raw u}
+        (:cached_tokens u)
+        (assoc :usage/cached-input-tokens (long (:cached_tokens u)))))))
 
 (defn- citation->part [c]
-  (cond-> {:part/type :citation}
-    (or (:url c)
-        (some :url (:sources c)))
-    (assoc :citation/url (or (:url c) (some :url (:sources c))))
-    (:title c) (assoc :citation/title (:title c))
-    (:text c) (assoc :citation/snippet (:text c))
-    (and (int? (:start c)) (int? (:end c)))
-    (assoc :citation/text-range [(:start c) (:end c)])))
+  (let [source (first (:sources c))
+        document (:document source)
+        url (or (:url c) (:url source) (:url document))
+        title (or (:title c) (:title source) (:title document))
+        source-id (or (:id source) (:id c))]
+    (cond-> {:part/type :citation}
+      url (assoc :citation/url url)
+      title (assoc :citation/title title)
+      (:text c) (assoc :citation/snippet (:text c))
+      source-id (assoc :citation/source-id source-id)
+      (and (int? (:start c)) (int? (:end c)))
+      (assoc :citation/text-range [(:start c) (:end c)]))))
 
 (defn parse-response-cohere
   [_profile raw]
@@ -184,6 +228,10 @@
         content (:content msg)
         text-parts (mapv (fn [p] {:part/type :text :text (:text p)})
                          (filter #(= "text" (:type %)) content))
+        reasoning-parts
+        (mapv (fn [p] {:part/type :reasoning
+                       :reasoning/text (:thinking p)})
+              (filter #(= "thinking" (:type %)) content))
         tool-calls (vec
                     (mapv (fn [tc]
                             {:part/type :tool-call
@@ -196,7 +244,8 @@
     (cond-> {:response/id (:id raw)
              :response/provider :cohere
              :response/model (:model raw)
-             :response/parts (into [] (concat text-parts tool-calls citations))
+             :response/parts (into [] (concat text-parts reasoning-parts
+                                              tool-calls citations))
              :response/finish-reason finish
              :response/raw raw}
       (seq tool-calls) (assoc :response/tool-calls tool-calls)
@@ -223,8 +272,12 @@
       "message-start" nil
       "content-start" nil
       "content-delta"
-      (when-let [text (get-in data [:delta :message :content :text])]
-        (stream/content-delta text))
+      (let [content (get-in data [:delta :message :content])]
+        (case (:type content)
+          "thinking" (when-let [text (:thinking content)]
+                       (stream/reasoning-delta text))
+          (when-let [text (:text content)]
+            (stream/content-delta text))))
       "content-end" nil
 
       "tool-plan-delta"
@@ -281,21 +334,22 @@
   (parse-stream-event [_ profile line] (parse-stream-event-cohere profile line))
   (parse-error [_ profile status body] (parse-error-cohere profile status body))
   (normalize-usage [_ _ raw] (usage->canonical raw))
-  (request-capabilities [_] #{:chat :streaming :tools :citations :file-attachments}))
+  (request-capabilities [_]
+    #{:chat :streaming :tools :json-schema :reasoning :citations
+      :file-attachments}))
 
 (defn make-transport [] (->CohereChatTransport))
 
-;; Augment the existing :cohere profile (registered upstream by
-;; provider.clj for embed + rerank) with chat support. We keep its
-;; auth + env-var + /v1 base-url (which embed and rerank rely on) and
-;; pin the chat path to /v2/chat via :profile/chat-url so /v2 lives
-;; alongside /v1/embed and /v1/rerank under the same profile.
+;; Augment the existing :cohere profile with native v2 chat support while
+;; preserving the embedding and rerank constructors installed by their
+;; provider namespaces.
 (let [existing (provider/get-provider :cohere)
       base (merge existing
                   {:profile/protocol-family :cohere
                    :profile/chat-url "https://api.cohere.com/v2/chat"
-                   :profile/capabilities (into #{:chat :streaming :tools :citations
-                                                 :file-attachments}
-                                                (:profile/capabilities existing #{}))
+                   :profile/capabilities
+                   (into #{:chat :streaming :tools :json-schema :reasoning
+                           :citations :file-attachments}
+                         (:profile/capabilities existing #{}))
                    :profile/transport-constructor make-transport})]
   (provider/register-provider base))

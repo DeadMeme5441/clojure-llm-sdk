@@ -3,10 +3,36 @@
    xi-api-key header. Voice id is part of the URL; model id and
    text live in the JSON body. Returns audio bytes (mp3 by default).
 
-   Reference: litellm-ref/llms/elevenlabs/ + ElevenLabs API docs."
-  (:require [llm.sdk.transport.speak :as st]
+   Reference: https://elevenlabs.io/docs/api-reference/text-to-speech/convert"
+  (:require [clojure.string :as str]
+            [llm.sdk.transport.speak :as st]
             [llm.sdk.provider :as provider]
-            [llm.sdk.errors :as errors]))
+            [llm.sdk.errors :as errors])
+  (:import [java.net URLEncoder]))
+
+(defn- output-format [format]
+  (case format
+    :mp3 "mp3_44100_128"
+    :opus "opus_48000_96"
+    :pcm "pcm_44100"
+    :wav "wav_44100"
+    (:aac :flac)
+    (throw (ex-info (str "ElevenLabs does not support " (name format)
+                         " output")
+                    {:provider :elevenlabs
+                     :format format
+                     :supported-formats #{:mp3 :opus :pcm :wav}}))
+    nil))
+
+(defn- query-string [pairs]
+  (when (seq pairs)
+    (str "?"
+         (str/join
+          "&"
+          (map (fn [[k v]]
+                 (str (name k) "="
+                      (URLEncoder/encode (str v) "UTF-8")))
+               pairs)))))
 
 (defn build-request
   [profile request]
@@ -15,27 +41,33 @@
                                   {:provider :elevenlabs})))
         model (or (:speak/model request) "eleven_multilingual_v2")
         input (:speak/input request)
-        fmt (some-> (:speak/format request) name)
-        ;; output_format is a query parameter, not a body field
-        output-fmt (case fmt
-                     "mp3" "mp3_44100_128"
-                     "opus" "opus_48000_96"
-                     "pcm" "pcm_44100"
-                     "wav" "pcm_44100"
-                     nil)
+        options (or (:speak/provider-options request) {})
+        output-fmt (or (:output_format options)
+                       (output-format (:speak/format request)))
+        query (cond-> []
+                output-fmt (conj [:output_format output-fmt])
+                (some? (:enable_logging options))
+                (conj [:enable_logging (:enable_logging options)])
+                (some? (:optimize_streaming_latency options))
+                (conj [:optimize_streaming_latency
+                       (:optimize_streaming_latency options)]))
+        voice-settings (cond-> (:voice_settings options)
+                         (contains? request :speak/speed)
+                         (assoc :speed (:speak/speed request)))
+        body-options (dissoc options
+                             :output_format
+                             :enable_logging
+                             :optimize_streaming_latency
+                             :voice_settings)
+        body (cond-> (merge {:text input
+                             :model_id model}
+                            body-options)
+               (or (contains? options :voice_settings)
+                   (contains? request :speak/speed))
+               (assoc :voice_settings voice-settings))
         url (str (:profile/base-url profile)
                  "/v1/text-to-speech/" voice
-                 (when output-fmt (str "?output_format=" output-fmt)))
-        body (cond-> {:text input
-                      :model_id model}
-               (:speak/instructions request)
-               (assoc :voice_settings
-                      (merge {:stability 0.5 :similarity_boost 0.75}
-                             (get-in request [:speak/provider-options :voice_settings])))
-               (get-in request [:speak/provider-options :voice_settings])
-               (assoc :voice_settings
-                      (get-in request [:speak/provider-options :voice_settings])))
-        body (merge body (dissoc (:speak/provider-options request) :voice_settings))]
+                 (query-string query))]
     {:method :post
      :url url
      :headers (merge {"xi-api-key" (provider/resolve-auth-token profile)
@@ -47,7 +79,7 @@
   [_profile resp]
   (let [ct (or (get-in resp [:headers "content-type"])
                (get-in resp [:headers "Content-Type"])
-               "audio/mpeg")]
+               "application/octet-stream")]
     {:audio/bytes (:body resp)
      :audio/content-type ct
      :response/raw (:headers resp)}))

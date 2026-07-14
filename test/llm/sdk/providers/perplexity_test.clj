@@ -92,7 +92,9 @@
     (is (= ["PERPLEXITY_API_KEY"] (:profile/env-var-names p)))
     (is (= :bearer (:profile/auth-strategy p)))
     (is (fn? (:profile/transport-constructor p)))
-    (is (contains? (:profile/capabilities p) :web-search))))
+    (is (contains? (:profile/capabilities p) :web-search))
+    (is (contains? (:profile/capabilities p) :reasoning))
+    (is (contains? (:profile/supported-params p) :request/reasoning))))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building — delegates to openai-chat shape
@@ -108,11 +110,27 @@
                  {:request/model "sonar"
                   :request/messages [{:message/role :user
                                       :message/content "What is Clojure?"}]
-                  :request/max-tokens 100}))]
-    (is (= "https://api.perplexity.ai/chat/completions" (:url built)))
+                  :request/max-tokens 100
+                  :request/reasoning {:enabled true :effort :high}
+                  :request/stream? true
+                  :request/provider-options
+                  {:extra_body
+                   {:search_mode "academic"
+                    :web_search_options
+                    {:search_context_size "high"}
+                    :return_images true}}}))]
+    (is (= "https://api.perplexity.ai/v1/sonar" (:url built)))
     (is (= "Bearer stub-token" (get-in built [:headers "Authorization"])))
     (is (= "sonar" (get-in built [:body :model])))
-    (is (= 100 (get-in built [:body :max_tokens])))))
+    (is (= 100 (get-in built [:body :max_tokens])))
+    (is (= "high" (get-in built [:body :reasoning_effort])))
+    (is (= "academic" (get-in built [:body :search_mode])))
+    (is (= "high"
+           (get-in built
+                   [:body :web_search_options :search_context_size])))
+    (is (true? (get-in built [:body :return_images])))
+    (is (true? (get-in built [:body :stream])))
+    (is (not (contains? (:body built) :extra_body)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing — citations and search_results
@@ -134,6 +152,37 @@
              (:citation/snippet (first citation-parts))))
       (is (= 256 (get-in resp [:response/usage :usage/citation-tokens])))
       (is (= 1 (get-in resp [:response/usage :usage/search-queries]))))))
+
+(deftest test-parse-response-preserves-search-media-and-reported-cost
+  (let [t (ppx/make-transport)
+        profile (provider/get-provider :perplexity)
+        raw {:id "x"
+             :model "sonar-pro"
+             :choices [{:index 0
+                        :message {:role "assistant" :content "Answer."}
+                        :finish_reason "stop"}]
+             :images [{:image_url "https://example.com/image.png"
+                       :origin_url "https://example.com"
+                       :title "Example" :width 800 :height 600}]
+             :related_questions ["What next?"]
+             :usage {:prompt_tokens 10
+                     :completion_tokens 20
+                     :total_tokens 30
+                     :reasoning_tokens 7
+                     :citation_tokens 4
+                     :num_search_queries 2
+                     :cost {:input_tokens_cost 0.001
+                            :output_tokens_cost 0.002
+                            :request_cost 0.006
+                            :total_cost 0.009}}}
+        resp (transport/parse-response t profile raw)]
+    (is (= 7 (get-in resp [:response/usage :usage/reasoning-tokens])))
+    (is (= 0.009 (get-in resp [:response/cost :cost/usd])))
+    (is (false? (get-in resp [:response/cost :cost/estimated?])))
+    (is (= ["What next?"]
+           (get-in resp [:response/provider-data :related_questions])))
+    (is (= "https://example.com/image.png"
+           (get-in resp [:response/provider-data :images 0 :image_url])))))
 
 (deftest test-parse-response-with-url-only-citations
   (testing "fallback to :citations array (URL-only) when no :search_results"
@@ -173,6 +222,66 @@
         ev (transport/parse-stream-event t profile line)]
     (is (= :stream/content-delta (:event/type ev)))
     (is (= "Hi" (:event/delta ev)))))
+
+(deftest test-stream-full-mode-does-not-suppress-content-with-repeated-metadata
+  (let [t (ppx/make-transport)
+        profile (provider/get-provider :perplexity)
+        line (str "data: "
+                  (json/generate-string
+                   {:object "chat.completion.chunk"
+                    :search_results [{:url "https://example.com/a"
+                                      :title "A"
+                                      :snippet "Snip"}]
+                    :usage {:prompt_tokens 5
+                            :completion_tokens 1
+                            :total_tokens 6}
+                    :choices [{:delta {:content "Hi"}
+                               :finish_reason nil}]}))
+        ev (transport/parse-stream-event t profile line)]
+    (is (= :stream/content-delta (:event/type ev)))
+    (is (= "Hi" (:event/delta ev)))))
+
+(deftest test-stream-concise-reasoning-and-done
+  (let [t (ppx/make-transport)
+        profile (provider/get-provider :perplexity)
+        reasoning-line
+        (str "data: "
+             (json/generate-string
+              {:object "chat.reasoning"
+               :choices
+               [{:delta
+                 {:reasoning_steps
+                  [{:thought "Searching primary sources"
+                    :type "web_search"}]}}]}))
+        reasoning-event
+        (transport/parse-stream-event t profile reasoning-line)
+        done-line
+        (str "data: "
+             (json/generate-string
+              {:object "chat.completion.done"
+               :search_results [{:url "https://example.com/a"
+                                 :title "A"
+                                 :snippet "Snip"}]
+               :usage {:prompt_tokens 5
+                       :completion_tokens 8
+                       :total_tokens 13
+                       :reasoning_tokens 3
+                       :cost {:input_tokens_cost 0.001
+                              :output_tokens_cost 0.002
+                              :total_cost 0.003}}
+               :choices [{:delta {}
+                          :message {:content "Aggregated answer"}
+                          :finish_reason "stop"}]}))
+        done-events
+        (transport/parse-stream-event t profile done-line)]
+    (is (= :stream/reasoning-delta (:event/type reasoning-event)))
+    (is (= "Searching primary sources" (:event/delta reasoning-event)))
+    (is (= [:stream/citation :stream/usage :stream/end]
+           (mapv :event/type done-events)))
+    (is (= 3
+           (get-in done-events
+                   [1 :usage :usage/reasoning-tokens])))
+    (is (= 0.003 (get-in done-events [1 :cost :cost/usd])))))
 
 (deftest test-stream-final-chunk-emits-citation-usage-end
   (testing "final SSE chunk with citations, usage, and finish returns a vec of events"

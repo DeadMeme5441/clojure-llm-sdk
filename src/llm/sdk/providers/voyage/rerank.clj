@@ -15,15 +15,18 @@
 
 (defn build-rerank-request-voyage
   [profile request]
-  (let [body (cond-> {:model (:rerank/model request)
+  (let [opts (:rerank/provider-options request)
+        body (cond-> {:model (:rerank/model request)
                       :query (:rerank/query request)
                       :documents (:rerank/documents request)}
                (:rerank/top-n request)
                (assoc :top_k (:rerank/top-n request))
                (some? (:rerank/return-documents request))
                (assoc :return_documents
-                      (boolean (:rerank/return-documents request))))
-        extra (get-in request [:rerank/provider-options :extra_body])
+                      (boolean (:rerank/return-documents request)))
+               (contains? opts :truncation)
+               (assoc :truncation (:truncation opts)))
+        extra (:extra_body opts)
         body (if (seq extra) (merge body extra) body)]
     {:method :post
      :url (str (:profile/base-url profile) "/rerank")

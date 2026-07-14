@@ -39,7 +39,7 @@
                    t profile
                    {:embed/model "embed-english-v3.0"
                     :embed/inputs ["a" "b"]}))]
-      (is (= "https://api.cohere.com/v1/embed" (:url built)))
+      (is (= "https://api.cohere.com/v2/embed" (:url built)))
       (is (= "Bearer stub-token" (get-in built [:headers "Authorization"])))
       (is (= "embed-english-v3.0" (get-in built [:body :model])))
       (is (= ["a" "b"] (get-in built [:body :texts]))
@@ -55,10 +55,16 @@
                  t profile
                  {:embed/model "embed-english-v3.0"
                   :embed/inputs ["query phrase"]
+                  :embed/dimensions 512
                   :embed/provider-options {:input-type "search_query"
-                                           :truncate "END"}}))]
+                                           :truncate "END"
+                                           :max-tokens 2048
+                                           :priority 1}}))]
     (is (= "search_query" (get-in built [:body :input_type])))
-    (is (= "END" (get-in built [:body :truncate])))))
+    (is (= "END" (get-in built [:body :truncate])))
+    (is (= 512 (get-in built [:body :output_dimension])))
+    (is (= 2048 (get-in built [:body :max_tokens])))
+    (is (= 1 (get-in built [:body :priority])))))
 
 (deftest test-build-request-encoding-format-maps-to-embedding-types
   (testing ":embed/encoding-format becomes Cohere's embedding_types vector"
@@ -86,6 +92,7 @@
     (is (= 2 (count (:embed/vectors resp))))
     (is (= 8 (count (first (:embed/vectors resp)))))
     (is (= 8 (:embed/dimensions resp)))
+    (is (= "cohere-embed-12345" (:embed/id resp)))
     (is (= 5 (get-in resp [:response/usage :usage/input-tokens])))
     (is (= 5 (get-in resp [:response/usage :usage/total-tokens])))))
 
@@ -99,6 +106,19 @@
           resp (et/parse-embed-response t profile raw)]
       (is (= [[0.1 0.2 0.3]] (:embed/vectors resp)))
       (is (= 3 (:embed/dimensions resp))))))
+
+(deftest test-parse-response-prefers-actual-token-usage
+  (let [t (cohere-embed/make-transport)
+        profile (provider/get-provider :cohere)
+        resp (et/parse-embed-response
+              t profile
+              {:id "embed-1"
+               :embeddings {:float [[0.1 0.2]]}
+               :meta {:tokens {:input_tokens 9}
+                      :billed_units {:input_tokens 7
+                                     :image_tokens 4}}})]
+    (is (= 9 (get-in resp [:response/usage :usage/input-tokens])))
+    (is (= 4 (get-in resp [:response/usage :usage/image-tokens])))))
 
 (deftest test-parse-response-missing-billed-units
   (testing "Cohere occasionally returns no meta — should not throw"
