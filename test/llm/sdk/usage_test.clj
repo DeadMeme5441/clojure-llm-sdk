@@ -20,11 +20,16 @@
            {:input_tokens 2000
             :output_tokens 800
             :cache_read_input_tokens 400
-            :cache_creation_input_tokens 100})]
-    (is (= 1500 (:usage/input-tokens u)))
+            :cache_creation_input_tokens 100
+            :output_tokens_details {:thinking_tokens 75}
+            :server_tool_use {:web_search_requests 2}})]
+    (is (= 2000 (:usage/input-tokens u)))
+    (is (= 3300 (:usage/total-tokens u)))
     (is (= 800 (:usage/output-tokens u)))
     (is (= 400 (:usage/cached-input-tokens u)))
-    (is (= 100 (:usage/cache-write-tokens u)))))
+    (is (= 100 (:usage/cache-write-tokens u)))
+    (is (= 75 (:usage/reasoning-tokens u)))
+    (is (= 2 (:usage/search-queries u)))))
 
 (deftest test-normalize-gemini-usage
   (let [u (usage/normalize-gemini-usage

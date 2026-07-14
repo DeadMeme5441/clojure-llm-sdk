@@ -35,9 +35,10 @@
   {:event/type :stream/tool-call-end
    :tool-call/index index})
 
-(defn usage-event [usage]
-  {:event/type :stream/usage
-   :usage usage})
+(defn usage-event [usage & {:keys [cost]}]
+  (cond-> {:event/type :stream/usage
+           :usage usage}
+    cost (assoc :cost cost)))
 
 (defn provider-state-event [provider data]
   {:event/type :stream/provider-state
@@ -68,10 +69,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defrecord Accumulator
-  [parts tool-calls-indexed finish-reason usage provider-data])
+  [parts tool-calls-indexed finish-reason usage cost provider-data])
 
 (defn- empty-acc []
-  (->Accumulator [] {} nil nil {}))
+  (->Accumulator [] {} nil nil nil {}))
 
 (defn- deep-merge
   [& maps]
@@ -160,7 +161,8 @@
     acc ;; marker only
 
     :stream/usage
-    (assoc acc :usage (:usage event))
+    (cond-> (assoc acc :usage (:usage event))
+      (:cost event) (assoc :cost (:cost event)))
 
     :stream/provider-state
     (update-in acc [:provider-data (:provider-state/provider event)]
@@ -202,6 +204,7 @@
              :response/finish-reason (or (:finish-reason acc) :unknown)}
       (seq tool-calls) (assoc :response/tool-calls tool-calls)
       (:usage acc) (assoc :response/usage (:usage acc))
+      (:cost acc) (assoc :response/cost (:cost acc))
       (seq (:provider-data acc)) (assoc :response/provider-data (:provider-data acc)))))
 
 (defn events->response

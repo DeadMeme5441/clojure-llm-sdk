@@ -20,24 +20,26 @@
      :height (Long/parseLong h)}))
 
 (defn- stamp-image-cost [provider-id request parsed]
-  (let [model (:image/model parsed)
-        usage (:response/usage parsed)
-        pricing (pricing/get-pricing provider-id model)
-        dims (parse-size (:image/size request))
-        n-images (or (some-> (:image/images parsed) count)
-                     (:image/n request)
-                     1)
-        cost (if usage
-               (pricing/canonical-cost provider-id model usage)
-               (let [result (pricing/image-cost (merge {:n-images n-images} dims)
-                                                pricing)]
-                 (pricing/cost-result->canonical
-                  result
-                  pricing
-                  (cond-> {:images n-images}
-                    (:width dims) (assoc :width (:width dims))
-                    (:height dims) (assoc :height (:height dims))))))]
-    (assoc parsed :response/cost cost)))
+  (if (:response/cost parsed)
+    parsed
+    (let [model (:image/model parsed)
+          usage (:response/usage parsed)
+          pricing (pricing/get-pricing provider-id model)
+          dims (parse-size (:image/size request))
+          n-images (or (some-> (:image/images parsed) count)
+                       (:image/n request)
+                       1)
+          cost (if usage
+                 (pricing/canonical-cost provider-id model usage)
+                 (let [result (pricing/image-cost (merge {:n-images n-images} dims)
+                                                  pricing)]
+                   (pricing/cost-result->canonical
+                    result
+                    pricing
+                    (cond-> {:images n-images}
+                      (:width dims) (assoc :width (:width dims))
+                      (:height dims) (assoc :height (:height dims))))))]
+      (assoc parsed :response/cost cost))))
 
 (defn generate-image
   "Send a canonical ImageGenRequest, return an ImageGenResponse.

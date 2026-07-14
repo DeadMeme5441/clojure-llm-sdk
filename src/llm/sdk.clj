@@ -29,6 +29,9 @@
             ;; constructors are registered
             [llm.sdk.providers.openai.chat]
             [llm.sdk.providers.openai.embeddings]
+            [llm.sdk.providers.voyage.embeddings]
+            [llm.sdk.providers.jina.embeddings]
+            [llm.sdk.providers.openrouter.embeddings]
             [llm.sdk.providers.openai.moderation]
             [llm.sdk.providers.openai.image]
             [llm.sdk.providers.openai.transcribe]

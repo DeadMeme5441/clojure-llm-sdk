@@ -63,3 +63,16 @@
     (is (= 2 (count (:response/parts resp))))
     (is (= :reasoning (:part/type (first (:response/parts resp)))))
     (is (= "Let me think..." (:reasoning/text (first (:response/parts resp)))))))
+
+(deftest test-stream-usage-preserves-provider-reported-cost
+  (let [cost {:cost/usd 0.003
+              :cost/estimated? false
+              :cost/pricing-source :provider-reported}
+        response (stream/events->response
+                  [(stream/usage-event
+                    {:usage/input-tokens 5 :usage/output-tokens 8}
+                    :cost cost)
+                   (stream/end-event :finish-reason :stop)]
+                  :openrouter
+                  "model")]
+    (is (= cost (:response/cost response)))))

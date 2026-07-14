@@ -78,6 +78,44 @@
                                   :strict true
                                   :json-schema {:type "object"}}})))
 
+(deftest test-current-provider-schema-extensions
+  (is (schema/validate-request
+       {:request/model "gpt-5"
+        :request/messages
+        [{:message/role :user
+          :message/content
+          [{:part/type :input-audio
+            :audio/data "AAAA"
+            :audio/format :wav}]}
+         {:message/role :assistant
+          :message/content "Working"
+          :message/phase :commentary}]
+        :request/tools
+        [{:type :custom
+          :custom {:name "parser"
+                   :format {:type :grammar
+                            :grammar {:definition "start: WORD"
+                                      :syntax :lark}}}}]
+        :request/tool-choice {:type :custom :custom {:name "parser"}}
+        :request/reasoning {:enabled true
+                            :effort :max
+                            :exclude false
+                            :summary :detailed}
+        :request/cache {:enabled? true :ttl "30m"}}))
+  (is (schema/validate-part
+       {:part/type :citation
+        :citation/source-id "document-1"
+        :citation/provider-data {:page 2}}))
+  (is (schema/validate-image-gen-response
+       {:image/provider :openrouter
+        :image/images [{:image/b64 "AAAA"
+                        :image/mime-type "image/png"}]}))
+  (is (schema/validate-rerank-request
+       {:rerank/model "amazon.rerank"
+        :rerank/query "query"
+        :rerank/documents [{:title "Structured document"}]
+        :rerank/next-token "page-2"})))
+
 (deftest test-transcribe-and-speak-validation
   (is (schema/validate-transcribe-request
        {:transcribe/model "gpt-4o-transcribe"

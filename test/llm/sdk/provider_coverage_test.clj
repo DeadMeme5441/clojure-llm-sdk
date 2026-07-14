@@ -46,7 +46,7 @@
               "rerank-test")
     :moderation "omni-moderation-latest"
     :image-generation (case provider-id
-                        :vertex-imagen "imagen-3.0-generate-002"
+                        :vertex-imagen "gemini-2.5-flash-image"
                         :bedrock "amazon.titan-image-generator-v1"
                         "gpt-image-1")
     :transcription "whisper-1"

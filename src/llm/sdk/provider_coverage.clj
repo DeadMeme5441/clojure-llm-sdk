@@ -171,7 +171,7 @@
         :live-smoke :env-gated)
 
    :perplexity
-   (cov :surfaces #{:complete :streaming :json-schema :web-search :citations}
+   (cov :surfaces #{:complete :streaming :json-schema :reasoning :web-search :citations}
         :cache #{:none :canonical-cache-stamp}
         :metrics #{:perplexity-usage :search-usage :canonical-chat-stamp}
         :pricing #{:models-dev :litellm-snapshot :openrouter-live-route :user-override}
@@ -184,8 +184,8 @@
         :live-smoke :env-gated)
 
    :cohere
-   (cov :surfaces #{:complete :streaming :tools :citations
-                    :file-attachments :embedding :rerank}
+   (cov :surfaces #{:complete :streaming :tools :json-schema :reasoning
+                    :citations :file-attachments :embedding :rerank}
         :cache #{:none :canonical-cache-stamp}
         :metrics #{:cohere-chat-usage :cohere-embed-usage :cohere-rerank-usage
                    :canonical-chat-stamp}
@@ -200,8 +200,9 @@
         :live-smoke :env-gated)
 
    :bedrock
-   (cov :surfaces #{:complete :streaming :tools :guardrails
-                    :file-attachments :image-generation :rerank}
+   (cov :surfaces #{:complete :streaming :tools :json-schema :reasoning
+                    :guardrails :multimodal :file-attachments
+                    :image-generation :rerank}
         :cache #{:cache-point :canonical-cache-stamp}
         :metrics #{:bedrock-usage :bedrock-rerank-usage :canonical-chat-stamp}
         :pricing #{:litellm-snapshot :user-override}
@@ -215,7 +216,8 @@
         :live-smoke :env-gated)
 
    :ollama-native
-   (cov :surfaces #{:complete :streaming :tools :embedding :multimodal}
+   (cov :surfaces #{:complete :streaming :tools :json-schema :reasoning
+                    :embedding :multimodal}
         :cache #{:none :canonical-cache-stamp}
         :metrics #{:ollama-chat-usage :ollama-embed-usage :canonical-chat-stamp}
         :pricing #{:unknown :user-override}
@@ -244,26 +246,29 @@
    :kimi (openai-compat :surfaces #{:complete :streaming :tools :reasoning})
    :kimi-code (openai-compat :surfaces #{:complete :streaming :tools :reasoning}
                              :models #{:snapshot-only}
-                             :live-smoke :env-gated
-                             :notes "Requires Kimi CLI identity headers.")
-   :mistral (openai-compat :surfaces #{:complete :streaming :tools :json-schema :embedding}
-                           :notes "Penalty fields are dropped by provider quirk.")
+                             :live-smoke :env-gated)
+   :mistral (openai-compat :surfaces #{:complete :streaming :tools :json-schema
+                                       :reasoning :embedding})
    :groq (openai-compat :surfaces #{:complete :streaming :tools :json-schema
                                     :reasoning :transcription})
-   :cerebras (openai-compat :surfaces #{:complete :streaming :tools :reasoning})
-   :together (openai-compat :surfaces #{:complete :streaming :tools :json-schema :embedding})
+   :cerebras (openai-compat :surfaces #{:complete :streaming :tools :json-schema
+                                        :reasoning})
+   :together (openai-compat :surfaces #{:complete :streaming :tools :json-schema
+                                        :reasoning :embedding})
    :xai (openai-compat :surfaces #{:complete :streaming :tools :json-schema :reasoning}
                        :cache #{:prompt-key :canonical-cache-stamp})
    :huggingface (openai-compat :surfaces #{:complete :streaming :tools :json-schema})
-   :sambanova (openai-compat :surfaces #{:complete :streaming :tools :json-schema})
-   :deepinfra (openai-compat :surfaces #{:complete :streaming :tools :json-schema})
-   :lambda (openai-compat :surfaces #{:complete :streaming :json-schema})
+   :sambanova (openai-compat :surfaces #{:complete :streaming :tools :json-schema
+                                         :reasoning})
+   :deepinfra (openai-compat :surfaces #{:complete :streaming :tools :json-schema
+                                         :reasoning})
+   :lambda (openai-compat :surfaces #{:complete :streaming :tools})
    :nebius (openai-compat :surfaces #{:complete :streaming :tools :json-schema :embedding})
-   :hyperbolic (openai-compat :surfaces #{:complete :streaming :json-schema})
+   :hyperbolic (openai-compat :surfaces #{:complete :streaming :tools})
    :novita (openai-compat :surfaces #{:complete :streaming :tools :json-schema})
-   :friendliai (openai-compat :surfaces #{:complete :streaming :json-schema})
-   :featherless (openai-compat :surfaces #{:complete :streaming :json-schema})
-   :cloudflare (openai-compat :surfaces #{:complete :streaming :json-schema}
+   :friendliai (openai-compat :surfaces #{:complete :streaming :tools})
+   :featherless (openai-compat :surfaces #{:complete :streaming :tools})
+   :cloudflare (openai-compat :surfaces #{:complete :streaming :tools}
                               :models #{:requires-account-scoped-base-url}
                               :live-smoke :manual-config)
    :dashscope (openai-compat :surfaces #{:complete :streaming :tools :json-schema})

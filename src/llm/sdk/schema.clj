@@ -20,6 +20,12 @@
    [:image/data {:optional true} string?]
    [:image/detail {:optional true} [:enum :auto :low :high]]])
 
+(def InputAudioPart
+  [:map {:closed true}
+   [:part/type [:= :input-audio]]
+   [:audio/data string?]
+   [:audio/format [:enum :wav :mp3]]])
+
 (def FilePart
   [:map {:closed true}
    [:part/type [:= :file]]
@@ -67,16 +73,24 @@
    [:safety/details {:optional true} map?]])
 
 (def CitationPart
-  "A search-result / cited-source surfaced by a provider. Perplexity
-   emits these inline; Anthropic web-search and Cohere documents will
-   reuse the same shape when those surfaces are added."
-  [:map {:closed true}
-   [:part/type [:= :citation]]
-   [:citation/url string?]
-   [:citation/title {:optional true} string?]
-   [:citation/snippet {:optional true} string?]
-   [:citation/text-range {:optional true} [:tuple int? int?]]
-   [:citation/source-id {:optional true} string?]])
+  "A provider citation. URLs are optional because document and tool-output
+   citations may identify only an opaque source or location."
+  [:and
+   [:map {:closed true}
+    [:part/type [:= :citation]]
+    [:citation/url {:optional true} string?]
+    [:citation/title {:optional true} string?]
+    [:citation/snippet {:optional true} string?]
+    [:citation/text-range {:optional true} [:tuple int? int?]]
+    [:citation/source-id {:optional true} string?]
+    [:citation/date {:optional true} string?]
+    [:citation/last-updated {:optional true} string?]
+    [:citation/source {:optional true} [:or keyword? string?]]
+    [:citation/provider-data {:optional true} map?]]
+   [:fn (fn [citation]
+          (or (:citation/url citation)
+              (:citation/source-id citation)
+              (:citation/provider-data citation)))]])
 
 (def ProviderStatePart
   [:map {:closed true}
@@ -94,6 +108,7 @@
   [:orn
    [:text TextPart]
    [:image ImagePart]
+   [:input-audio InputAudioPart]
    [:file FilePart]
    [:tool-call ToolCallPart]
    [:tool-result ToolResultPart]
@@ -114,7 +129,8 @@
    [:message/tool-calls {:optional true} [:vector ToolCallPart]]
    [:message/tool-call-id {:optional true} string?]
    [:message/name {:optional true} string?]
-   [:message/provider-data {:optional true} map?]])
+   [:message/provider-data {:optional true} map?]
+   [:message/phase {:optional true} [:enum :commentary :final-answer]]])
 
 ;; ---------------------------------------------------------------------------
 ;; Tools
@@ -130,6 +146,26 @@
      [:parameters {:optional true} map?]
      [:strict {:optional true} boolean?]]]])
 
+(def CustomTool
+  [:map {:closed true}
+   [:type [:= :custom]]
+   [:custom
+    [:map {:closed true}
+     [:name string?]
+     [:description {:optional true} string?]
+     [:format {:optional true}
+      [:or
+       [:map {:closed true}
+        [:type [:= :text]]]
+       [:map {:closed true}
+        [:type [:= :grammar]]
+        [:grammar
+         [:map {:closed true}
+          [:definition string?]
+          [:syntax [:enum :lark :regex]]]]]]]]]])
+
+(def Tool [:or ToolFunction CustomTool])
+
 ;; ---------------------------------------------------------------------------
 ;; Request
 ;; ---------------------------------------------------------------------------
@@ -138,12 +174,15 @@
   [:map {:closed true}
    [:request/model string?]
    [:request/messages [:vector Message]]
-   [:request/tools {:optional true} [:vector ToolFunction]]
+   [:request/tools {:optional true} [:vector Tool]]
    [:request/tool-choice {:optional true}
     [:or [:enum :auto :none :required]
          [:map {:closed true}
           [:type [:= :function]]
-          [:function [:map {:closed true} [:name string?]]]]]]
+          [:function [:map {:closed true} [:name string?]]]]
+         [:map {:closed true}
+          [:type [:= :custom]]
+          [:custom [:map {:closed true} [:name string?]]]]]]
    [:request/temperature {:optional true} number?]
    [:request/top-p {:optional true} number?]
    [:request/max-tokens {:optional true} int?]
@@ -158,12 +197,14 @@
    [:request/reasoning {:optional true}
     [:map {:closed true}
      [:enabled {:optional true} boolean?]
-     [:effort {:optional true} [:enum :minimal :low :medium :high :xhigh]]
-     [:budget {:optional true} int?]]]
+     [:effort {:optional true} [:enum :none :minimal :low :medium :high :xhigh :max]]
+     [:budget {:optional true} int?]
+     [:exclude {:optional true} boolean?]
+     [:summary {:optional true} [:or keyword? string?]]]]
    [:request/cache {:optional true}
     [:map {:closed true}
      [:enabled? {:optional true} boolean?]
-     [:ttl {:optional true} [:enum "5m" "1h"]]
+     [:ttl {:optional true} [:enum "5m" "30m" "1h"]]
      [:strategy {:optional true} [:enum :auto :system-and-3 :explicit :none]]
      [:scope-id {:optional true} string?]
      [:cached-content-id {:optional true} string?]
@@ -253,13 +294,14 @@
   [:map {:closed true}
    [:image/url {:optional true} string?]
    [:image/b64 {:optional true} string?]
+   [:image/mime-type {:optional true} string?]
    [:image/revised-prompt {:optional true} string?]])
 
 (def ImageGenResponse
   [:map {:closed true}
    [:image/id {:optional true} string?]
    [:image/provider keyword?]
-   [:image/model string?]
+   [:image/model {:optional true} string?]
    [:image/images [:vector Image]]
    [:image/created {:optional true} int?]
    [:response/usage {:optional true} Usage]
@@ -274,26 +316,28 @@
   [:map {:closed true}
    [:rerank/model string?]
    [:rerank/query string?]
-   [:rerank/documents [:vector string?]]
+   [:rerank/documents [:vector [:or string? map?]]]
    [:rerank/top-n {:optional true} int?]
    [:rerank/return-documents {:optional true} boolean?]
-   [:rerank/provider-options {:optional true} map?]])
+   [:rerank/provider-options {:optional true} map?]
+   [:rerank/next-token {:optional true} string?]])
 
 (def RerankResult
   [:map {:closed true}
    [:rerank/index int?]
    [:rerank/score number?]
-   [:rerank/document {:optional true} string?]])
+   [:rerank/document {:optional true} [:or string? map?]]])
 
 (def RerankResponse
   [:map {:closed true}
    [:rerank/id {:optional true} string?]
    [:rerank/provider keyword?]
-   [:rerank/model string?]
+   [:rerank/model {:optional true} string?]
    [:rerank/results [:vector RerankResult]]
    [:response/usage {:optional true} Usage]
    [:response/cost {:optional true} Cost]
-   [:rerank/raw {:optional true} any?]])
+   [:rerank/raw {:optional true} any?]
+   [:rerank/next-token {:optional true} string?]])
 
 ;; ---------------------------------------------------------------------------
 ;; Moderation request / response
@@ -337,8 +381,13 @@
    [:transcribe/language {:optional true} string?]
    [:transcribe/prompt {:optional true} string?]
    [:transcribe/temperature {:optional true} number?]
-   [:transcribe/response-format {:optional true} [:enum :json :text :srt :verbose_json :vtt]]
+   [:transcribe/response-format {:optional true} [:enum :json :text :srt :verbose_json :vtt :diarized_json]]
    [:transcribe/timestamp-granularities {:optional true} [:set [:enum :segment :word]]]
+   [:transcribe/stream {:optional true} boolean?]
+   [:transcribe/include {:optional true} [:vector [:enum :logprobs]]]
+   [:transcribe/chunking-strategy {:optional true} [:or [:= :auto] map?]]
+   [:transcribe/known-speaker-names {:optional true} [:vector string?]]
+   [:transcribe/known-speaker-references {:optional true} [:vector string?]]
    [:transcribe/provider-options {:optional true} map?]])
 
 (def TranscriptionSegment
@@ -367,7 +416,10 @@
   [:map {:closed true}
    [:speak/model string?]
    [:speak/input string?]
-   [:speak/voice {:optional true} string?]
+   [:speak/voice {:optional true}
+    [:or string?
+     [:map {:closed true}
+      [:id string?]]]]
    [:speak/format {:optional true} [:enum :mp3 :opus :aac :flac :wav :pcm]]
    [:speak/speed {:optional true} number?]
    [:speak/instructions {:optional true} string?]
@@ -404,7 +456,7 @@
   [:map {:closed true}
    [:response/id {:optional true} string?]
    [:response/provider keyword?]
-   [:response/model string?]
+   [:response/model {:optional true} string?]
    [:response/parts [:vector Part]]
    [:response/tool-calls {:optional true} [:vector ToolCallPart]]
    [:response/finish-reason [:enum :stop :length :tool-calls :content-filter
@@ -423,11 +475,11 @@
   [:orn
    [:start [:map [:event/type [:= :stream/start]] [:event/request-id {:optional true} string?]]]
    [:content-delta [:map [:event/type [:= :stream/content-delta]] [:event/delta string?]]]
-   [:reasoning-delta [:map [:event/type [:= :stream/reasoning-delta]] [:event/delta string?] [:event/encrypted {:optional true} boolean?]]]
+   [:reasoning-delta [:map [:event/type [:= :stream/reasoning-delta]] [:event/delta string?] [:event/encrypted {:optional true} boolean?] [:reasoning/signature {:optional true} string?]]]
    [:tool-call-start [:map [:event/type [:= :stream/tool-call-start]] [:tool-call/index int?] [:tool-call/id string?] [:tool-call/name string?]]]
    [:tool-call-delta [:map [:event/type [:= :stream/tool-call-delta]] [:tool-call/index int?] [:tool-call/arguments-delta string?]]]
    [:tool-call-end [:map [:event/type [:= :stream/tool-call-end]] [:tool-call/index int?]]]
-   [:usage [:map [:event/type [:= :stream/usage]] [:usage Usage]]]
+   [:usage [:map [:event/type [:= :stream/usage]] [:usage Usage] [:cost {:optional true} Cost]]]
    [:provider-state [:map [:event/type [:= :stream/provider-state]] [:provider-state/provider keyword?] [:provider-state/data map?]]]
    [:citation [:map
                [:event/type [:= :stream/citation]]

@@ -104,5 +104,5 @@
     (is (contains? supported :request/max-tokens))
     (is (not (contains? supported :request/tools))
         "Perplexity doesn't accept tools")
-    (is (not (contains? supported :request/reasoning))
-        "Perplexity doesn't accept :reasoning")))
+    (is (contains? supported :request/reasoning)
+        "Perplexity Sonar accepts reasoning_effort")))

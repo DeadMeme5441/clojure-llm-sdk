@@ -76,21 +76,28 @@
       (some? search-queries) (assoc :usage/search-queries search-queries))))
 
 (defn normalize-anthropic-usage
-  "Normalize Anthropic Messages usage shape."
+  "Normalize Anthropic Messages usage shape. Anthropic reports uncached,
+   cache-read, and cache-creation input tokens as disjoint counts."
   [u]
   (let [input (->int (:input_tokens u))
         output (->int (:output_tokens u))
         cache-read (->int-or-nil (:cache_read_input_tokens u))
         cache-write (->int-or-nil (:cache_creation_input_tokens u))
+        reasoning (->int-or-nil (get-in u [:output_tokens_details
+                                           :thinking_tokens]))
+        search-queries (->int-or-nil (get-in u [:server_tool_use
+                                                :web_search_requests]))
         cr (or cache-read 0)
         cw (or cache-write 0)]
-    (cond-> {:usage/input-tokens (max 0 (- input cr cw))
+    (cond-> {:usage/input-tokens input
              :usage/output-tokens output
-             :usage/total-tokens (+ input output)
+             :usage/total-tokens (+ input cr cw output)
              :usage/request-count 1
              :usage/provider-raw u}
       (some? cache-read) (assoc :usage/cached-input-tokens cache-read)
-      (some? cache-write) (assoc :usage/cache-write-tokens cache-write))))
+      (some? cache-write) (assoc :usage/cache-write-tokens cache-write)
+      (some? reasoning) (assoc :usage/reasoning-tokens reasoning)
+      (some? search-queries) (assoc :usage/search-queries search-queries))))
 
 (defn normalize-gemini-usage
   "Normalize Gemini native usage shape."

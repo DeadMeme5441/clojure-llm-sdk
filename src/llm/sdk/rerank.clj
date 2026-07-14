@@ -60,6 +60,19 @@
       ;; the surface always carries the model that was actually used.
       (let [parsed (rt/parse-rerank-response transport profile body)
             parsed (update parsed :rerank/model #(or % (:rerank/model request)))
+            parsed (if (:rerank/return-documents request)
+                     (update parsed :rerank/results
+                             (fn [results]
+                               (mapv (fn [result]
+                                       (if (contains? result :rerank/document)
+                                         result
+                                         (if-some [document
+                                                   (get (:rerank/documents request)
+                                                        (:rerank/index result))]
+                                           (assoc result :rerank/document document)
+                                           result)))
+                                     results)))
+                     parsed)
             usage (:response/usage parsed)
             cost (pricing/canonical-cost provider-id (:rerank/model parsed) usage)]
         (cond-> parsed
