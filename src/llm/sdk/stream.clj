@@ -182,10 +182,8 @@
               (:citation/source event) (assoc :citation/source (:citation/source event))))
 
     :stream/end
-    ;; sdk/complete appends a synthetic terminal :stream/end with no
-    ;; finish-reason after the provider's own stream is consumed —
-    ;; only update when the event actually carries one so we don't
-    ;; clobber the real reason the provider already reported.
+    ;; A terminal event without a reason must not clobber an earlier
+    ;; provider-reported finish reason.
     (if-let [fr (:event/finish-reason event)]
       (assoc acc :finish-reason fr)
       acc)
@@ -203,11 +201,16 @@
   [acc provider model]
   (let [tool-calls (->> (:tool-calls-indexed acc)
                         (sort-by key)
-                        (mapv (fn [[_ tc]] (tool-call-part tc))))]
+                        (mapv (fn [[_ tc]] (tool-call-part tc))))
+        finish-reason (if (and (seq tool-calls)
+                               (contains? #{nil :unknown :stop}
+                                          (:finish-reason acc)))
+                        :tool-calls
+                        (or (:finish-reason acc) :unknown))]
     (cond-> {:response/provider provider
              :response/model model
              :response/parts (:parts acc)
-             :response/finish-reason (or (:finish-reason acc) :unknown)}
+             :response/finish-reason finish-reason}
       (seq tool-calls) (assoc :response/tool-calls tool-calls)
       (:usage acc) (assoc :response/usage (:usage acc))
       (:cost acc) (assoc :response/cost (:cost acc))

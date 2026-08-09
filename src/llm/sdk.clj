@@ -306,6 +306,23 @@
                                :attempts attempt}
                               e)))))))))
 
+(defn- ensure-terminal-end
+  "Pass stream events through and append one terminal event only when the
+   provider stream did not emit one."
+  [events]
+  (letfn [(step [remaining terminal-seen?]
+            (lazy-seq
+             (if-let [remaining (seq remaining)]
+               (let [event (first remaining)]
+                 (cons event
+                       (step (rest remaining)
+                             (or terminal-seen?
+                                 (= :stream/end (:event/type event))))))
+               (when-not terminal-seen?
+                 (list (stream/end-event))))))]
+    (step events false)))
+
+
 (defn complete
   "Send a canonical request and return a canonical response.
    Provider must be a registered provider keyword (e.g. :openai).
@@ -371,7 +388,8 @@
                                      (sequential? ev) ev
                                      :else [ev])))
                                ev-seq)))
-            parsed-events (concat [(stream/start-event)] events [(stream/end-event)])]
+            parsed-events (concat [(stream/start-event)]
+                                  (ensure-terminal-end events))]
         (if on-event
           (do (doseq [ev parsed-events] (on-event ev))
               (stamp (stream/events->response parsed-events provider-id model)

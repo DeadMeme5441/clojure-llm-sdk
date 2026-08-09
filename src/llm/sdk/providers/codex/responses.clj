@@ -223,6 +223,17 @@
 
     :else [{:type "input_text" :text (str content)}]))
 
+(defn- replay-provider-items [provider-data item-key]
+  (let [stored (or (get provider-data item-key)
+                   (some #(when (map? %) (get % item-key))
+                         (vals provider-data)))]
+    (cond
+      (map? stored) (->> stored
+                         (sort-by (comp str key))
+                         (mapv val))
+      (sequential? stored) stored
+      :else nil)))
+
 (defn- message->responses-input [msg]
   (case (:message/role msg)
     :user
@@ -233,10 +244,14 @@
                     (get-in msg [:message/provider-data :phase]))
           items (concat
                  ;; Replay encrypted reasoning items from previous turns
-                 (when-let [reasoning (:codex_reasoning_items (:message/provider-data msg))]
+                 (when-let [reasoning (replay-provider-items
+                                       (:message/provider-data msg)
+                                       :codex_reasoning_items)]
                    (mapv #(dissoc % :id) reasoning))
                  ;; Replay exact assistant message items from previous turns
-                 (when-let [msg-items (:codex_message_items (:message/provider-data msg))]
+                 (when-let [msg-items (replay-provider-items
+                                      (:message/provider-data msg)
+                                      :codex_message_items)]
                    msg-items)
                  ;; Current turn content
                  (when (seq (:message/content msg))
@@ -352,11 +367,13 @@
         backend? (codex-backend? profile)
         xai? (xai-host? profile)
         github? (github-copilot? profile)
-        instructions (when (and (seq messages) (= (:message/role (first messages)) :system))
+        system-message? (and (seq messages)
+                             (= (:message/role (first messages)) :system))
+        instructions (when system-message?
                        (t/content->string (:message/content (first messages))))
-        ;; Codex backend requires instructions; fall back to a default
+        ;; Codex backend requires instructions; fall back to a default.
         instructions (or instructions (when backend? "You are a helpful assistant."))
-        payload-messages (if instructions (rest messages) messages)
+        payload-messages (if system-message? (rest messages) messages)
         input (messages->responses-input payload-messages)
         tools (when (seq (:request/tools request))
                 (mapv tool->codex (:request/tools request)))
@@ -616,6 +633,14 @@
         ;; The ChatGPT Codex backend also emits encrypted reasoning deltas.
         (= t "response.reasoning.delta")
         (stream/reasoning-delta (:delta data) :encrypted true)
+
+        (and (= t "response.output_item.done")
+             (= "reasoning" (get-in data [:item :type])))
+        (stream/provider-state-event
+         provider-id
+         {:responses/event data
+          :codex_reasoning_items
+          {(stream-index data) (:item data)}})
 
         (= t "response.output_item.added")
         (let [item (:item data)]

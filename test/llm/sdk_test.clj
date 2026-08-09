@@ -7,7 +7,8 @@
             [llm.sdk.http :as http]
             [llm.sdk.models :as models]
             [llm.sdk.models-dev :as mdev]
-            [llm.sdk.registry :as registry]))
+            [llm.sdk.registry :as registry])
+  (:import [java.io ByteArrayInputStream]))
 
 (defn- temp-dir ^java.io.File []
   (let [d (java.io.File/createTempFile "sdk-test" "")]
@@ -29,6 +30,28 @@
 (defn- offline [f]
   (with-redefs [http/request (fn [_] {:status 500 :body {:error "offline"}})]
     (f)))
+
+(defn- sse-body [content]
+  (ByteArrayInputStream. (.getBytes content "UTF-8")))
+
+(defn- run-codex-stream [content]
+  (let [events (atom [])
+        response
+        (with-redefs [http/sse-response
+                      (fn [_]
+                        {:status 200
+                         :headers {}
+                         :body (sse-body content)})]
+          (sdk/complete
+           :codex
+           {:request/model "gpt-5.3-codex"
+            :request/messages [{:message/role :user
+                                :message/content "reply"}]}
+           :stream? true
+           :on-event #(swap! events conj %)
+           :config {:api-key "test-key"}))]
+    {:events @events :response response}))
+
 
 (deftest complete-validates-canonical-request-before-network
   (let [ex (try
@@ -57,6 +80,30 @@
       (is (some? ex))
       (is (= 401 (:status (ex-data ex))))
       (is (= :auth (get-in (ex-data ex) [:error :error/reason]))))))
+
+(deftest complete-streaming-does-not-duplicate-provider-end
+  (let [{:keys [events response]}
+        (run-codex-stream
+         (str "data: {\"type\":\"response.output_text.delta\","
+              "\"delta\":\"ok\"}\n\n"
+              "data: {\"type\":\"response.completed\","
+              "\"response\":{\"id\":\"resp_live\","
+              "\"model\":\"gpt-5.3-codex\","
+              "\"status\":\"completed\","
+              "\"usage\":{\"input_tokens\":2,\"output_tokens\":1,"
+              "\"total_tokens\":3}}}\n\n"))]
+    (is (= 1 (count (filter #(= :stream/end (:event/type %)) events))))
+    (is (= "ok" (get-in response [:response/parts 0 :text])))
+    (is (= :stop (:response/finish-reason response)))))
+
+(deftest complete-streaming-appends-fallback-end
+  (let [{:keys [events response]}
+        (run-codex-stream
+         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")]
+    (is (= 1 (count (filter #(= :stream/end (:event/type %)) events))))
+    (is (= :stream/end (:event/type (last events))))
+    (is (= "ok" (get-in response [:response/parts 0 :text])))))
+
 
 ;; ---------------------------------------------------------------------------
 ;; list-models

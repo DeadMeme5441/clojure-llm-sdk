@@ -42,6 +42,17 @@
     (is (= "{\"location\":\"NYC\"}"
            (get-in resp [:response/tool-calls 0 :tool-call/arguments])))))
 
+(deftest test-tool-calls-override-generic-stop-finish
+  (let [response (stream/events->response
+                  [(stream/tool-call-start 0 "call_1" "lookup")
+                   (stream/tool-call-delta 0 "{}")
+                   (stream/tool-call-end 0)
+                   (stream/end-event :finish-reason :stop)]
+                  :codex-backend
+                  "gpt-5.5")]
+    (is (= :tool-calls (:response/finish-reason response)))))
+
+
 (deftest test-events->response
   (let [events [(stream/start-event)
                 (stream/content-delta "The answer")

@@ -225,7 +225,7 @@
                                 :on-event #(swap! events-seen conj %))]
          (is (canonical-shape-ok? resp :perplexity))
          (is (= [:stream/start :stream/content-delta :stream/citation
-                 :stream/usage :stream/end :stream/end]
+                 :stream/usage :stream/end]
                 (mapv :event/type @events-seen)))
          (is (= :stop (:response/finish-reason resp)))
          (is (= :miss (get-in resp [:response/cache :cache/status])))

@@ -272,6 +272,44 @@
         (.delete file)
         (.delete dir)))))
 
+(deftest test-build-request-codex-backend-default-instructions-keep-user-input
+  (with-redefs [codex-impl/codex-backend-auth-headers
+                (fn [] {"Authorization" "Bearer test-token"
+                        "ChatGPT-Account-ID" "acct-123"})]
+    (let [built (transport/build-request
+                 (codex/make-transport)
+                 (provider/get-provider :codex-backend)
+                 {:request/model "gpt-5.5"
+                  :request/messages [{:message/role :user
+                                      :message/content "hi"}]})]
+      (is (= "You are a helpful assistant."
+             (get-in built [:body :instructions])))
+      (is (= "user" (get-in built [:body :input 0 :role])))
+      (is (= "hi" (get-in built [:body :input 0 :content 0 :text]))))))
+
+
+(deftest test-build-request-codex-backend-replays-streamed-reasoning
+  (with-redefs [codex-impl/codex-backend-auth-headers
+                (fn [] {"Authorization" "Bearer test-token"
+                        "ChatGPT-Account-ID" "acct-123"})]
+    (let [reasoning-item {:type "reasoning"
+                          :id "reasoning-item-1"
+                          :encrypted_content "encrypted-thinking"}
+          built (transport/build-request
+                 (codex/make-transport)
+                 (provider/get-provider :codex-backend)
+                 {:request/model "gpt-5.5"
+                  :request/messages
+                  [{:message/role :assistant
+                    :message/provider-data
+                    {:codex-backend
+                     {:codex_reasoning_items {0 reasoning-item}}}}
+                   {:message/role :user
+                    :message/content "Continue."}]})]
+      (is (= (dissoc reasoning-item :id)
+             (get-in built [:body :input 0])))
+      (is (= "user" (get-in built [:body :input 1 :role]))))))
+
 (deftest test-parse-response-text
   (let [t (codex/make-transport)
         profile (provider/get-provider :codex)
@@ -503,6 +541,25 @@
     (is (= 2 (:tool-call/index start-ev)))
     (is (= 2 (:tool-call/index delta-ev)))
     (is (= 2 (:tool-call/index end-ev)))))
+
+(deftest test-parse-stream-preserves-encrypted-reasoning-for-replay
+  (let [event (transport/parse-stream-event
+               (codex/make-transport)
+               (provider/get-provider :codex-backend)
+               (str "data: "
+                    (json/generate-string
+                     {:type "response.output_item.done"
+                      :output_index 0
+                      :item {:type "reasoning"
+                             :id "reasoning-item-1"
+                             :encrypted_content "encrypted-thinking"}})))]
+    (is (= :stream/provider-state (:event/type event)))
+    (is (= "encrypted-thinking"
+           (get-in event
+                   [:provider-state/data
+                    :codex_reasoning_items
+                    0
+                    :encrypted_content])))))
 
 (deftest test-parse-stream-end
   (let [t (codex/make-transport)
