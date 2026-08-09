@@ -4,6 +4,13 @@
             [llm.sdk.transport :as transport]
             [llm.sdk.providers.fake :as fake]))
 
+(deftest test-fake-profile-is-chat-only
+  (let [profile (provider/get-provider :fake)
+        t (fake/make-fake-transport)]
+    (is (= #{:chat} (:profile/capabilities profile)))
+    (is (= #{:chat} (transport/request-capabilities t)))
+    (is (false? (:profile/supports-model-listing profile)))))
+
 (deftest test-fake-transport-request
   (let [t (fake/make-fake-transport)
         profile (provider/get-provider :fake)

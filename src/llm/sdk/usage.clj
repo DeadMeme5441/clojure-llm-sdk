@@ -106,13 +106,15 @@
         completion (->int (:candidatesTokenCount u))
         total (->int-or-nil (:totalTokenCount u))
         cached (->int-or-nil (:cachedContentTokenCount u))
+        reasoning (->int-or-nil (:thoughtsTokenCount u))
         c (or cached 0)]
     (cond-> {:usage/input-tokens (max 0 (- prompt c))
              :usage/output-tokens completion
              :usage/total-tokens (or total (+ prompt completion))
              :usage/request-count 1
              :usage/provider-raw u}
-      (some? cached) (assoc :usage/cached-input-tokens cached))))
+      (some? cached) (assoc :usage/cached-input-tokens cached)
+      (some? reasoning) (assoc :usage/reasoning-tokens reasoning))))
 
 (defn normalize-embedding-usage
   "Normalize an embedding-endpoint usage map. Embedding responses lack
@@ -156,7 +158,7 @@
   (case provider
     (:openai :openrouter :deepseek :kimi :kimi-code
      :mistral :groq :cerebras :together :xai :perplexity :huggingface
-     :sambanova :deepinfra :lambda :nebius :hyperbolic :novita
+     :sambanova :deepinfra :nebius :hyperbolic :novita
      :friendliai :featherless :cloudflare :dashscope :volcengine)
     (normalize-openai-usage raw-usage)
     :anthropic (normalize-anthropic-usage raw-usage)

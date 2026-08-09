@@ -2,9 +2,7 @@
   "Voyage text embeddings transport for POST /v1/embeddings."
   (:require [llm.sdk.errors :as errors]
             [llm.sdk.provider :as provider]
-            [llm.sdk.transport.embed :as et])
-  (:import (java.nio ByteBuffer ByteOrder)
-           (java.util Base64)))
+            [llm.sdk.transport.embed :as et]))
 
 (defn- ->int [x]
   (cond
@@ -12,14 +10,6 @@
     (number? x) (int x)
     :else 0))
 
-(defn- decode-base64-floats [encoded]
-  (let [bytes (.decode (Base64/getDecoder) ^String encoded)
-        buffer (doto (ByteBuffer/wrap bytes)
-                 (.order ByteOrder/LITTLE_ENDIAN))]
-    (loop [values (transient [])]
-      (if (>= (.remaining buffer) Float/BYTES)
-        (recur (conj! values (double (.getFloat buffer))))
-        (persistent! values)))))
 
 (defn build-embed-request-voyage
   [profile request]
@@ -57,20 +47,28 @@
      :usage/request-count 1
      :usage/provider-raw usage}))
 
+(defn- dense-vector [embedding]
+  (when (and (sequential? embedding)
+             (every? number? embedding))
+    (vec embedding)))
+
 (defn parse-embed-response-voyage
   [profile raw]
   (let [data (sort-by #(or (:index %) 0) (:data raw))
-        vectors (mapv (fn [{:keys [embedding]}]
-                        (if (string? embedding)
-                          (decode-base64-floats embedding)
-                          (vec embedding)))
-                      data)
+        [vectors opaque]
+        (reduce (fn [[vectors opaque] item]
+                  (if-let [vector (dense-vector (:embedding item))]
+                    [(conj vectors vector) opaque]
+                    [vectors (conj opaque item)]))
+                [[] []]
+                data)
         first-vector (first vectors)]
     (cond-> {:embed/provider (:profile/id profile)
              :embed/model (:model raw)
              :embed/vectors vectors
              :embed/raw raw}
       first-vector (assoc :embed/dimensions (count first-vector))
+      (seq opaque) (assoc :embed/provider-data {:raw opaque})
       (:usage raw) (assoc :response/usage
                           (normalize-voyage-embedding-usage raw)))))
 

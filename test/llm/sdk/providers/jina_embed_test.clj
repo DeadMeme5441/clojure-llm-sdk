@@ -68,11 +68,35 @@
     (is (= 12 (get-in parsed [:response/usage :usage/total-tokens])))
     (is (= 4 (get-in parsed [:response/usage :usage/image-tokens])))))
 
-(deftest test-parse-jina-base64-float-response
-  (let [parsed (et/parse-embed-response
+(deftest test-parse-jina-preserves-opaque-base64-response
+  (let [item {:index 0 :embedding "AACAPwAAAEA="}
+        parsed (et/parse-embed-response
                 (jina/make-transport)
                 (provider/get-provider :jina)
                 {:model "jina-embeddings-v5-text-small"
                  :usage {:prompt_tokens 1 :total_tokens 1}
-                 :data [{:index 0 :embedding "AACAPwAAAEA="}]})]
-    (is (= [[1.0 2.0]] (:embed/vectors parsed)))))
+                 :data [item]})]
+    (is (= [] (:embed/vectors parsed)))
+    (is (= {:raw [item]} (:embed/provider-data parsed)))))
+
+(deftest test-parse-jina-preserves-sparse-multivector-and-video-usage
+  (let [sparse {:object "embedding"
+                :index 0
+                :embedding {:indices [2 9]
+                            :values [0.25 0.75]}}
+        multivector {:object "embedding"
+                     :index 1
+                     :embeddings [[0.1 0.2] [0.3 0.4]]}
+        parsed (et/parse-embed-response
+                (jina/make-transport)
+                (provider/get-provider :jina)
+                {:model "jina-embeddings-v4"
+                 :usage {:prompt_tokens 6
+                         :total_tokens 10
+                         :video_tokens 4}
+                 :data [multivector sparse]})]
+    (is (= [] (:embed/vectors parsed)))
+    (is (= {:raw [sparse multivector]}
+           (:embed/provider-data parsed)))
+    (is (= 4 (get-in parsed [:response/usage :usage/video-tokens])))
+    (is (= 10 (get-in parsed [:response/usage :usage/total-tokens])))))

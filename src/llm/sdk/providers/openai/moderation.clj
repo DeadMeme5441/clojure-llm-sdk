@@ -73,7 +73,7 @@
 
 (defn- ->bool-map [m]
   (when (map? m)
-    (into {} (map (fn [[k v]] [(->keyword k) (boolean v)]) m))))
+    (into {} (map (fn [[k v]] [(->keyword k) v]) m))))
 
 (defn- ->number-map [m]
   (when (map? m)

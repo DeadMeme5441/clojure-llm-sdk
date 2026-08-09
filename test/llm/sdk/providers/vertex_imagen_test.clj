@@ -2,7 +2,9 @@
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
             [llm.sdk.schema :as schema]
+            [llm.sdk.transport :as transport]
             [llm.sdk.transport.image :as it]
+            [llm.sdk.providers.vertex-gemini :as vertex]
             [llm.sdk.providers.vertex-imagen :as imagen]))
 
 (deftest test-build-request-uses-gemini-image-generate-content
@@ -24,6 +26,15 @@
            (get-in built [:body :generationConfig :responseModalities])))
     (is (= 1 (get-in built [:body :generationConfig :candidateCount])))
     (is (= :gemini-native (:profile/protocol-family profile)))))
+
+(deftest test-vertex-gemini-capability-and-env-metadata
+  (let [t (vertex/make-transport)
+        profile (provider/get-provider :vertex-gemini)]
+    (doseq [capability [:json-schema :cache]]
+      (is (contains? (transport/request-capabilities t) capability))
+      (is (contains? (:profile/capabilities profile) capability)))
+    (doseq [env-name ["GOOGLE_CLOUD_PROJECT" "GOOGLE_CLOUD_LOCATION"]]
+      (is (contains? (set (:profile/env-var-names profile)) env-name)))))
 
 (deftest test-discontinued-imagen-model-is-rejected-with-replacement
   (let [t (imagen/make-transport)
@@ -105,8 +116,10 @@
                              :totalTokenCount 32}}
         parsed (it/parse-image-response t profile raw)]
     (testing "only image parts become canonical images"
-      (is (= [{:image/b64 "aGVsbG8="}
-              {:image/url "gs://bucket/image.png"}]
+      (is (= [{:image/b64 "aGVsbG8="
+               :image/mime-type "image/png"}
+              {:image/url "gs://bucket/image.png"
+               :image/mime-type "image/png"}]
              (:image/images parsed))))
     (is (= "gemini-2.5-flash-image" (:image/model parsed)))
     (is (schema/validate-image-gen-response parsed))

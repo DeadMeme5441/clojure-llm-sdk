@@ -511,14 +511,23 @@
         parts (into [] (mapcat content-block->canonical) content)
         tool-calls (vec (filter #(= (:part/type %) :tool-call) parts))
         stop-reason (get stop-reason-map (:stopReason raw) :unknown)
-        usage-raw (:usage raw)]
+        usage-raw (:usage raw)
+        provider-data
+        (not-empty
+         (select-keys raw
+                      [:additionalModelResponseFields
+                       :metrics
+                       :performanceConfig
+                       :serviceTier
+                       :trace]))]
     (cond-> {:response/provider :bedrock
              :response/model (:modelId raw)
              :response/parts parts
              :response/finish-reason stop-reason
              :response/raw raw}
       (seq tool-calls) (assoc :response/tool-calls tool-calls)
-      usage-raw (assoc :response/usage (normalize-bedrock-usage usage-raw)))))
+      usage-raw (assoc :response/usage (normalize-bedrock-usage usage-raw))
+      provider-data (assoc :response/provider-data provider-data))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing — handles either an eventstream frame map

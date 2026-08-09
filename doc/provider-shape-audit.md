@@ -39,7 +39,7 @@ Coverage markers:
 | Together | `:together` | OpenAI-compatible alias | `request-golden`, `response-fixture`, `live-smoke` | Chat and embedding model/provider ids. |
 | xAI | `:xai` | OpenAI-compatible alias | `request-golden`, `response-fixture`, `live-smoke` | Reasoning/cache routing fields. |
 | HuggingFace Router | `:huggingface` | OpenAI-compatible alias | `request-golden`, `response-fixture`, `live-smoke` | Router model ids and tool support are model-dependent. |
-| Aggregator aliases | `:sambanova`, `:deepinfra`, `:lambda`, `:nebius`, `:hyperbolic`, `:novita`, `:friendliai`, `:featherless`, `:cloudflare`, `:dashscope`, `:volcengine` | OpenAI-compatible aliases | `request-golden` | Mostly unchecked live behavior; keep claims conservative. |
+| Aggregator aliases | `:sambanova`, `:deepinfra`, `:nebius`, `:hyperbolic`, `:novita`, `:friendliai`, `:featherless`, `:cloudflare`, `:dashscope`, `:volcengine` | OpenAI-compatible aliases | `request-golden` | Mostly unchecked live behavior; keep claims conservative. |
 
 ## Embeddings
 

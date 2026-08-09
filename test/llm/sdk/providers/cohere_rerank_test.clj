@@ -125,12 +125,26 @@
   (let [t (ckr/make-transport)
         profile (provider/get-provider :jina)
         raw {:model "jina-reranker-v2-base-multilingual"
-             :results [{:index 0 :relevance_score 0.95
-                        :document {:text "match"}}]
+             :results [{:index 0
+                        :relevance_score 0.95
+                        :document {:text "match"
+                                   :metadata {:source "fixture"}}
+                        :embedding [0.25 -0.5 0.75]}
+                       {:index 1
+                        :relevance_score 0.5
+                        :document {:image "https://example.test/image.png"}}]
              :usage {:total_tokens 25}}
-        resp (rt/parse-rerank-response t profile raw)]
+        resp (rt/parse-rerank-response t profile raw)
+        results (:rerank/results resp)]
     (is (= :jina (:rerank/provider resp)))
     (is (= "jina-reranker-v2-base-multilingual" (:rerank/model resp)))
+    (testing "structured Jina documents and numeric embeddings stay canonical"
+      (is (= {:text "match" :metadata {:source "fixture"}}
+             (:rerank/document (first results))))
+      (is (= [0.25 -0.5 0.75]
+             (:rerank/embedding (first results))))
+      (is (= {:image "https://example.test/image.png"}
+             (:rerank/document (second results)))))
     (testing "Jina total_tokens surfaces in usage"
       (is (= 25 (get-in resp [:response/usage :usage/total-tokens]))))))
 
@@ -144,12 +158,13 @@
                   :rerank/query "q"
                   :rerank/documents ["a"]
                   :rerank/return-documents true
-                  :rerank/provider-options {:truncation false
+                  :rerank/provider-options {:truncation true
                                             :max-doc-length 4096
                                             :return-embeddings true}}))]
     (is (= "https://api.jina.ai/v1/rerank" (:url built)))
     (is (true? (get-in built [:body :return_documents])))
-    (is (false? (get-in built [:body :truncation])))
+    (is (not (contains? (:body built) :truncation))
+        "Jina rerank does not document a truncation request field")
     (is (= 4096 (get-in built [:body :max_doc_length])))
     (is (true? (get-in built [:body :return_embeddings])))))
 

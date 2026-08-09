@@ -129,6 +129,33 @@
       (is (= [[0.1 0.2]] (:embed/vectors resp)))
       (is (nil? (:response/usage resp))))))
 
+(deftest test-parse-response-decodes-documented-float-base64
+  (let [t (cohere-embed/make-transport)
+        profile (provider/get-provider :cohere)
+        resp (et/parse-embed-response
+              t profile
+              {:embeddings {:base64 ["AACAPwAAAEA="]}})]
+    (is (= [[1.0 2.0]] (:embed/vectors resp)))
+    (is (nil? (:embed/provider-data resp)))))
+
+(deftest test-parse-response-preserves-opaque-embedding-types
+  (let [t (cohere-embed/make-transport)
+        profile (provider/get-provider :cohere)
+        opaque {:float [["not-a-float-vector"]]
+                :base64 ["not-base64!"]
+                :int8 [[1 -2 3]]
+                :uint8 [[1 2 255]]
+                :binary [[1 0 1]]}
+        resp (et/parse-embed-response
+              t profile
+              {:id "opaque-embed"
+               :embeddings (assoc opaque :float [[0.1 0.2]
+                                                  ["not-a-float-vector"]])})]
+    (is (= [[0.1 0.2]] (:embed/vectors resp)))
+    (is (= {:raw opaque} (:embed/provider-data resp)))
+    (is (= 2 (:embed/dimensions resp))
+        "only the canonical float vector determines dimensions")))
+
 ;; ---------------------------------------------------------------------------
 ;; Driver path
 ;; ---------------------------------------------------------------------------

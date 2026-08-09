@@ -19,6 +19,68 @@
     (is (= 100 (get-in built [:body :max_completion_tokens])))
     (is (= 2 (count (get-in built [:body :messages]))))))
 
+(deftest test-build-request-stream-flag
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        request {:request/model "gpt-4o"
+                 :request/messages [{:message/role :user :message/content "Hello"}]}
+        non-stream (transport/build-request t profile request)
+        stream (transport/build-request t profile
+                                        (assoc request :request/stream? true))]
+    (is (not (contains? (:body non-stream) :stream)))
+    (is (true? (get-in stream [:body :stream])))))
+
+(deftest test-openai-compatible-alias-wire-contracts
+  (let [t (openai/make-transport)
+        groq (provider/get-provider :groq)
+        groq-built
+        (transport/build-request
+         t groq
+         {:request/model "openai/gpt-oss-20b"
+          :request/messages [{:message/role :user :message/content "Think"}]
+          :request/max-tokens 256
+          :request/reasoning {:enabled true :effort :high}
+          :request/provider-options
+          {:extra_body {:service_tier "auto"
+                        :logprobs true
+                        :logit_bias {"1" 1}
+                        :top_logprobs 3}}})
+        xai-built
+        (transport/build-request
+         t (provider/get-provider :xai)
+         {:request/model "grok-4"
+          :request/messages [{:message/role :user :message/content "Think"}]
+          :request/reasoning {:enabled true :effort :low}
+          :request/provider-options {:extra_body {:custom_option true}}})]
+    (testing "verified alias metadata"
+      (is (= "https://api.deepseek.com/v1"
+             (:profile/base-url (provider/get-provider :deepseek))))
+      (is (contains? (:profile/capabilities (provider/get-provider :kimi))
+                     :json-schema))
+      (is (nil? (provider/get-provider :lambda)))
+      (is (false? (:profile/supports-model-listing
+                   (provider/get-provider :volcengine)))))
+    (testing "Groq fields are top-level and unsupported OpenAI fields are dropped"
+      (is (= 256 (get-in groq-built [:body :max_completion_tokens])))
+      (is (= "high" (get-in groq-built [:body :reasoning_effort])))
+      (is (= "raw" (get-in groq-built [:body :reasoning_format])))
+      (is (= {:service_tier "auto"} (get-in groq-built [:body :extra_body])))
+      (is (not (contains? (:body groq-built) :max_tokens))))
+    (testing "xAI reasoning effort is top-level without relocating provider options"
+      (is (= "low" (get-in xai-built [:body :reasoning_effort])))
+      (is (= {:custom_option true} (get-in xai-built [:body :extra_body]))))))
+
+(deftest test-groq-include-reasoning-is-mutually-exclusive-with-format
+  (let [built (transport/build-request
+               (openai/make-transport)
+               (provider/get-provider :groq)
+               {:request/model "openai/gpt-oss-20b"
+                :request/messages [{:message/role :user :message/content "Think"}]
+                :request/reasoning {:enabled true :effort :medium :exclude false}})]
+    (is (true? (get-in built [:body :include_reasoning])))
+    (is (= "medium" (get-in built [:body :reasoning_effort])))
+    (is (not (contains? (:body built) :reasoning_format)))))
+
 (deftest test-build-request-tools
   (let [t (openai/make-transport)
         profile (provider/get-provider :openai)
@@ -160,6 +222,68 @@
     (is (= 1 (count (:response/tool-calls resp))))
     (is (= "get_weather" (get-in resp [:response/tool-calls 0 :tool-call/name])))))
 
+(deftest test-parse-response-legacy-function-call
+  (let [resp (transport/parse-response
+              (openai/make-transport)
+              (provider/get-provider :openai)
+              {:id "chatcmpl-legacy"
+               :model "gpt-4o"
+               :choices [{:message {:content nil
+                                    :function_call
+                                    {:name "get_weather"
+                                     :arguments "{\"location\":\"NYC\"}"}}
+                          :finish_reason "function_call"}]})]
+    (is (= :tool-calls (:response/finish-reason resp)))
+    (is (= [{:part/type :tool-call
+             :tool-call/id "tool_call_0"
+             :tool-call/name "get_weather"
+             :tool-call/arguments "{\"location\":\"NYC\"}"
+             :tool-call/provider-data {:wire_type "function"}}]
+           (:response/tool-calls resp)))
+    (is (= (:response/tool-calls resp)
+           (filterv #(= :tool-call (:part/type %)) (:response/parts resp))))))
+
+(deftest test-parse-mistral-sequential-content
+  (let [profile (provider/get-provider :mistral)
+        t (openai/make-transport)
+        resp (transport/parse-response
+              t profile
+              {:id "mistral-1"
+               :model "mistral-large"
+               :choices [{:message
+                          {:content [{:type "text" :text "First"}
+                                     {:type "citation" :url "https://example.com"}
+                                     " second"]}
+                          :finish_reason "stop"}]})
+        events (transport/parse-stream-event
+                t profile
+                "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"First\"},{\"type\":\"citation\",\"url\":\"https://example.com\"},\" second\"]}}]}")]
+    (is (= [{:part/type :text :text "First"}
+            {:part/type :text :text " second"}]
+           (:response/parts resp)))
+    (is (= [{:type "citation" :url "https://example.com"}]
+           (get-in resp [:response/provider-data :content_chunks])))
+    (is (= [:stream/content-delta :stream/provider-state :stream/content-delta]
+           (mapv :event/type events)))
+    (is (= {:type "citation" :url "https://example.com"}
+           (get-in events [1 :provider-state/data
+                           :chat-completion/content-chunk])))))
+
+(deftest test-parse-deepseek-insufficient-resource-finish
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :deepseek)
+        resp (transport/parse-response
+              t profile
+              {:id "deepseek-1"
+               :model "deepseek-v4-pro"
+               :choices [{:message {:content ""}
+                          :finish_reason "insufficient_system_resource"}]})
+        event (transport/parse-stream-event
+               t profile
+               "data: {\"choices\":[{\"finish_reason\":\"insufficient_system_resource\"}]}")]
+    (is (= :incomplete (:response/finish-reason resp)))
+    (is (= :incomplete (:event/finish-reason event)))))
+
 (deftest test-parse-response-current-custom-tool-and-message-state
   (let [t (openai/make-transport)
         profile (provider/get-provider :openai)
@@ -212,6 +336,18 @@
            (mapv :event/type events)))
     (is (= "shell" (:tool-call/name (first events))))
     (is (= "pwd" (:tool-call/arguments-delta (second events))))))
+
+(deftest test-parse-stream-event-legacy-function-call
+  (let [events (transport/parse-stream-event
+                (openai/make-transport)
+                (provider/get-provider :openai)
+                "data: {\"choices\":[{\"delta\":{\"function_call\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\"}},\"finish_reason\":\"function_call\"}]}")]
+    (is (= [:stream/tool-call-start :stream/tool-call-delta :stream/end]
+           (mapv :event/type events)))
+    (is (= "tool_call_0" (get-in events [0 :tool-call/id])))
+    (is (= "get_weather" (get-in events [0 :tool-call/name])))
+    (is (= "{\"city\":" (get-in events [1 :tool-call/arguments-delta])))
+    (is (= :tool-calls (get-in events [2 :event/finish-reason])))))
 
 (deftest test-parse-stream-event-preserves-audio-state
   (let [t (openai/make-transport)

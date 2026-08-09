@@ -109,7 +109,8 @@
      "https://openrouter.ai/docs/cookbook/administration/usage-accounting"
      :cost/breakdown
      (select-keys usage-raw
-                  [:cost :cost_details :is_byok :server_tool_use])}))
+                  [:cost :cost_details :is_byok :server_tool_use
+                   :server_tool_use_details])}))
 
 (defn parse-response-openrouter
   [profile raw]

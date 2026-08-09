@@ -442,27 +442,74 @@
     (is (= true (get-in built [:body :stream])))
     (is (nil? (get-in built [:headers "anthropic-beta"])))))
 
-(deftest test-beta-message-routing-and-requested-headers
-  (let [built (anthropic/build-request-anthropic
-               (provider/get-provider :anthropic)
-               {:request/model "claude-opus-4-8"
-                :request/messages
-                [{:message/role :system :message/content "Global"}
-                 {:message/role :user :message/content "First turn"}
-                 {:message/role :system :message/content "Updated policy"}
-                 {:message/role :assistant :message/content "Acknowledged"}]
-                :request/provider-options
-                {:anthropic
-                 {:betas ["files-api-2025-04-14"
-                          "fine-grained-tool-streaming-2025-05-14"]}}})]
-    (is (= "https://api.anthropic.com/v1/messages?beta=true" (:url built)))
-    (is (= ["user" "system" "assistant"]
-           (mapv :role (get-in built [:body :messages]))))
-    (is (= "Updated policy"
-           (get-in built [:body :messages 1 :content 0 :text])))
-    (is (= (str "files-api-2025-04-14,"
-                "fine-grained-tool-streaming-2025-05-14")
-           (get-in built [:headers "anthropic-beta"])))))
+(deftest test-interspersed-systems-and-beta-headers-native-and-vertex
+  (let [request {:request/model "claude-opus-4-8"
+                 :request/messages
+                 [{:message/role :system :message/content "Global"}
+                  {:message/role :user :message/content "First turn"}
+                  {:message/role :system :message/content "Updated policy"}
+                  {:message/role :assistant :message/content "Acknowledged"}]
+                 :request/provider-options
+                 {:anthropic
+                  {:betas ["files-api-2025-04-14"
+                           "fine-grained-tool-streaming-2025-05-14"]}
+                  :vertex {:project "project-1"
+                           :location "us"
+                           :access-token "token-1"}}}
+        builds [["native"
+                 (anthropic/build-request-anthropic
+                  (provider/get-provider :anthropic)
+                  request)]
+                ["Vertex"
+                 (vertex/build-request-vertex-anthropic
+                  (provider/get-provider :vertex-anthropic)
+                  request)]]]
+    (doseq [[label built] builds]
+      (testing label
+        (is (= [{:type "text" :text "Global"}
+                {:type "text" :text "Updated policy"}]
+               (get-in built [:body :system])))
+        (is (= ["user" "assistant"]
+               (mapv :role (get-in built [:body :messages]))))
+        (is (not (re-find #"\\?beta=true" (:url built))))
+        (is (= (str "files-api-2025-04-14,"
+                    "fine-grained-tool-streaming-2025-05-14")
+               (get-in built [:headers "anthropic-beta"])))))))
+
+(deftest test-thinking-signatures-required-native-and-vertex
+  (let [request (fn [signature-present? signature]
+                  {:request/model "claude-opus-4-8"
+                   :request/messages
+                   [{:message/role :assistant
+                     :message/content
+                     [(cond-> {:part/type :reasoning
+                               :reasoning/text "Think carefully"}
+                        signature-present?
+                        (assoc :reasoning/signature signature))]}]
+                   :request/provider-options
+                   {:vertex {:project "project-1"
+                             :location "us"
+                             :access-token "token-1"}}})
+        builders
+        [["native"
+          #(anthropic/build-request-anthropic
+            (provider/get-provider :anthropic) %)]
+         ["Vertex"
+          #(vertex/build-request-vertex-anthropic
+            (provider/get-provider :vertex-anthropic) %)]]]
+    (doseq [[label build] builders]
+      (testing label
+        (is (= {:type "thinking"
+                :thinking "Think carefully"
+                :signature "sig_1"}
+               (get-in (build (request true "sig_1"))
+                       [:body :messages 0 :content 0])))
+        (doseq [[signature-present? signature]
+                [[false nil] [true ""] [true "   "]]]
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo
+               #"require a non-blank signature"
+               (build (request signature-present? signature)))))))))
 
 (deftest test-current-thinking-model-rules
   (let [t (anthropic/make-transport)
@@ -618,6 +665,40 @@
                     :compaction :encrypted_content])))
     (is (= :stream/error (:event/type error)))
     (is (= "overloaded_error" (get-in error [:error/error :type])))))
+
+(deftest test-stateless-block-stops-and-terminal-message-stop-native-and-vertex
+  (let [line #(str "data: " (json/generate-string %))
+        parsers
+        [["native"
+          #(anthropic/parse-stream-event-anthropic {} (line %))]
+         ["Vertex"
+          #(vertex/parse-stream-event-vertex-anthropic
+            (provider/get-provider :vertex-anthropic)
+            (line %))]]]
+    (doseq [[label parse] parsers]
+      (testing label
+        (is (= :stream/provider-state
+               (:event/type
+                (parse {:type "content_block_start"
+                        :index 0
+                        :content_block {:type "text" :text ""}}))))
+        (is (nil? (parse {:type "content_block_stop" :index 0})))
+        (is (= :stream/tool-call-start
+               (:event/type
+                (parse {:type "content_block_start"
+                        :index 1
+                        :content_block {:type "tool_use"
+                                        :id "toolu_1"
+                                        :name "get_weather"
+                                        :input {}}}))))
+        (is (nil? (parse {:type "content_block_stop" :index 1})))
+        (is (= {:event/type :stream/end
+                :event/finish-reason :tool-calls}
+               (parse {:type "message_delta"
+                       :delta {:stop_reason "tool_use"}})))
+        (is (= {:event/type :stream/end
+                :event/finish-reason nil}
+               (parse {:type "message_stop"})))))))
 
 (deftest test-vertex-anthropic-current-routing-envelope
   (let [t (vertex/make-transport)

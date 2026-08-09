@@ -62,8 +62,10 @@
         parsed (it/parse-image-response t profile raw)]
     (is (= :openrouter (:image/provider parsed)))
     (is (= 1748372400 (:image/created parsed)))
-    (is (= [{:image/b64 "abc123"}
-            {:image/b64 "def456"}]
+    (is (= [{:image/b64 "abc123"
+             :image/mime-type "image/png"}
+            {:image/b64 "def456"
+             :image/mime-type "image/webp"}]
            (:image/images parsed)))
     (is (= 8 (get-in parsed [:response/usage :usage/image-tokens])))
     (is (= 0.04 (get-in parsed [:response/cost :cost/usd])))

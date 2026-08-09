@@ -90,31 +90,66 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- decode-base64-floats [encoded]
-  (let [bytes (.decode (Base64/getDecoder) ^String encoded)
-        buffer (doto (ByteBuffer/wrap bytes)
-                 (.order ByteOrder/LITTLE_ENDIAN))]
-    (loop [values (transient [])]
-      (if (>= (.remaining buffer) Float/BYTES)
-        (recur (conj! values (double (.getFloat buffer))))
-        (persistent! values)))))
+  (when (string? encoded)
+    (try
+      (let [bytes (.decode (Base64/getDecoder) ^String encoded)]
+        (when (zero? (mod (alength bytes) Float/BYTES))
+          (let [buffer (doto (ByteBuffer/wrap bytes)
+                         (.order ByteOrder/LITTLE_ENDIAN))]
+            (loop [values (transient [])]
+              (if (>= (.remaining buffer) Float/BYTES)
+                (recur (conj! values (double (.getFloat buffer))))
+                (persistent! values))))))
+      (catch IllegalArgumentException _ nil))))
 
-(defn- extract-vectors
-  "Normalize all current Cohere v2 embedding encodings."
+(defn- dense-vector [embedding]
+  (when (and (sequential? embedding)
+             (every? number? embedding))
+    (vec embedding)))
+
+(defn- partition-dense [embeddings]
+  (if (sequential? embeddings)
+    (reduce (fn [[vectors opaque] embedding]
+              (if-let [vector (dense-vector embedding)]
+                [(conj vectors vector) opaque]
+                [vectors (conj opaque embedding)]))
+            [[] []]
+            embeddings)
+    [[] (if (some? embeddings) [embeddings] [])]))
+
+(defn- extract-embeddings
+  "Return canonical float vectors and any native encodings that cannot be
+   represented honestly by the canonical dense numeric vector schema."
   [raw]
   (let [emb (:embeddings raw)]
-    (cond
-      (sequential? emb) (vec emb)
-      (seq (:float emb)) (vec (:float emb))
-      (seq (:int8 emb)) (vec (:int8 emb))
-      (seq (:uint8 emb)) (vec (:uint8 emb))
-      (seq (:binary emb)) (vec (:binary emb))
-      (seq (:ubinary emb)) (vec (:ubinary emb))
-      (seq (:base64 emb)) (mapv decode-base64-floats (:base64 emb))
-      :else [])))
+    (if (map? emb)
+      (let [[float-vectors opaque-float]
+            (partition-dense (:float emb))
+            encoded-base64 (let [values (:base64 emb)]
+                             (cond
+                               (sequential? values) values
+                               (some? values) [values]
+                               :else []))
+            decoded-base64 (mapv decode-base64-floats encoded-base64)
+            base64-vectors (vec (keep identity decoded-base64))
+            opaque-base64 (->> (map vector encoded-base64 decoded-base64)
+                               (keep (fn [[encoded decoded]]
+                                       (when-not decoded encoded)))
+                               vec)
+            opaque (cond-> (dissoc emb :float :base64)
+                     (seq opaque-float) (assoc :float opaque-float)
+                     (seq opaque-base64) (assoc :base64 opaque-base64))]
+        {:vectors (into float-vectors base64-vectors)
+         :raw (not-empty opaque)})
+      (let [[vectors opaque] (partition-dense emb)]
+        {:vectors vectors
+         :raw (not-empty opaque)}))))
 
 (defn parse-embed-response-cohere
   [profile raw]
-  (let [vectors (extract-vectors raw)
+  (let [embedding-data (extract-embeddings raw)
+        vectors (:vectors embedding-data)
+        opaque (:raw embedding-data)
         first-vec (first vectors)]
     (cond-> {:embed/provider (:profile/id profile)
              ;; Cohere does not echo the model in the v2 response.
@@ -123,6 +158,7 @@
              :embed/raw raw}
       (:id raw) (assoc :embed/id (:id raw))
       first-vec (assoc :embed/dimensions (count first-vec))
+      opaque (assoc :embed/provider-data {:raw opaque})
       (:meta raw)
       (assoc :response/usage (normalize-cohere-embedding-usage raw)))))
 

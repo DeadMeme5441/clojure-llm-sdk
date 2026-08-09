@@ -149,6 +149,20 @@
   (is (= (set (sdk/list-providers))
          (set (keys coverage/provider-coverage)))))
 
+(deftest upgraded-provider-metadata-has-exact-coverage
+  (is (not (contains? coverage/provider-coverage :lambda)))
+  (is (= #{:complete :streaming :tools :json-schema :reasoning}
+         (get-in coverage/provider-coverage [:kimi :surfaces])))
+  (doseq [provider-id [:gemini-native :vertex-gemini]]
+    (is (= #{:complete :streaming :tools :json-schema :multimodal
+             :reasoning :file-attachments}
+           (get-in coverage/provider-coverage [provider-id :surfaces]))
+        (name provider-id)))
+  (is (= #{:complete}
+         (get-in coverage/provider-coverage [:fake :surfaces])))
+  (is (= #{:unsupported}
+         (get-in coverage/provider-coverage [:volcengine :models]))))
+
 (deftest coverage-rows-have-required-contract-surfaces
   (doseq [[provider-id row] coverage/provider-coverage]
     (testing (name provider-id)

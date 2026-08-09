@@ -1,6 +1,6 @@
 # Providers
 
-`clojure-llm-sdk` ships 37 registered provider profiles across chat, embeddings, moderation, rerank, image generation, transcription, and text-to-speech.
+`clojure-llm-sdk` ships 36 registered provider profiles across chat, embeddings, moderation, rerank, image generation, transcription, and text-to-speech.
 
 Provider profiles define:
 
@@ -44,7 +44,6 @@ OpenAI-compatible aggregator aliases:
 |---|---|---|
 | SambaNova | `:sambanova` | `SAMBANOVA_API_KEY` |
 | DeepInfra | `:deepinfra` | `DEEPINFRA_API_KEY` |
-| Lambda AI | `:lambda` | `LAMBDA_API_KEY` |
 | Nebius | `:nebius` | `NEBIUS_API_KEY` |
 | Hyperbolic | `:hyperbolic` | `HYPERBOLIC_API_KEY` |
 | Novita | `:novita` | `NOVITA_API_KEY` |

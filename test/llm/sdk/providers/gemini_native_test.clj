@@ -19,6 +19,13 @@
     (is (= "user" (get-in built [:body :contents 0 :role])))
     (is (= "Sys" (get-in built [:body :systemInstruction :parts 0 :text])))))
 
+(deftest test-capabilities-match-implemented-request-shapes
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)]
+    (doseq [capability [:json-schema :cache]]
+      (is (contains? (transport/request-capabilities t) capability))
+      (is (contains? (:profile/capabilities profile) capability)))))
+
 (deftest test-build-request-generation-config-preserves-all-options
   (let [t (gemini/make-transport)
         profile (provider/get-provider :gemini-native)

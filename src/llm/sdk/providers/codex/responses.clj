@@ -406,8 +406,8 @@
                 {:top_p (:request/top-p request)})
               (when (:request/response-format request)
                 {:text (response-format->codex (:request/response-format request))})
-              ;; Codex backend requires stream=true
-              (when backend?
+              ;; Codex backend always streams; standard Responses streams on request.
+              (when (or backend? (:request/stream? request))
                 {:stream true})
               (when top-level-key
                 {:prompt_cache_key top-level-key})

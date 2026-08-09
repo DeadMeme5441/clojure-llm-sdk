@@ -122,7 +122,8 @@
     (usage/normalize-usage :gemini-native raw))
 
   (request-capabilities [_]
-    #{:chat :streaming :tools :multimodal :reasoning :file-attachments}))
+    #{:chat :streaming :tools :multimodal :reasoning :file-attachments
+      :json-schema :cache}))
 
 (defn make-transport []
   (->VertexGeminiTransport))
@@ -134,7 +135,10 @@
   :profile/base-url "https://us-central1-aiplatform.googleapis.com"
   :profile/auth-strategy :gcp-oauth
   :profile/supports-model-listing true
-  :profile/capabilities #{:chat :streaming :tools :multimodal :reasoning :file-attachments}
+  :profile/capabilities #{:chat :streaming :tools :multimodal :reasoning
+                          :file-attachments :json-schema :cache}
   :profile/env-var-names ["GOOGLE_APPLICATION_CREDENTIALS"
-                          "GOOGLE_OAUTH_ACCESS_TOKEN"]
+                          "GOOGLE_OAUTH_ACCESS_TOKEN"
+                          "GOOGLE_CLOUD_PROJECT"
+                          "GOOGLE_CLOUD_LOCATION"]
   :profile/transport-constructor make-transport})

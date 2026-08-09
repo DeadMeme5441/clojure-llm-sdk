@@ -526,7 +526,8 @@
     (usage/normalize-usage :gemini-native raw))
 
   (request-capabilities [_]
-    #{:chat :streaming :tools :multimodal :reasoning :file-attachments}))
+    #{:chat :streaming :tools :multimodal :reasoning :file-attachments
+      :json-schema :cache}))
 
 (defn make-transport []
   (->GeminiNativeTransport))
@@ -534,4 +535,8 @@
 ;; Register
 (when-let [p (provider/get-provider :gemini-native)]
   (provider/register-provider
-   (assoc p :profile/transport-constructor make-transport)))
+   (assoc p
+          :profile/capabilities
+          (conj (:profile/capabilities p) :json-schema :cache)
+          :profile/transport-constructor
+          make-transport)))

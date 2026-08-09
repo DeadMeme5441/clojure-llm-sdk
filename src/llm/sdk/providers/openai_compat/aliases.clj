@@ -15,7 +15,7 @@
    {:id :kimi
     :base-url "https://api.moonshot.cn/v1"
     :env-var-names ["MOONSHOT_API_KEY"]
-    :capabilities #{:chat :streaming :tools :reasoning}
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}
     :quirks {:thinking-explicit true}}
    {:id :kimi-code
     :base-url "https://api.kimi.com/coding/v1"
@@ -33,7 +33,10 @@
     :env-var-names ["GROQ_API_KEY"]
     :capabilities #{:chat :streaming :tools :json-schema :reasoning}
     :quirks {:reasoning-format :raw
-             :reasoning-effort true}}
+             :reasoning-effort true
+             :reasoning-top-level true
+             :max-completion-tokens true
+             :drops #{:logprobs :logit_bias :top_logprobs}}}
    {:id :cerebras
     :base-url "https://api.cerebras.ai/v1"
     :env-var-names ["CEREBRAS_API_KEY"]
@@ -46,7 +49,9 @@
    {:id :xai
     :base-url "https://api.x.ai/v1"
     :env-var-names ["XAI_API_KEY"]
-    :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}
+    :quirks {:reasoning-effort true
+             :reasoning-top-level true}}
    {:id :huggingface
     :base-url "https://router.huggingface.co/v1"
     :env-var-names ["HF_TOKEN"]
@@ -60,10 +65,6 @@
     :base-url "https://api.deepinfra.com/v1/openai"
     :env-var-names ["DEEPINFRA_TOKEN"]
     :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
-   {:id :lambda
-    :base-url "https://api.lambda.ai/v1"
-    :env-var-names ["LAMBDA_API_KEY"]
-    :capabilities #{:chat :streaming :tools}}
    {:id :nebius
     :base-url "https://api.tokenfactory.nebius.com/v1"
     :env-var-names ["NEBIUS_API_KEY"]
@@ -99,7 +100,8 @@
    {:id :volcengine
     :base-url "https://ark.cn-beijing.volces.com/api/v3"
     :env-var-names ["ARK_API_KEY"]
-    :capabilities #{:chat :streaming :tools :json-schema}}])
+    :capabilities #{:chat :streaming :tools :json-schema}
+    :supports-model-listing? false}])
 
 (def chat-alias-ids
   (mapv :id chat-alias-specs))

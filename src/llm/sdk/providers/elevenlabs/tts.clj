@@ -15,13 +15,12 @@
     :mp3 "mp3_44100_128"
     :opus "opus_48000_96"
     :pcm "pcm_44100"
-    :wav "wav_44100"
-    (:aac :flac)
+    (:aac :flac :wav)
     (throw (ex-info (str "ElevenLabs does not support " (name format)
                          " output")
                     {:provider :elevenlabs
                      :format format
-                     :supported-formats #{:mp3 :opus :pcm :wav}}))
+                     :supported-formats #{:mp3 :opus :pcm}}))
     nil))
 
 (defn- query-string [pairs]

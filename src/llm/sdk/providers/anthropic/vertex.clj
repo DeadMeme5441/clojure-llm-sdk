@@ -13,9 +13,10 @@
         \"anthropic_version\": \"vertex-2023-10-16\"; streaming calls add
         \"stream\": true.
 
-   Everything else (message/tool/cache/thinking shaping, response and
-   stream parsing) is reused verbatim from llm.sdk.providers.anthropic.chat
-   so the two backends stay in lockstep.
+   Everything else (system extraction, message/tool/cache/thinking shaping,
+   thinking-signature validation, response parsing, and stateless stream event
+   parsing) is reused verbatim from llm.sdk.providers.anthropic.chat so the two
+   backends stay in lockstep.
 
    Project resolution: request provider-options [:vertex :project] >
    profile quirks :vertex-project > GOOGLE_CLOUD_PROJECT env > SA JSON

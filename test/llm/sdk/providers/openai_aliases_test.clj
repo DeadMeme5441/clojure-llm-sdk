@@ -103,7 +103,7 @@
       (is (fn? (:profile/transport-constructor ds)))
       (is (= "https://api.moonshot.cn/v1" (:profile/base-url k)))
       (is (= ["MOONSHOT_API_KEY"] (:profile/env-var-names k)))
-      (is (= #{:chat :streaming :tools :reasoning}
+      (is (= #{:chat :streaming :tools :json-schema :reasoning}
              (:profile/capabilities k)))
       ;; This was a latent bug: the doseq attaching
       ;; constructors only covered [:openai :openrouter :deepseek] and

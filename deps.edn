@@ -38,7 +38,7 @@
   ;; Publish the built jar to Clojars. Reads CLOJARS_USERNAME / CLOJARS_PASSWORD
   ;; (a Clojars deploy token) from the environment. Build first, then deploy:
   ;;   clojure -T:build jar
-  ;;   clojure -X:deploy :artifact '"target/clojure-llm-sdk-0.3.4.jar"'
+  ;;   clojure -X:deploy :artifact '"target/clojure-llm-sdk-0.4.4.jar"'
   ;; CI does both on a v* tag (see .github/workflows/release.yml).
   :deploy {:replace-deps {slipset/deps-deploy {:mvn/version "0.2.2"}}
            :exec-fn deps-deploy.deps-deploy/deploy
@@ -47,4 +47,4 @@
                        ;; b/write-pom emits the pom under the class-dir, not the
                        ;; repo root where deps-deploy looks by default.
                        :pom-file "target/classes/META-INF/maven/net.clojars.deadmeme5441/clojure-llm-sdk/pom.xml"
-                       :artifact "target/clojure-llm-sdk-0.3.4.jar"}}}}
+                       :artifact "target/clojure-llm-sdk-0.4.4.jar"}}}}

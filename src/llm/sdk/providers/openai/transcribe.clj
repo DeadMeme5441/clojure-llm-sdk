@@ -87,6 +87,10 @@
         provider-opts (merge (:transcribe/provider-options request)
                              canonical-opts)
         granularities (:transcribe/timestamp-granularities request)
+        _ (when (boolean (:stream provider-opts))
+            (throw (ex-info "Streaming transcription is not supported by the synchronous transport"
+                            {:error/type :transcribe/streaming-unsupported
+                             :provider (:profile/id profile)})))
         parts (cond-> [{:name "file"
                         :content (file-content file)
                         :file-name fname}
@@ -130,11 +134,19 @@
   [_profile raw]
   (let [base
         (cond
-          ;; verbose_json and diarized_json
-          (and (map? raw) (or (:segments raw) (:words raw) (:language raw)))
+          ;; verbose_json, diarized_json, and current JSON responses with
+          ;; language detection or token log probabilities
+          (and (map? raw)
+               (or (:segments raw)
+                   (:words raw)
+                   (:language raw)
+                   (:languages raw)
+                   (:logprobs raw)))
           (cond-> {:transcription/text (:text raw)
                    :response/raw raw}
             (:language raw) (assoc :transcription/language (:language raw))
+            (:languages raw) (assoc :transcription/languages (:languages raw))
+            (:logprobs raw) (assoc :transcription/logprobs (:logprobs raw))
             (:duration raw) (assoc :transcription/duration-seconds (:duration raw))
             (:segments raw) (assoc :transcription/segments (vec (:segments raw)))
             (:words raw) (assoc :transcription/words (vec (:words raw))))

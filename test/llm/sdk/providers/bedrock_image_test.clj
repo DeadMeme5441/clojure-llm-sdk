@@ -1,5 +1,5 @@
 (ns llm.sdk.providers.bedrock-image-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.image :as it]
             [llm.sdk.providers.bedrock-image :as bimage]))
@@ -96,3 +96,58 @@
            (:body built)))
     (is (= [{:image/b64 "modern-b64"}] (:image/images parsed)))
     (is (= [nil] (get-in parsed [:image/raw :finish_reasons])))))
+
+(deftest test-bedrock-modern-stability-validates-family-options
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)
+        invalid-cases
+        [{:label "image-to-image strength"
+          :model "stability.stable-image-ultra-v1:1"
+          :options {:image "source-b64" :strength 1.1}
+          :expected-option :strength}
+         {:label "seed range"
+          :model "stability.sd3-5-large-v1:0"
+          :options {:seed -1}
+          :expected-option :seed}
+         {:label "supported aspect ratios"
+          :model "stability.sd3-5-large-v1:0"
+          :options {:aspect-ratio "4:3"}
+          :expected-option :aspect-ratio}
+         {:label "family-specific output formats"
+          :model "stability.stable-image-core-v1:1"
+          :options {:output-format :webp}
+          :expected-option :output-format}]]
+    (doseq [{:keys [label model options expected-option]} invalid-cases]
+      (testing label
+        (let [error (try
+                      (it/build-image-request
+                       t profile
+                       {:image/model model
+                        :image/prompt "a test image"
+                        :image/provider-options {:bedrock options}})
+                      nil
+                      (catch clojure.lang.ExceptionInfo e e))]
+          (is (some? error))
+          (is (= :request/invalid-image-option
+                 (:error/type (ex-data error))))
+          (is (= expected-option (:option (ex-data error)))))))
+    (testing "SD3.5 retains its documented WebP support"
+      (let [built (it/build-image-request
+                   t profile
+                   {:image/model "stability.sd3-5-large-v1:0"
+                    :image/prompt "a test image"
+                    :image/provider-options
+                    {:bedrock {:output-format :webp}}})]
+        (is (= "webp" (get-in built [:body :output_format])))))))
+
+(deftest test-bedrock-stability-preserves-response-metadata-in-raw
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)
+        raw {:images ["generated-b64"]
+             :seeds [4294967294]
+             :finish_reasons [nil]}
+        parsed (it/parse-image-response t profile raw)]
+    (is (= [{:image/b64 "generated-b64"}] (:image/images parsed)))
+    (is (= {:seeds [4294967294]
+            :finish_reasons [nil]}
+           (select-keys (:image/raw parsed) [:seeds :finish_reasons])))))

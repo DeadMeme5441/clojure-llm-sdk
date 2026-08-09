@@ -32,7 +32,10 @@
           :citation/title "Title"
           :citation/snippet "Snippet"
           :citation/text-range [10 24]
-          :citation/source-id "src-1"})))
+          :citation/source-id "src-1"
+          :citation/date "2025-01-15"
+          :citation/last-updated "2025-01-16"
+          :citation/source "web"})))
   (testing "missing :citation/url fails"
     (is (not (schema/validate-part
               {:part/type :citation})))))
@@ -140,7 +143,12 @@
   (testing "search_results yields rich CitationParts (title + snippet)"
     (let [t (ppx/make-transport)
           profile (provider/get-provider :perplexity)
-          raw (load-fixture "fixtures/perplexity_response.json")
+          raw (-> (load-fixture "fixtures/perplexity_response.json")
+                  (update-in [:search_results 0]
+                             assoc
+                             :date "2025-01-15"
+                             :last_updated "2025-01-16"
+                             :source "web"))
           resp (transport/parse-response t profile raw)
           parts (:response/parts resp)
           citation-parts (filter #(= :citation (:part/type %)) parts)]
@@ -150,6 +158,12 @@
              (:citation/title (first citation-parts))))
       (is (= "Clojure is a modern, dynamic, and functional Lisp on the JVM."
              (:citation/snippet (first citation-parts))))
+      (is (= "2025-01-15"
+             (:citation/date (first citation-parts))))
+      (is (= "2025-01-16"
+             (:citation/last-updated (first citation-parts))))
+      (is (= "web"
+             (:citation/source (first citation-parts))))
       (is (= 256 (get-in resp [:response/usage :usage/citation-tokens])))
       (is (= 1 (get-in resp [:response/usage :usage/search-queries]))))))
 
@@ -292,7 +306,10 @@
                      {:choices [{:delta {} :finish_reason "stop"}]
                       :search_results [{:url "https://example.com/a"
                                         :title "A"
-                                        :snippet "Snip-a"}
+                                        :snippet "Snip-a"
+                                        :date "2025-01-15"
+                                        :last_updated "2025-01-16"
+                                        :source "web"}
                                        {:url "https://example.com/b"
                                         :title "B"
                                         :snippet "Snip-b"}]
@@ -301,13 +318,28 @@
                               :total_tokens 10
                               :citation_tokens 50
                               :num_search_queries 1}}))
-          evs (transport/parse-stream-event t profile line)]
+          evs (transport/parse-stream-event t profile line)
+          resp (stream/events->response evs :perplexity "sonar")
+          citation-part (first (filter #(= :citation (:part/type %))
+                                       (:response/parts resp)))]
       (is (sequential? evs) "returns a vector of events")
       (is (= 4 (count evs))
           "two citations + one usage + one end")
       (is (every? #(= :stream/citation (:event/type %)) (take 2 evs)))
       (is (= "https://example.com/a" (:citation/url (first evs))))
       (is (= "A" (:citation/title (first evs))))
+      (is (= "2025-01-15" (:citation/date (first evs))))
+      (is (= "2025-01-16" (:citation/last-updated (first evs))))
+      (is (= "web" (:citation/source (first evs))))
+      (is (every? schema/validate-stream-event evs))
+      (is (= {:citation/date "2025-01-15"
+              :citation/last-updated "2025-01-16"
+              :citation/source "web"}
+             (select-keys citation-part
+                          [:citation/date
+                           :citation/last-updated
+                           :citation/source])))
+      (is (schema/validate-response resp))
       (is (= :stream/usage (:event/type (nth evs 2))))
       (is (= 50 (get-in (nth evs 2) [:usage :usage/citation-tokens])))
       (is (= :stream/end (:event/type (nth evs 3))))
@@ -317,7 +349,10 @@
   (let [ev {:event/type :stream/citation
             :citation/url "https://example.com"
             :citation/title "Title"
-            :citation/snippet "Snippet"}]
+            :citation/snippet "Snippet"
+            :citation/date "2025-01-15"
+            :citation/last-updated "2025-01-16"
+            :citation/source "web"}]
     (is (schema/validate-stream-event ev))))
 
 ;; ---------------------------------------------------------------------------
@@ -329,13 +364,20 @@
                 {:event/type :stream/content-delta :event/delta "Hi"}
                 {:event/type :stream/citation
                  :citation/url "https://example.com"
-                 :citation/title "Example"}
+                 :citation/title "Example"
+                 :citation/date "2025-01-15"
+                 :citation/last-updated "2025-01-16"
+                 :citation/source "web"}
                 {:event/type :stream/end :event/finish-reason :stop}]
         resp (stream/events->response events :perplexity "sonar")
         citation-parts (filter #(= :citation (:part/type %)) (:response/parts resp))]
     (is (= 1 (count citation-parts)))
     (is (= "https://example.com" (:citation/url (first citation-parts))))
-    (is (= "Example" (:citation/title (first citation-parts))))))
+    (is (= "Example" (:citation/title (first citation-parts))))
+    (is (= "2025-01-15" (:citation/date (first citation-parts))))
+    (is (= "2025-01-16"
+           (:citation/last-updated (first citation-parts))))
+    (is (= "web" (:citation/source (first citation-parts))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing

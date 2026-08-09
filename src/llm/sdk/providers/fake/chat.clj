@@ -33,7 +33,7 @@
      :usage/request-count 1})
 
   (request-capabilities [_]
-    #{:chat :streaming :tools}))
+    #{:chat}))
 
 (defn make-fake-transport
   "Create a fake transport. Optionally pass a response-fn that receives
@@ -50,6 +50,6 @@
   :profile/base-url "https://fake.local"
   :profile/auth-strategy :none
   :profile/supports-model-listing false
-  :profile/capabilities #{:chat :streaming :tools}
+  :profile/capabilities #{:chat}
   :profile/env-var-names []
   :profile/transport-constructor make-fake-transport})

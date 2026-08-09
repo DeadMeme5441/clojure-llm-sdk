@@ -50,7 +50,8 @@
     (is (= :bedrock (:rerank/provider parsed)))
     (is (= [{:rerank/index 0 :rerank/score 0.73}
             {:rerank/index 1 :rerank/score 0.41}]
-           (:rerank/results parsed)))))
+           (:rerank/results parsed)))
+    (is (not (contains? parsed :rerank/next-token)))))
 
 (deftest test-bedrock-profile-has-rerank-transport
   (let [profile (provider/get-provider :bedrock)]
@@ -78,7 +79,7 @@
                     :modelConfiguration
                     :additionalModelRequestFields])))))
 
-(deftest test-parse-rerank-returned-document
+(deftest test-parse-rerank-returned-document-and-pagination
   (let [t (bedrock-rerank/make-transport)
         profile (provider/get-provider :bedrock)
         parsed (rt/parse-rerank-response
@@ -88,7 +89,14 @@
                  [{:index 0
                    :relevanceScore 0.9
                    :document {:type "TEXT"
-                              :textDocument {:text "returned document"}}}]})]
+                              :textDocument {:text "returned document"}}}
+                  {:index 1
+                   :relevanceScore 0.8
+                   :document {:type "JSON"
+                              :jsonDocument {:title "Structured"
+                                             :tags ["clojure" "aws"]}}}]})]
     (is (= "returned document"
            (get-in parsed [:rerank/results 0 :rerank/document])))
-    (is (= "page-2" (get-in parsed [:rerank/raw :nextToken])))))
+    (is (= {:title "Structured" :tags ["clojure" "aws"]}
+           (get-in parsed [:rerank/results 1 :rerank/document])))
+    (is (= "page-2" (:rerank/next-token parsed)))))

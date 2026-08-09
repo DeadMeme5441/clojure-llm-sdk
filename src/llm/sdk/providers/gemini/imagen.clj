@@ -110,10 +110,16 @@
              (keep (fn [part]
                      (cond
                        (get-in part [:inlineData :data])
-                       {:image/b64 (get-in part [:inlineData :data])}
+                       (cond-> {:image/b64 (get-in part [:inlineData :data])}
+                         (get-in part [:inlineData :mimeType])
+                         (assoc :image/mime-type
+                                (get-in part [:inlineData :mimeType])))
 
                        (get-in part [:fileData :fileUri])
-                       {:image/url (get-in part [:fileData :fileUri])}
+                       (cond-> {:image/url (get-in part [:fileData :fileUri])}
+                         (get-in part [:fileData :mimeType])
+                         (assoc :image/mime-type
+                                (get-in part [:fileData :mimeType])))
 
                        :else nil)))
              vec)

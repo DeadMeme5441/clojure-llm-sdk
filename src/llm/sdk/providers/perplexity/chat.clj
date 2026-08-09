@@ -30,15 +30,23 @@
 ;; Citation extraction
 ;; ---------------------------------------------------------------------------
 
+(defn- preserve-search-result-metadata [citation r]
+  (cond-> citation
+    (:date r) (assoc :citation/date (:date r))
+    (:last_updated r) (assoc :citation/last-updated (:last_updated r))
+    (:source r) (assoc :citation/source (:source r))))
+
 (defn- search-result->citation [r]
-  (cond-> {:part/type :citation :citation/url (:url r)}
-    (:title r) (assoc :citation/title (:title r))
-    (:snippet r) (assoc :citation/snippet (:snippet r))))
+  (preserve-search-result-metadata
+   (cond-> {:part/type :citation :citation/url (:url r)}
+     (:title r) (assoc :citation/title (:title r))
+     (:snippet r) (assoc :citation/snippet (:snippet r)))
+   r))
 
 (defn extract-citation-parts
   "Return a vector of CitationPart maps from a Perplexity raw response.
-   Prefers :search_results (carries title + snippet); falls back to
-   :citations (URL-only)."
+   Prefers :search_results (carries title, snippet, and source metadata);
+   falls back to :citations (URL-only)."
   [raw]
   (cond
     (seq (:search_results raw))
@@ -107,9 +115,11 @@
   (cond
     (seq (:search_results data))
     (mapv (fn [r]
-            (stream/citation-event (:url r)
-                                   :title (:title r)
-                                   :snippet (:snippet r)))
+            (preserve-search-result-metadata
+             (stream/citation-event (:url r)
+                                    :title (:title r)
+                                    :snippet (:snippet r))
+             r))
           (:search_results data))
 
     (seq (:citations data))

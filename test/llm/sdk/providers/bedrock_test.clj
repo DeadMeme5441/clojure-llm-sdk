@@ -371,3 +371,22 @@
     (is (true? (:event/encrypted redacted)))
     (is (= :stream/error (:event/type exception)))
     (is (= "validationException" (get-in exception [:error/error :type])))))
+
+(deftest test-parse-converse-preserves-provider-response-metadata
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        metadata {:additionalModelResponseFields {:reasoning "enabled"}
+                  :metrics {:latencyMs 123}
+                  :performanceConfig {:latency "optimized"}
+                  :serviceTier {:type "priority"}
+                  :trace {:guardrail {:action "NONE"}}}
+        parsed (transport/parse-response
+                t profile
+                (merge {:modelId "anthropic.claude-sonnet-4-20250514-v1:0"
+                        :stopReason "end_turn"
+                        :output {:message {:content [{:text "hello"}]}}
+                        :usage {:inputTokens 1
+                                :outputTokens 1
+                                :totalTokens 2}}
+                       metadata))]
+    (is (= metadata (:response/provider-data parsed)))))

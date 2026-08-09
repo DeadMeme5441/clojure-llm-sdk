@@ -104,36 +104,34 @@
     :json_object {:type "json_object"}
     {:type "text"}))
 
-(defn- build-extra-body [profile request]
+(defn- build-reasoning-body [profile request]
   (let [reasoning (:request/reasoning request)
         provider-id (:profile/id profile)
         quirks (:profile/quirks profile)]
-    (merge
-     ;; Provider preferences for OpenRouter
-     (when (= provider-id :openrouter)
-       (let [prefs (get-in request [:request/provider-options :provider])]
-         (when prefs {:provider prefs})))
+    (when (and reasoning (not= provider-id :anthropic))
+      (cond
+        (get quirks :thinking-explicit)
+        {:thinking {:type (if (:enabled reasoning false) "enabled" "disabled")}}
 
-     ;; OpenAI Chat Completions uses the scalar reasoning_effort field.
-     ;; Several compatible providers use the older nested reasoning object.
-     (when (and reasoning (not= provider-id :anthropic))
-       (cond
-         (get quirks :thinking-explicit)
-         {:thinking {:type (if (:enabled reasoning false) "enabled" "disabled")}}
-
-         (or (= provider-id :openai) (:reasoning-effort quirks))
+        (= provider-id :groq)
+        (merge
+         (when (contains? reasoning :exclude)
+           {:include_reasoning (not (:exclude reasoning))})
          (when (:enabled reasoning)
-           {:reasoning_effort (name (get reasoning :effort :medium))})
+           (merge
+            {:reasoning_effort (name (get reasoning :effort :medium))}
+            (when (and (:reasoning-format quirks)
+                       (not (contains? reasoning :exclude)))
+              {:reasoning_format (name (:reasoning-format quirks))}))))
 
-         :else
-         (when (:enabled reasoning)
-           {:reasoning {:enabled true
-                        :effort (name (get reasoning :effort :medium))}})))
+        (or (= provider-id :openai) (:reasoning-effort quirks))
+        (when (:enabled reasoning)
+          {:reasoning_effort (name (get reasoning :effort :medium))})
 
-     ;; Provider-specific wire fields. For api.openai.com these are merged
-     ;; directly into the JSON body below; compatibility profiles retain the
-     ;; established :extra_body envelope expected by their transports.
-     (get-in request [:request/provider-options :extra_body]))))
+        :else
+        (when (:enabled reasoning)
+          {:reasoning {:enabled true
+                       :effort (name (get reasoning :effort :medium))}})))))
 
 (defn- apply-drops
   "Honour the :drops quirk by removing unsupported fields from the
@@ -169,7 +167,10 @@
                       (mapv #(message->openai profile %)))
         tools (when (seq (:request/tools request))
                 (mapv tool->openai (:request/tools request)))
-        extra-body (build-extra-body profile request)
+        reasoning-body (build-reasoning-body profile request)
+        provider-extra-body (get-in request [:request/provider-options :extra_body])
+        top-level-reasoning? (or (= :openai (:profile/id profile))
+                                 (get-in profile [:profile/quirks :reasoning-top-level]))
         ;; Caching:
         ;;   :system-and-3 envelope  → mark messages in place
         ;;     (OpenRouter Claude/Qwen and other OpenAI-wire proxies
@@ -206,7 +207,8 @@
                    (when (:request/top-p request)
                      {:top_p (:request/top-p request)})
                    (when (:request/max-tokens request)
-                     {(if (= :openai (:profile/id profile))
+                     {(if (or (= :openai (:profile/id profile))
+                              (get-in profile [:profile/quirks :max-completion-tokens]))
                         :max_completion_tokens
                         :max_tokens)
                       (:request/max-tokens request)})
@@ -216,12 +218,17 @@
                      {:response_format
                       (response-format->openai (:request/response-format request))})
                    (when (:request/metadata request)
-                     {:metadata (:request/metadata request)}))
-        body (if (seq extra-body)
-               (if (= :openai (:profile/id profile))
-                 (merge base-body extra-body)
-                 (assoc base-body :extra_body extra-body))
-               base-body)
+                     {:metadata (:request/metadata request)})
+                   (when (:request/stream? request)
+                     {:stream true}))
+        wrapped-extra-body (merge (when-not top-level-reasoning? reasoning-body)
+                                  provider-extra-body)
+        body (if (= :openai (:profile/id profile))
+               (merge base-body reasoning-body provider-extra-body)
+               (cond-> (merge base-body
+                              (when top-level-reasoning? reasoning-body))
+                 (seq wrapped-extra-body)
+                 (assoc :extra_body wrapped-extra-body)))
         body (apply-drops body (get-in profile [:profile/quirks :drops]))]
     {:method :post
      :url (complete-url profile request)
@@ -248,22 +255,70 @@
        (:call_id tc) (assoc :call_id (:call_id tc))
        (:response_item_id tc) (assoc :response_item_id (:response_item_id tc)))}))
 
+(defn- legacy-function-call->tool-call [function-call]
+  {:id (or (:id function-call) "tool_call_0")
+   :type "function"
+   :function (select-keys function-call [:name :arguments])})
+
+(defn- text-content-chunk? [chunk]
+  (or (string? chunk)
+      (and (map? chunk)
+           (contains? #{"text" :text} (:type chunk))
+           (string? (:text chunk)))
+      (and (map? chunk)
+           (nil? (:type chunk))
+           (string? (:text chunk)))))
+
+(defn- content-chunk-text [chunk]
+  (if (string? chunk) chunk (:text chunk)))
+
+(defn- content->parts [content]
+  (cond
+    (string? content)
+    (if (seq content) [{:part/type :text :text content}] [])
+
+    (sequential? content)
+    (->> content
+         (filter text-content-chunk?)
+         (keep (fn [chunk]
+                 (when-let [text (not-empty (content-chunk-text chunk))]
+                   {:part/type :text :text text})))
+         vec)
+
+    :else []))
+
+(defn- unsupported-content-chunks [content]
+  (when (sequential? content)
+    (vec (remove text-content-chunk? content))))
+
+(defn- normalize-finish-reason [profile finish-reason]
+  (case finish-reason
+    ("stop" nil) :stop
+    "length" :length
+    ("tool_calls" "function_call") :tool-calls
+    "content_filter" :content-filter
+    "insufficient_system_resource" (if (= :deepseek (:profile/id profile))
+                                     :incomplete
+                                     :unknown)
+    :unknown))
+
 (defn parse-response-openai
   [profile raw]
   (let [choice (first (:choices raw))
         msg (:message choice)
-        tool-calls (vec (when (seq (:tool_calls msg))
-                     (mapv parse-tool-call (:tool_calls msg))))
+        wire-tool-calls (cond
+                          (seq (:tool_calls msg)) (:tool_calls msg)
+                          (:function_call msg) [(legacy-function-call->tool-call
+                                                 (:function_call msg))]
+                          :else nil)
+        tool-calls (mapv parse-tool-call wire-tool-calls)
         content (:content msg)
+        content-parts (content->parts content)
+        unsupported-content (unsupported-content-chunks content)
         reasoning (:reasoning msg)
         reasoning-content (or (:reasoning_content msg)
                               (get-in msg [:model_extra :reasoning_content]))
-        finish-reason (case (:finish_reason choice)
-                        ("stop" nil) :stop
-                        "length" :length
-                        "tool_calls" :tool-calls
-                        "content_filter" :content-filter
-                        :unknown)
+        finish-reason (normalize-finish-reason profile (:finish_reason choice))
         usage-raw (:usage raw)
         provider-data (cond-> {}
                         reasoning-content (assoc :reasoning_content reasoning-content)
@@ -271,12 +326,12 @@
                         (contains? msg :audio) (assoc :audio (:audio msg))
                         (contains? msg :refusal) (assoc :refusal (:refusal msg))
                         (contains? msg :moderation) (assoc :moderation (:moderation msg))
-                        (contains? msg :annotations) (assoc :annotations (:annotations msg)))]
+                        (contains? msg :annotations) (assoc :annotations (:annotations msg))
+                        (seq unsupported-content) (assoc :content_chunks unsupported-content))]
     (cond-> {:response/id (:id raw)
              :response/provider (:profile/id profile)
              :response/model (:model raw)
-             :response/parts (cond-> []
-                               (seq content) (conj {:part/type :text :text content})
+             :response/parts (cond-> content-parts
                                (seq reasoning) (conj {:part/type :reasoning :reasoning/text reasoning})
                                (seq tool-calls) (into tool-calls))
              :response/finish-reason finish-reason
@@ -298,7 +353,12 @@
   (when-let [data (parse-sse-line line)]
     (let [choice (first (:choices data))
           delta (:delta choice)
-          tc-deltas (:tool_calls delta)
+          legacy-function-call (:function_call delta)
+          tc-deltas (cond-> (vec (:tool_calls delta))
+                      legacy-function-call
+                      (conj {:index 0
+                             :type "function"
+                             :function legacy-function-call}))
           tool-events (mapcat
                        (fn [tc]
                          (let [idx (:index tc 0)
@@ -319,17 +379,30 @@
                                            (or (get wire-data args-key) "")))]
                            (remove nil? [start-ev delta-ev])))
                        tc-deltas)
-          events (cond-> []
-                   (seq (:content delta))
-                   (conj (stream/content-delta (:content delta)))
+          content-events
+          (cond
+            (string? (:content delta))
+            (when (seq (:content delta))
+              [(stream/content-delta (:content delta))])
 
+            (sequential? (:content delta))
+            (mapv (fn [chunk]
+                    (if (text-content-chunk? chunk)
+                      (stream/content-delta (content-chunk-text chunk))
+                      (stream/provider-state-event
+                       (:profile/id profile)
+                       {:chat-completion/content-chunk chunk})))
+                  (:content delta))
+
+            :else nil)
+          events (cond-> (vec content-events)
                    (seq (:reasoning_content delta))
                    (conj (stream/reasoning-delta (:reasoning_content delta)))
 
                    (seq (:reasoning delta))
                    (conj (stream/reasoning-delta (:reasoning delta))))
           events (into events tool-events)
-          provider-delta (select-keys delta [:audio :refusal :moderation])
+          provider-delta (select-keys delta [:audio :refusal :moderation :reasoning_details])
           events (cond-> events
                    (seq provider-delta)
                    (conj (stream/provider-state-event
@@ -343,12 +416,9 @@
 
                    (:finish_reason choice)
                    (conj (stream/end-event
-                          :finish-reason (case (:finish_reason choice)
-                                           ("stop" nil) :stop
-                                           "length" :length
-                                           "tool_calls" :tool-calls
-                                           "content_filter" :content-filter
-                                           :unknown))))]
+                          :finish-reason
+                          (normalize-finish-reason profile
+                                                   (:finish_reason choice)))))]
       (case (count events)
         0 nil
         1 (first events)

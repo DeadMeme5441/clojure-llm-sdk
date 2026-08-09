@@ -73,7 +73,6 @@ than stringifying maps into prompts.
 | `:huggingface` | `huggingface` | OpenAI-compatible chat, streaming, tools, JSON schema | embeddings and rerank |
 | `:sambanova` | `sambanova` | OpenAI-compatible chat, streaming, tools, JSON schema, reasoning | responses/messages/a2a/interactions |
 | `:deepinfra` | `deepinfra` | OpenAI-compatible chat, streaming, tools, JSON schema, reasoning | responses/messages/a2a/interactions |
-| `:lambda` | `lambda_ai` | OpenAI-compatible chat, streaming, tools | responses/messages/a2a/interactions |
 | `:nebius` | `nebius` | OpenAI-compatible chat, streaming, tools, JSON schema, embeddings | responses/messages/a2a/interactions |
 | `:hyperbolic` | `hyperbolic` | OpenAI-compatible chat, streaming, tools | responses/messages/a2a/interactions |
 | `:novita` | `novita` | OpenAI-compatible chat, streaming, tools, JSON schema | responses/messages/a2a/interactions |

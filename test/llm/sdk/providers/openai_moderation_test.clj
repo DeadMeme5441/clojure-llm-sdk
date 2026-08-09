@@ -5,6 +5,7 @@
             [cheshire.core :as json]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.moderate :as mt]
+            [llm.sdk.schema :as schema]
             [llm.sdk.providers.openai-moderation :as oai-mod]))
 
 (defn- load-fixture [path]
@@ -79,6 +80,21 @@
       (is (= [:text :image]
              (get-in result [:moderation/categories-applied :violence]))))
     (is (= raw (:moderation/raw resp)))))
+
+(deftest test-parse-response-preserves-nullable-categories
+  (let [t (oai-mod/make-transport)
+        profile (provider/get-provider :openai)
+        raw {:id "modr-nullable"
+             :model "omni-moderation-latest"
+             :results [{:flagged false
+                        :categories {:illicit nil
+                                     :sexual false}}]}
+        resp (mt/parse-moderation-response t profile raw)
+        categories (get-in resp [:moderation/results 0 :moderation/categories])]
+    (is (contains? categories :illicit))
+    (is (nil? (:illicit categories)))
+    (is (false? (:sexual categories)))
+    (is (schema/validate-moderation-response resp))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error classification

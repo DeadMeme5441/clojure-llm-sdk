@@ -50,11 +50,14 @@
    chunk (Perplexity is the first) return a vector ending in usage
    and end events; sdk/complete flattens multi-event return values
    from parse-stream-event."
-  [url & {:keys [title snippet]}]
+  [url & {:keys [title snippet date last-updated source]}]
   (cond-> {:event/type :stream/citation
            :citation/url url}
     title (assoc :citation/title title)
-    snippet (assoc :citation/snippet snippet)))
+    snippet (assoc :citation/snippet snippet)
+    date (assoc :citation/date date)
+    last-updated (assoc :citation/last-updated last-updated)
+    source (assoc :citation/source source)))
 
 (defn error-event [error]
   {:event/type :stream/error
@@ -173,7 +176,10 @@
             (cond-> {:part/type :citation
                      :citation/url (:citation/url event)}
               (:citation/title event) (assoc :citation/title (:citation/title event))
-              (:citation/snippet event) (assoc :citation/snippet (:citation/snippet event))))
+              (:citation/snippet event) (assoc :citation/snippet (:citation/snippet event))
+              (:citation/date event) (assoc :citation/date (:citation/date event))
+              (:citation/last-updated event) (assoc :citation/last-updated (:citation/last-updated event))
+              (:citation/source event) (assoc :citation/source (:citation/source event))))
 
     :stream/end
     ;; sdk/complete appends a synthetic terminal :stream/end with no

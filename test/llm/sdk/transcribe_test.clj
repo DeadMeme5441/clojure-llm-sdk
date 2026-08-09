@@ -42,7 +42,7 @@
     (is (bytes? (:content file-part)))
     (is (= "fake.wav" (:file-name file-part)))))
 
-(deftest test-openai-build-request-current-diarization-and-stream-fields
+(deftest test-openai-build-request-current-diarization-fields
   (let [t (openai-tx/make-transport)
         profile (provider/get-provider :openai)
         built (tt/build-transcribe-request
@@ -52,7 +52,6 @@
                 :transcribe/model "gpt-4o-transcribe-diarize"
                 :transcribe/response-format :diarized_json
                 :transcribe/chunking-strategy :auto
-                :transcribe/stream true
                 :transcribe/include [:logprobs]
                 :transcribe/known-speaker-names ["agent"]
                 :transcribe/known-speaker-references
@@ -62,11 +61,23 @@
                  (mapv :content (filter #(= field (:name %)) parts)))]
     (is (= ["diarized_json"] (values "response_format")))
     (is (= ["auto"] (values "chunking_strategy")))
-    (is (= ["true"] (values "stream")))
     (is (= ["logprobs"] (values "include[]")))
     (is (= ["agent"] (values "known_speaker_names[]")))
     (is (= ["data:audio/wav;base64,AAAA"]
            (values "known_speaker_references[]")))))
+
+(deftest test-openai-rejects-streaming-on-synchronous-transport
+  (let [t (openai-tx/make-transport)
+        profile (provider/get-provider :openai)]
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"Streaming transcription is not supported"
+         (tt/build-transcribe-request
+          t profile
+          {:transcribe/file (.getBytes "fake audio")
+           :transcribe/filename "meeting.wav"
+           :transcribe/model "gpt-4o-transcribe-diarize"
+           :transcribe/stream true})))))
 
 (deftest test-groq-attached
   (let [profile (provider/get-provider :groq)
@@ -106,6 +117,32 @@
     (is (= 1 (count (:transcription/segments parsed))))
     (is (= 2 (count (:transcription/words parsed))))
     (is (schema/validate-transcribe-response parsed))))
+
+(deftest test-parse-response-current-languages-and-logprobs
+  (let [t (openai-tx/make-transport)
+        profile (provider/get-provider :openai)
+        languages [{:code "en"}]
+        logprobs [{:token "foo"
+                   :bytes [102 111 111]
+                   :logprob -0.2}]
+        raw {:text "foo"
+             :languages languages
+             :logprobs logprobs}
+        parsed (tt/parse-transcribe-response t profile raw)]
+    (is (= languages (:transcription/languages parsed)))
+    (is (= logprobs (:transcription/logprobs parsed)))
+    (is (schema/validate-transcribe-response parsed))))
+
+(deftest test-canonical-usage-and-rerank-embedding-schema-fields
+  (is (schema/validate-usage
+       {:usage/input-tokens 3
+        :usage/output-tokens 1
+        :usage/video-tokens 2}))
+  (is (schema/validate-rerank-response
+       {:rerank/provider :jina
+        :rerank/results [{:rerank/index 0
+                          :rerank/score 0.9
+                          :rerank/embedding [0.1 -0.2 0.3]}]})))
 
 (deftest test-parse-response-current-diarized-json-and-token-usage
   (let [t (openai-tx/make-transport)

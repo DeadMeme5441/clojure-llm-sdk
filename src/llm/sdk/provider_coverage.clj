@@ -78,8 +78,8 @@
         :live-smoke :env-gated)
 
    :gemini-native
-   (cov :surfaces #{:complete :streaming :tools :multimodal :reasoning
-                    :file-attachments}
+   (cov :surfaces #{:complete :streaming :tools :json-schema :multimodal
+                    :reasoning :file-attachments}
         :cache #{:implicit-provider-cache :explicit-cached-content
                  :canonical-cache-stamp}
         :metrics #{:gemini-usage :canonical-chat-stamp}
@@ -93,8 +93,8 @@
         :live-smoke :env-gated)
 
    :vertex-gemini
-   (cov :surfaces #{:complete :streaming :tools :multimodal :reasoning
-                    :file-attachments}
+   (cov :surfaces #{:complete :streaming :tools :json-schema :multimodal
+                    :reasoning :file-attachments}
         :cache #{:implicit-provider-cache :explicit-cached-content
                  :canonical-cache-stamp}
         :metrics #{:gemini-usage :canonical-chat-stamp}
@@ -230,7 +230,7 @@
         :live-smoke :optional-local)
 
    :fake
-   (cov :surfaces #{:complete :streaming :tools}
+   (cov :surfaces #{:complete}
         :cache #{:none :canonical-cache-stamp}
         :metrics #{:synthetic-usage :canonical-chat-stamp}
         :pricing #{:unknown}
@@ -243,7 +243,7 @@
         :live-smoke :not-applicable)
 
    :deepseek (openai-compat :surfaces #{:complete :streaming :tools :reasoning})
-   :kimi (openai-compat :surfaces #{:complete :streaming :tools :reasoning})
+   :kimi (openai-compat :surfaces #{:complete :streaming :tools :json-schema :reasoning})
    :kimi-code (openai-compat :surfaces #{:complete :streaming :tools :reasoning}
                              :models #{:snapshot-only}
                              :live-smoke :env-gated)
@@ -262,7 +262,6 @@
                                          :reasoning})
    :deepinfra (openai-compat :surfaces #{:complete :streaming :tools :json-schema
                                          :reasoning})
-   :lambda (openai-compat :surfaces #{:complete :streaming :tools})
    :nebius (openai-compat :surfaces #{:complete :streaming :tools :json-schema :embedding})
    :hyperbolic (openai-compat :surfaces #{:complete :streaming :tools})
    :novita (openai-compat :surfaces #{:complete :streaming :tools :json-schema})
@@ -272,7 +271,8 @@
                               :models #{:requires-account-scoped-base-url}
                               :live-smoke :manual-config)
    :dashscope (openai-compat :surfaces #{:complete :streaming :tools :json-schema})
-   :volcengine (openai-compat :surfaces #{:complete :streaming :tools :json-schema})
+   :volcengine (openai-compat :surfaces #{:complete :streaming :tools :json-schema}
+                              :models #{:unsupported})
 
    :voyage
    (cov :surfaces #{:embedding :rerank}

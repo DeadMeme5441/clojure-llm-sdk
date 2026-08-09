@@ -226,6 +226,7 @@
    [:usage/cache-write-tokens {:optional true} int?]
    [:usage/image-tokens {:optional true} int?]
    [:usage/audio-tokens {:optional true} int?]
+   [:usage/video-tokens {:optional true} int?]
    [:usage/file-tokens {:optional true} int?]
    [:usage/citation-tokens {:optional true} int?]
    [:usage/search-queries {:optional true} int?]
@@ -326,6 +327,7 @@
   [:map {:closed true}
    [:rerank/index int?]
    [:rerank/score number?]
+   [:rerank/embedding {:optional true} [:vector number?]]
    [:rerank/document {:optional true} [:or string? map?]]])
 
 (def RerankResponse
@@ -357,7 +359,7 @@
 (def ModerationResult
   [:map {:closed true}
    [:moderation/flagged? boolean?]
-   [:moderation/categories {:optional true} [:map-of keyword? boolean?]]
+   [:moderation/categories {:optional true} [:map-of keyword? [:or boolean? nil?]]]
    [:moderation/scores {:optional true} [:map-of keyword? number?]]
    [:moderation/categories-applied {:optional true} [:map-of keyword? [:vector keyword?]]]])
 
@@ -401,6 +403,8 @@
   [:map {:closed true}
    [:transcription/text string?]
    [:transcription/language {:optional true} string?]
+   [:transcription/languages {:optional true} [:vector [:map [:code string?]]]]
+   [:transcription/logprobs {:optional true} [:vector map?]]
    [:transcription/duration-seconds {:optional true} number?]
    [:transcription/segments {:optional true} [:vector map?]]
    [:transcription/words {:optional true} [:vector map?]]

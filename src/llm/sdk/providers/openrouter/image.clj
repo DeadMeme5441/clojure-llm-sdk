@@ -46,7 +46,8 @@
 
 (defn- response-image [image]
   (when-let [b64 (:b64_json image)]
-    {:image/b64 b64}))
+    (cond-> {:image/b64 b64}
+      (:media_type image) (assoc :image/mime-type (:media_type image)))))
 
 (defn parse-image-response-openrouter
   [_profile raw]
@@ -69,8 +70,8 @@
               "https://openrouter.ai/docs/api/api-reference/images/generate-an-image"
               :cost/breakdown
               (select-keys usage-raw
-                           [:cost :cost_details :is_byok
-                            :server_tool_use])}))))
+                           [:cost :cost_details :is_byok :server_tool_use
+                            :server_tool_use_details])}))))
 
 (defn parse-image-error-openrouter
   [_profile status body]

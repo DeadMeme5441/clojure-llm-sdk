@@ -36,10 +36,12 @@
            {:promptTokenCount 300
             :candidatesTokenCount 100
             :totalTokenCount 400
-            :cachedContentTokenCount 50})]
+            :cachedContentTokenCount 50
+            :thoughtsTokenCount 25})]
     (is (= 250 (:usage/input-tokens u)))
     (is (= 100 (:usage/output-tokens u)))
-    (is (= 50 (:usage/cached-input-tokens u)))))
+    (is (= 50 (:usage/cached-input-tokens u)))
+    (is (= 25 (:usage/reasoning-tokens u)))))
 
 (deftest test-normalize-codex-usage
   (let [u (usage/normalize-codex-usage

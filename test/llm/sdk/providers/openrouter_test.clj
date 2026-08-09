@@ -2,7 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.openrouter :as openrouter]))
+            [llm.sdk.providers.openrouter :as openrouter]
+            [llm.sdk.providers.openrouter.image :as openrouter-image]))
 
 (deftest test-build-request-basic
   (let [t (openrouter/make-transport)
@@ -79,7 +80,11 @@
         profile (provider/get-provider :openrouter)
         raw {:id "chatcmpl-or-1"
              :model "anthropic/claude-sonnet-4"
-             :choices [{:message {:content "Hello from OpenRouter!"}
+             :choices [{:message {:content "Hello from OpenRouter!"
+                                  :reasoning_details
+                                  [{:type "reasoning.summary"
+                                    :summary "Checked primary sources"
+                                    :index 0}]}
                         :finish_reason "stop"
                         :native_finish_reason "end_turn"}]
              :openrouter_metadata {:attempt 1}
@@ -88,7 +93,8 @@
                      :completion_tokens 5
                      :total_tokens 15
                      :cost 0.00014
-                     :is_byok false}}
+                     :is_byok false
+                     :server_tool_use_details {:web_search 2}}}
         resp (transport/parse-response t profile raw)]
     (is (= :stop (:response/finish-reason resp)))
     (is (= [{:part/type :text :text "Hello from OpenRouter!"}]
@@ -98,7 +104,33 @@
     (is (= {:attempt 1}
            (get-in resp [:response/provider-data :openrouter_metadata])))
     (is (= 0.00014 (get-in resp [:response/cost :cost/usd])))
-    (is (false? (get-in resp [:response/cost :cost/estimated?])))))
+    (is (false? (get-in resp [:response/cost :cost/estimated?])))
+    (is (= [{:type "reasoning.summary"
+             :summary "Checked primary sources"
+             :index 0}]
+           (get-in resp [:response/provider-data :reasoning_details])))
+    (is (= {:web_search 2}
+           (get-in resp
+                   [:response/cost :cost/breakdown
+                    :server_tool_use_details])))))
+
+(deftest test-parse-image-response-preserves-media-type-and-cost-details
+  (let [profile (provider/get-provider :openrouter)
+        raw {:data [{:b64_json "encoded-webp"
+                     :media_type "image/webp"}
+                    {:b64_json "encoded-unspecified"}]
+             :usage {:cost 0.002
+                     :server_tool_use_details {:web_search 1}}}
+        resp (openrouter-image/parse-image-response-openrouter profile raw)]
+    (is (= {:image/b64 "encoded-webp"
+            :image/mime-type "image/webp"}
+           (first (:image/images resp))))
+    (is (= {:image/b64 "encoded-unspecified"}
+           (second (:image/images resp))))
+    (is (= {:web_search 1}
+           (get-in resp
+                   [:response/cost :cost/breakdown
+                    :server_tool_use_details])))))
 
 (deftest test-parse-stream-delegate
   (let [t (openrouter/make-transport)
@@ -108,16 +140,36 @@
     (is (= :stream/content-delta (:event/type ev)))
     (is (= "Hello" (:event/delta ev)))))
 
+(deftest test-parse-stream-preserves-structured-reasoning-details
+  (let [t (openrouter/make-transport)
+        profile (provider/get-provider :openrouter)
+        line (str "data: {\"choices\":[{\"delta\":{\"reasoning_details\":["
+                  "{\"type\":\"reasoning.summary\","
+                  "\"summary\":\"Checked primary sources\",\"index\":0}]}}]}")
+        ev (transport/parse-stream-event t profile line)]
+    (is (= :stream/provider-state (:event/type ev)))
+    (is (= :openrouter (:provider-state/provider ev)))
+    (is (= [{:type "reasoning.summary"
+             :summary "Checked primary sources"
+             :index 0}]
+           (get-in ev
+                   [:provider-state/data :chat-completion/delta
+                    :reasoning_details])))))
+
 (deftest test-parse-stream-preserves-reported-cost
   (let [t (openrouter/make-transport)
         profile (provider/get-provider :openrouter)
         line (str "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"
                   "\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":8,"
-                  "\"total_tokens\":13,\"cost\":0.00014}}")
+                  "\"total_tokens\":13,\"cost\":0.00014,"
+                  "\"server_tool_use_details\":{\"web_search\":2}}}")
         events (transport/parse-stream-event t profile line)
         usage-event (first (filter #(= :stream/usage (:event/type %)) events))]
     (is (= 0.00014 (get-in usage-event [:cost :cost/usd])))
-    (is (false? (get-in usage-event [:cost :cost/estimated?])))))
+    (is (false? (get-in usage-event [:cost :cost/estimated?])))
+    (is (= {:web_search 2}
+           (get-in usage-event
+                   [:cost :cost/breakdown :server_tool_use_details])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Caching wiring

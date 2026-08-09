@@ -57,11 +57,13 @@
     (is (= 11 (get-in parsed [:response/usage :usage/input-tokens])))
     (is (= 11 (get-in parsed [:response/usage :usage/total-tokens])))))
 
-(deftest test-parse-voyage-base64-float-response
-  (testing "canonical vectors remain numeric for Voyage base64 encoding"
-    (let [parsed (et/parse-embed-response
+(deftest test-parse-voyage-preserves-opaque-base64-response
+  (testing "Voyage base64 encoding is retained without fabricating float vectors"
+    (let [item {:index 0 :embedding "AACAPwAAAEA="}
+          parsed (et/parse-embed-response
                   (voyage/make-transport)
                   (provider/get-provider :voyage)
                   {:model "voyage-4"
-                   :data [{:index 0 :embedding "AACAPwAAAEA="}]})]
-      (is (= [[1.0 2.0]] (:embed/vectors parsed))))))
+                   :data [item]})]
+      (is (= [] (:embed/vectors parsed)))
+      (is (= {:raw [item]} (:embed/provider-data parsed))))))

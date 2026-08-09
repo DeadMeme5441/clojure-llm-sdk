@@ -31,8 +31,13 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- extract-system [messages]
-  (when (and (seq messages) (= (:message/role (first messages)) :system))
-    [{:type "text" :text (t/content->string (:message/content (first messages)))}]))
+  (->> messages
+       (keep (fn [message]
+               (when (= (:message/role message) :system)
+                 {:type "text"
+                  :text (t/content->string (:message/content message))})))
+       vec
+       not-empty))
 
 (defn- parse-json-object [s]
   (if (seq s)
@@ -100,6 +105,13 @@
       (contains? part :file/citations)
       (assoc :citations {:enabled (boolean (:file/citations part))}))))
 
+(defn- validate-thinking-signature! [block]
+  (when (and (= (:type block) "thinking")
+             (str/blank? (:signature block)))
+    (throw (ex-info "Anthropic thinking blocks require a non-blank signature."
+                    {:error/type :anthropic/invalid-thinking-signature})))
+  block)
+
 (defn- content->anthropic-blocks [content]
   (cond
     (nil? content)
@@ -110,32 +122,32 @@
 
     (sequential? content)
     (mapv (fn [part]
-            (case (:part/type part)
-              :text {:type "text" :text (:text part)}
-              :image {:type "image" :source (image-source part)}
-              :file (file->anthropic-block part)
-              :reasoning (cond-> {:type "thinking"
-                                   :thinking (:reasoning/text part)}
-                            (:reasoning/signature part)
-                            (assoc :signature (:reasoning/signature part)))
-              :tool-call (tool-call->anthropic-block part)
-              :tool-result {:type "tool_result"
-                            :tool_use_id (:tool-result/id part)
-                            :content (:tool-result/content part)
-                            :is_error (:tool-result/is-error part)}
-              :provider-state
-              (if (and (contains? #{:anthropic :vertex-anthropic}
-                                  (:provider-state/provider part))
-                       (map? (get-in part [:provider-state/data :content-block])))
-                (get-in part [:provider-state/data :content-block])
-                {:type "text" :text (str part)})
-              :unknown/provider-native
-              (if (and (contains? #{:anthropic :vertex-anthropic}
-                                  (:unknown/provider part))
-                       (map? (:unknown/data part)))
-                (:unknown/data part)
-                {:type "text" :text (str part)})
-              {:type "text" :text (str part)}))
+            (validate-thinking-signature!
+             (case (:part/type part)
+               :text {:type "text" :text (:text part)}
+               :image {:type "image" :source (image-source part)}
+               :file (file->anthropic-block part)
+               :reasoning {:type "thinking"
+                           :thinking (:reasoning/text part)
+                           :signature (:reasoning/signature part)}
+               :tool-call (tool-call->anthropic-block part)
+               :tool-result {:type "tool_result"
+                             :tool_use_id (:tool-result/id part)
+                             :content (:tool-result/content part)
+                             :is_error (:tool-result/is-error part)}
+               :provider-state
+               (if (and (contains? #{:anthropic :vertex-anthropic}
+                                   (:provider-state/provider part))
+                        (map? (get-in part [:provider-state/data :content-block])))
+                 (get-in part [:provider-state/data :content-block])
+                 {:type "text" :text (str part)})
+               :unknown/provider-native
+               (if (and (contains? #{:anthropic :vertex-anthropic}
+                                   (:unknown/provider part))
+                        (map? (:unknown/data part)))
+                 (:unknown/data part)
+                 {:type "text" :text (str part)})
+               {:type "text" :text (str part)})))
           content)
 
     :else [{:type "text" :text (str content)}]))
@@ -163,10 +175,9 @@
        :content (content->anthropic-blocks (:message/content msg))})))
 
 (defn- messages->anthropic [messages]
-  (let [without-system (if (and (seq messages) (= (:message/role (first messages)) :system))
-                         (rest messages)
-                         messages)]
-    (mapv message->anthropic without-system)))
+  (->> messages
+       (remove #(= (:message/role %) :system))
+       (mapv message->anthropic)))
 
 ;; ---------------------------------------------------------------------------
 ;; Tool conversion
@@ -287,12 +298,6 @@
                   (some file-id-attachment? content))))
          messages)))
 
-(defn- messages-use-beta-api? [messages]
-  (boolean
-   (some #(= :system (:message/role %))
-         (if (= :system (:message/role (first messages)))
-           (rest messages)
-           messages))))
 
 (defn- add-beta-header [headers beta]
   (update headers "anthropic-beta"
@@ -444,7 +449,6 @@
                 (cache/apply-tools-cache tools cache-opts)
                 tools)
         files-api? (messages-use-files-api? messages)
-        beta-api? (messages-use-beta-api? messages)
         configured-betas (get-in request
                                   [:request/provider-options :anthropic :betas])
         configured-betas (cond
@@ -489,9 +493,7 @@
               (when (:request/metadata request)
                 {:metadata (:request/metadata request)}))]
     {:method :post
-     :url (str (:profile/base-url profile)
-               "/messages"
-               (when beta-api? "?beta=true"))
+     :url (str (:profile/base-url profile) "/messages")
      :headers headers
      :body body}))
 
@@ -637,7 +639,7 @@
              {:content-blocks {idx {:block block}}})))
 
         (= t "content_block_stop")
-        (stream/tool-call-end (:index data 0))
+        nil
 
         (= t "message_start")
         (let [message (:message data)
@@ -650,10 +652,7 @@
           (one-or-many [provider-ev usage-ev]))
 
         (= t "message_stop")
-        (when-let [stop-reason (get-in data [:message :stop_reason])]
-          (stream/end-event :finish-reason (get stop-reason-map
-                                                stop-reason
-                                                :stop)))
+        (stream/end-event)
 
         (= t "message_delta")
         (let [usage-ev (when-let [usage-raw (get-in data [:usage])]

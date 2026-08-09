@@ -131,7 +131,7 @@
 (deftest fetch-models-rejects-unsupported-providers
   (testing "Providers without implemented live model listing reject fetches"
     (doseq [pid [:codex :codex-backend :bedrock :fake
-                 :kimi-code :perplexity :cloudflare :ollama-native]]
+                 :kimi-code :perplexity :cloudflare :volcengine :ollama-native]]
       (is (thrown? clojure.lang.ExceptionInfo (models/fetch-models pid))))))
 
 (deftest supports-models-listing-reports-expected-set
@@ -148,6 +148,7 @@
   (is (false? (models/supports-models-listing? :ollama-native)))
   (is (false? (models/supports-models-listing? :codex)))
   (is (false? (models/supports-models-listing? :bedrock)))
+  (is (false? (models/supports-models-listing? :volcengine)))
   (is (false? (models/supports-models-listing? :fake))))
 
 ;; ---------------------------------------------------------------------------

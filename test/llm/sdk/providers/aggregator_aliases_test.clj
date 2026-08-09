@@ -19,9 +19,6 @@
    {:id :deepinfra   :base "https://api.deepinfra.com/v1/openai"
     :env "DEEPINFRA_TOKEN"
     :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
-   {:id :lambda      :base "https://api.lambda.ai/v1"
-    :env "LAMBDA_API_KEY"
-    :capabilities #{:chat :streaming :tools}}
    {:id :nebius      :base "https://api.tokenfactory.nebius.com/v1"
     :env "NEBIUS_API_KEY"
     :capabilities #{:chat :streaming :tools :json-schema}}
@@ -42,17 +39,21 @@
     :capabilities #{:chat :streaming :tools :json-schema}}
    {:id :volcengine  :base "https://ark.cn-beijing.volces.com/api/v3"
     :env "ARK_API_KEY"
-    :capabilities #{:chat :streaming :tools :json-schema}}])
+    :capabilities #{:chat :streaming :tools :json-schema}
+    :model-listing? false}])
 
 (deftest test-aggregator-profiles-registered
-  (doseq [{:keys [id base env capabilities]} aggregators]
+  (doseq [{:keys [id base env capabilities model-listing?]} aggregators]
     (let [p (provider/get-provider id)]
       (is (some? p) (str id))
       (is (= base (:profile/base-url p)) (str id " base-url"))
       (is (= [env] (:profile/env-var-names p)) (str id " env-var"))
       (is (fn? (:profile/transport-constructor p)) (str id " transport"))
       (is (every? (:profile/capabilities p) capabilities)
-          (str id " required capabilities")))))
+          (str id " required capabilities"))
+      (is (= (not (false? model-listing?))
+             (:profile/supports-model-listing p))
+          (str id " model listing")))))
 
 (deftest test-cloudflare-profile-has-account-placeholder
   (testing "Cloudflare base-url is account-scoped and has no global model list"
@@ -81,12 +82,15 @@
           (str id " auth")))))
 
 (deftest test-models-fetch-multimethods-registered
-  (doseq [{:keys [id]} aggregators]
-    (is (true? (models/supports-models-listing? id))
-        (str id " registered for /models fetch"))))
+  (doseq [{:keys [id model-listing?]} aggregators]
+    (is (= (not (false? model-listing?))
+           (models/supports-models-listing? id))
+        (str id " /models support"))))
 
 (deftest test-list-providers-includes-aggregators
   (let [ids (set (sdk/list-providers))]
     (doseq [{:keys [id]} aggregators]
       (is (contains? ids id) (str id " in list-providers")))
-    (is (contains? ids :cloudflare))))
+    (is (contains? ids :cloudflare))
+    (is (not (contains? ids :lambda)))
+    (is (nil? (provider/get-provider :lambda)))))

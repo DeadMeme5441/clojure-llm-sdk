@@ -2,6 +2,34 @@
 
 All notable user-visible changes are tracked here.
 
+## 0.4.4
+
+### Changed
+
+- Rechecked all built-in providers against current official API schemas and
+  aligned capabilities, model-listing claims, usage fields, media metadata,
+  rerank results, and provider-specific response data.
+- Removed the unsupported Lambda hosted alias. No authoritative public schema
+  exists for its configured endpoint. Custom OpenAI-compatible Lambda
+  deployments remain available through provider registration.
+- Extended canonical schemas for nullable moderation categories, transcription
+  language and log-probability data, video token usage, and returned rerank
+  embeddings.
+
+### Fixed
+
+- Send required streaming flags for OpenAI Chat and Codex Responses, and
+  normalize legacy OpenAI function calls in buffered and streamed responses.
+- Correct Anthropic system-message routing, beta headers, thinking signatures,
+  and terminal SSE events for native and Vertex transports.
+- Preserve current OpenRouter reasoning and cost details, Perplexity citation
+  metadata, Gemini image MIME types and reasoning usage, Bedrock pagination and
+  response metadata, and non-float embedding payloads without false float
+  coercion.
+- Align Groq and xAI reasoning requests, Kimi structured-output capabilities,
+  ElevenLabs output formats, Volcengine model-listing behavior, and the Fake
+  provider's deterministic chat-only capability.
+
 ## 0.3.4
 
 ### Changed

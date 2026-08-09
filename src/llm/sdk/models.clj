@@ -10,8 +10,8 @@
    one unified view per (provider, model).
 
    Providers without a public /models endpoint (Codex, Codex-backend,
-   Bedrock, Fake) throw :error :unsupported on fetch - callers should
-   route those through models.dev / snapshot layers only."
+   Bedrock, Fake, Volcengine) throw :error :unsupported on fetch - callers
+   should route those through models.dev / snapshot layers only."
   (:require [clojure.string :as str]
             [malli.core :as m]
             [llm.sdk.http :as http]
@@ -275,14 +275,12 @@
 ;; configured base-urls before a fetch will succeed.
 (defmethod fetch-models :sambanova [_] (openai-style-fetch :sambanova))
 (defmethod fetch-models :deepinfra [_] (openai-style-fetch :deepinfra))
-(defmethod fetch-models :lambda [_] (openai-style-fetch :lambda))
 (defmethod fetch-models :nebius [_] (openai-style-fetch :nebius))
 (defmethod fetch-models :hyperbolic [_] (openai-style-fetch :hyperbolic))
 (defmethod fetch-models :novita [_] (openai-style-fetch :novita))
 (defmethod fetch-models :friendliai [_] (openai-style-fetch :friendliai))
 (defmethod fetch-models :featherless [_] (openai-style-fetch :featherless))
 (defmethod fetch-models :dashscope [_] (openai-style-fetch :dashscope))
-(defmethod fetch-models :volcengine [_] (openai-style-fetch :volcengine))
 
 (defmethod fetch-models :anthropic [_]
   (let [p (profile! :anthropic)

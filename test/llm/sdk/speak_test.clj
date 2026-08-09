@@ -80,7 +80,7 @@
                {:speak/model "eleven_v3"
                 :speak/voice "voice-id"
                 :speak/input "hello"
-                :speak/format :wav
+                :speak/format :pcm
                 :speak/speed 1.2
                 :speak/provider-options
                 {:enable_logging false
@@ -91,7 +91,7 @@
                                   :similarity_boost 0.8
                                   :style 0.2
                                   :use_speaker_boost true}}})]
-    (is (.contains ^String (:url built) "output_format=wav_44100"))
+    (is (.contains ^String (:url built) "output_format=pcm_44100"))
     (is (.contains ^String (:url built) "enable_logging=false"))
     (is (.contains ^String (:url built) "optimize_streaming_latency=3"))
     (is (= {:stability 0.4
@@ -120,15 +120,20 @@
 (deftest test-elevenlabs-rejects-canonical-formats-the-api-does-not-support
   (let [t (eleven/make-transport)
         profile (provider/get-provider :elevenlabs)]
-    (is (thrown-with-msg?
-         clojure.lang.ExceptionInfo
-         #"does not support flac"
-         (st/build-speak-request
-          t profile
-          {:speak/model "eleven_multilingual_v2"
-           :speak/voice "voice-id"
-           :speak/input "hello"
-           :speak/format :flac})))))
+    (doseq [format [:aac :flac :wav]]
+      (let [error (try
+                    (st/build-speak-request
+                     t profile
+                     {:speak/model "eleven_multilingual_v2"
+                      :speak/voice "voice-id"
+                      :speak/input "hello"
+                      :speak/format format})
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? error))
+        (is (= format (:format (ex-data error))))
+        (is (= #{:mp3 :opus :pcm}
+               (:supported-formats (ex-data error))))))))
 
 (deftest test-elevenlabs-requires-voice
   (let [t (eleven/make-transport)

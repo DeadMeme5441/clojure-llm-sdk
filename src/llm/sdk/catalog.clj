@@ -27,7 +27,7 @@
   [:openai :anthropic :gemini-native :openrouter :deepseek :kimi :kimi-code
    :mistral :groq :cerebras :together :xai :perplexity :huggingface
    :cohere :voyage :jina
-   :sambanova :deepinfra :lambda :nebius :hyperbolic :novita
+   :sambanova :deepinfra :nebius :hyperbolic :novita
    :friendliai :featherless :cloudflare :dashscope :volcengine
    :vertex-gemini :bedrock :codex :codex-backend :fake])
 

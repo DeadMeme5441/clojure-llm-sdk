@@ -2,9 +2,7 @@
   "Jina embeddings transport for the model-discriminated /v1/embeddings API."
   (:require [llm.sdk.errors :as errors]
             [llm.sdk.provider :as provider]
-            [llm.sdk.transport.embed :as et])
-  (:import (java.nio ByteBuffer ByteOrder)
-           (java.util Base64)))
+            [llm.sdk.transport.embed :as et]))
 
 (defn- ->int [x]
   (cond
@@ -12,14 +10,6 @@
     (number? x) (int x)
     :else 0))
 
-(defn- decode-base64-floats [encoded]
-  (let [bytes (.decode (Base64/getDecoder) ^String encoded)
-        buffer (doto (ByteBuffer/wrap bytes)
-                 (.order ByteOrder/LITTLE_ENDIAN))]
-    (loop [values (transient [])]
-      (if (>= (.remaining buffer) Float/BYTES)
-        (recur (conj! values (double (.getFloat buffer))))
-        (persistent! values)))))
 
 (defn build-embed-request-jina
   [profile request]
@@ -60,33 +50,45 @@
         input (->int (or (:prompt_tokens usage) (:total_tokens usage)))
         total (->int (or (:total_tokens usage) input))
         image (->int (:image_tokens usage))
-        audio (->int (:audio_tokens usage))]
+        audio (->int (:audio_tokens usage))
+        video (->int (:video_tokens usage))]
     (cond-> {:usage/input-tokens input
              :usage/output-tokens 0
              :usage/total-tokens total
              :usage/request-count 1
              :usage/provider-raw usage}
       (pos? image) (assoc :usage/image-tokens image)
-      (pos? audio) (assoc :usage/audio-tokens audio))))
+      (pos? audio) (assoc :usage/audio-tokens audio)
+      (pos? video) (assoc :usage/video-tokens video))))
 
-(defn- embedding-vector [{:keys [embedding]}]
-  (cond
-    (string? embedding) (decode-base64-floats embedding)
-    (sequential? embedding) (vec embedding)
-    :else nil))
+(defn- dense-vector [embedding]
+  (when (and (sequential? embedding)
+             (every? number? embedding))
+    (vec embedding)))
+
+(defn- opaque-embedding? [item dense]
+  (or (and (contains? item :embedding) (nil? dense))
+      (contains? item :embeddings)
+      (contains? item :tokenized_input)))
 
 (defn parse-embed-response-jina
   [profile raw]
-  (let [vectors (->> (:data raw)
-                     (sort-by #(or (:index %) 0))
-                     (keep embedding-vector)
-                     vec)
+  (let [data (sort-by #(or (:index %) 0) (:data raw))
+        [vectors opaque]
+        (reduce (fn [[vectors opaque] item]
+                  (let [dense (dense-vector (:embedding item))]
+                    [(cond-> vectors dense (conj dense))
+                     (cond-> opaque
+                       (opaque-embedding? item dense) (conj item))]))
+                [[] []]
+                data)
         first-vector (first vectors)]
     (cond-> {:embed/provider (:profile/id profile)
              :embed/model (:model raw)
              :embed/vectors vectors
              :embed/raw raw}
       first-vector (assoc :embed/dimensions (count first-vector))
+      (seq opaque) (assoc :embed/provider-data {:raw opaque})
       (:usage raw) (assoc :response/usage
                           (normalize-jina-embedding-usage raw)))))
 

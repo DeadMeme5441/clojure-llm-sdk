@@ -27,6 +27,15 @@
   (and (str/starts-with? (str model) "stability.")
        (not (legacy-stability? model))))
 
+(defn- stable-image-core? [model]
+  (str/starts-with? (str model) "stability.stable-image-core"))
+
+(defn- stable-image-ultra? [model]
+  (str/starts-with? (str model) "stability.stable-image-ultra"))
+
+(defn- sd3-5-large? [model]
+  (str/starts-with? (str model) "stability.sd3-5-large"))
+
 ;; ---------------------------------------------------------------------------
 ;; Body shapes per model family
 ;; ---------------------------------------------------------------------------
@@ -39,6 +48,15 @@
 
 (def ^:private stability-aspect-ratios
   #{"16:9" "1:1" "21:9" "2:3" "3:2" "4:5" "5:4" "9:16" "9:21"})
+
+(def ^:private stability-generation-modes
+  #{"text-to-image" "image-to-image"})
+
+(def ^:private stability-two-format-output
+  #{"jpeg" "png"})
+
+(def ^:private stability-three-format-output
+  #{"jpeg" "png" "webp"})
 
 (defn- gcd [a b]
   (if (zero? b) a (recur b (mod a b))))
@@ -93,20 +111,105 @@
       (:seed opts) (assoc :seed (:seed opts))
       (:image/n request) (assoc :samples (:image/n request)))))
 
-(defn- modern-stability-body [request]
+(defn- option-name [value]
+  (cond
+    (keyword? value) (name value)
+    (string? value) value
+    :else value))
+
+(defn- invalid-stability-option! [model option value]
+  (throw (ex-info "Invalid Bedrock Stability image option"
+                  {:provider :bedrock
+                   :model model
+                   :error/type :request/invalid-image-option
+                   :option option
+                   :value value})))
+
+(defn- stability-output-formats [model]
+  (cond
+    (or (stable-image-core? model)
+        (stable-image-ultra? model))
+    stability-two-format-output
+
+    (sd3-5-large? model)
+    stability-three-format-output
+
+    :else nil))
+
+(defn- stability-max-seed [model]
+  (cond
+    (sd3-5-large? model) 4294967294
+    (or (stable-image-core? model)
+        (stable-image-ultra? model))
+    4294967295
+    :else nil))
+
+(defn- validate-modern-stability-options!
+  [model request opts aspect-ratio output-format image mode]
+  (when (and (:image/size request) (nil? aspect-ratio))
+    (invalid-stability-option! model :aspect-ratio (:image/size request)))
+  (when (and (contains? opts :aspect-ratio)
+             (not (contains? stability-aspect-ratios aspect-ratio)))
+    (invalid-stability-option! model :aspect-ratio
+                               (:aspect-ratio opts)))
+  (when-let [formats (stability-output-formats model)]
+    (when (and (contains? opts :output-format)
+               (not (contains? formats output-format)))
+      (invalid-stability-option! model :output-format
+                                 (:output-format opts))))
+  (when-let [max-seed (stability-max-seed model)]
+    (when (contains? opts :seed)
+      (let [seed (:seed opts)]
+        (when-not (and (integer? seed) (<= 0 seed max-seed))
+          (invalid-stability-option! model :seed seed)))))
+  (when (contains? opts :strength)
+    (let [strength (:strength opts)]
+      (when-not (and (number? strength) (<= 0 strength 1))
+        (invalid-stability-option! model :strength strength))))
+  (if (stable-image-core? model)
+    (cond
+      (contains? opts :mode)
+      (invalid-stability-option! model :mode (:mode opts))
+
+      image
+      (invalid-stability-option! model :image image)
+
+      (contains? opts :strength)
+      (invalid-stability-option! model :strength (:strength opts)))
+    (do
+      (when (and (contains? opts :mode)
+                 (not (contains? stability-generation-modes mode)))
+        (invalid-stability-option! model :mode (:mode opts)))
+      (when (and image (= mode "text-to-image"))
+        (invalid-stability-option! model :mode (:mode opts)))
+      (when (and (= mode "image-to-image") (not image))
+        (invalid-stability-option! model :image image))
+      (when (and image (not (contains? opts :strength)))
+        (invalid-stability-option! model :strength nil))
+      (when (and (contains? opts :strength) (not image))
+        (invalid-stability-option! model :strength (:strength opts)))
+      (when (and aspect-ratio (= mode "image-to-image"))
+        (invalid-stability-option! model :aspect-ratio aspect-ratio)))))
+
+
+(defn- modern-stability-body [model request]
   (let [opts (bedrock-options request)
-        aspect-ratio (or (:aspect-ratio opts)
-                         (size->aspect-ratio (:image/size request)))
-        output-format (some-> (:output-format opts) name)
+        aspect-ratio (some-> (or (:aspect-ratio opts)
+                                 (size->aspect-ratio (:image/size request)))
+                             option-name)
+        output-format (some-> (:output-format opts) option-name)
         image (:image opts)
-        mode (or (:mode opts) (when image "image-to-image"))]
+        mode (some-> (or (:mode opts) (when image "image-to-image"))
+                     option-name)]
+    (validate-modern-stability-options!
+     model request opts aspect-ratio output-format image mode)
     (cond-> {:prompt (:image/prompt request)}
       aspect-ratio (assoc :aspect_ratio aspect-ratio)
       output-format (assoc :output_format output-format)
-      (:seed opts) (assoc :seed (:seed opts))
+      (contains? opts :seed) (assoc :seed (:seed opts))
       (:negative-prompt opts) (assoc :negative_prompt (:negative-prompt opts))
       image (assoc :image image)
-      (:strength opts) (assoc :strength (:strength opts))
+      (contains? opts :strength) (assoc :strength (:strength opts))
       mode (assoc :mode mode))))
 
 (defn build-image-request-bedrock
@@ -117,7 +220,7 @@
                (titan? model) (titan-body request)
                (nova-canvas? model) (nova-canvas-body request)
                (legacy-stability? model) (legacy-stability-body request)
-               (modern-stability? model) (modern-stability-body request)
+               (modern-stability? model) (modern-stability-body model request)
                :else
                (throw (ex-info "Unsupported Bedrock image model family"
                                {:provider :bedrock

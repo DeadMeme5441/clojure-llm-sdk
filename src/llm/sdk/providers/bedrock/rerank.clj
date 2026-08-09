@@ -58,19 +58,27 @@
      :body body}))
 
 
+(defn- document->canonical [document]
+  (case (:type document)
+    "TEXT" (get-in document [:textDocument :text])
+    "JSON" (:jsonDocument document)
+    nil))
+
 (defn parse-rerank-response-bedrock
   [_profile raw]
   (let [results (->> (:results raw)
                      (mapv (fn [r]
-                             (cond-> {:rerank/index (:index r)
-                                      :rerank/score (double (or (:relevanceScore r) 0.0))}
-                               (get-in r [:document :textDocument :text])
-                               (assoc :rerank/document
-                                      (get-in r [:document :textDocument :text]))))))]
-    {:rerank/provider :bedrock
-     :rerank/model nil
-     :rerank/results results
-     :rerank/raw raw}))
+                             (let [document (document->canonical (:document r))]
+                               (cond-> {:rerank/index (:index r)
+                                        :rerank/score
+                                        (double (or (:relevanceScore r) 0.0))}
+                                 (some? document)
+                                 (assoc :rerank/document document))))))]
+    (cond-> {:rerank/provider :bedrock
+             :rerank/model nil
+             :rerank/results results
+             :rerank/raw raw}
+      (:nextToken raw) (assoc :rerank/next-token (:nextToken raw)))))
 
 (defn parse-rerank-error-bedrock
   [_profile status body]

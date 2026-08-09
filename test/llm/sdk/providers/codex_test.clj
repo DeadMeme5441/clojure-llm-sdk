@@ -37,7 +37,18 @@
     (is (= false (get-in built [:body :store])))
     (is (= "Sys" (get-in built [:body :instructions])))
     (is (sequential? (get-in built [:body :input])))
-    (is (= "user" (:role (first (get-in built [:body :input])))))))
+    (is (= "user" (:role (first (get-in built [:body :input])))))
+    (is (not (contains? (:body built) :stream)))))
+ 
+(deftest test-build-request-standard-stream-flag
+  (let [built (transport/build-request
+               (codex/make-transport)
+               (provider/get-provider :codex)
+               {:request/model "o3"
+                :request/messages [{:message/role :user :message/content "Hello"}]
+                :request/stream? true})]
+    (is (true? (get-in built [:body :stream])))
+    (is (= "https://api.openai.com/v1/responses" (:url built)))))
 
 (deftest test-build-request-current-responses-fields
   (let [t (codex/make-transport)

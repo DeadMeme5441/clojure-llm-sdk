@@ -1,7 +1,6 @@
 (ns llm.sdk.providers.cohere.rerank
-  "Cohere /rerank transport. The wire shape is also used by Jina —
-   both accept {model, query, documents, top_n, return_documents}
-   and return {results [{index, relevance_score, document {text}}]}.
+  "Cohere /rerank transport. Jina uses the same core wire shape while also
+   supporting structured returned documents and optional returned embeddings.
 
    Cohere additionally returns :meta.billed_units.search_units for
    usage; Jina returns :usage {total_tokens}. Both are surfaced
@@ -70,8 +69,6 @@
                (assoc :max_tokens_per_doc (:max-tokens-per-doc opts))
                (and (= :cohere provider-id) (contains? opts :priority))
                (assoc :priority (:priority opts))
-               (and (= :jina provider-id) (contains? opts :truncation))
-               (assoc :truncation (:truncation opts))
                (and (= :jina provider-id) (:max-doc-length opts))
                (assoc :max_doc_length (:max-doc-length opts))
                (and (= :jina provider-id) (contains? opts :return-embeddings))
@@ -88,22 +85,31 @@
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
 
-(defn- document->text [doc]
+(defn- result-document [provider-id doc]
   (cond
     (string? doc) doc
-    (map? doc) (or (:text doc) (str doc))
+    (and (= :cohere provider-id) (map? doc)) (or (:text doc) (str doc))
+    (and (= :jina provider-id) (map? doc)) doc
     :else nil))
 
-(defn- result->canonical [r]
-  (let [document (document->text (:document r))]
+(defn- numeric-embedding [embedding]
+  (when (and (sequential? embedding)
+             (every? number? embedding))
+    (vec embedding)))
+
+(defn- result->canonical [provider-id r]
+  (let [document (result-document provider-id (:document r))
+        embedding (when (= :jina provider-id)
+                    (numeric-embedding (:embedding r)))]
     (cond-> {:rerank/index (:index r)
              :rerank/score (double (or (:relevance_score r) 0.0))}
-      document (assoc :rerank/document document))))
+      document (assoc :rerank/document document)
+      embedding (assoc :rerank/embedding embedding))))
 
 (defn parse-rerank-response-cohere-shape
   [profile raw]
   (let [provider-id (:profile/id profile)
-        results (mapv result->canonical (:results raw))
+        results (mapv #(result->canonical provider-id %) (:results raw))
         usage (case provider-id
                 :cohere (normalize-cohere-rerank-usage raw)
                 :jina (normalize-jina-rerank-usage raw)
