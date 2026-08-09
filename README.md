@@ -12,13 +12,13 @@ This is a provider SDK, not an agent framework or proxy server. It owns provider
 Add the library to `deps.edn` (released to [Clojars](https://clojars.org/net.clojars.deadmeme5441/clojure-llm-sdk)):
 
 ```clojure
-{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.4.4"}}}
+{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.4.5"}}}
 ```
 
 Or with Leiningen / `project.clj`:
 
 ```clojure
-[net.clojars.deadmeme5441/clojure-llm-sdk "0.4.4"]
+[net.clojars.deadmeme5441/clojure-llm-sdk "0.4.5"]
 ```
 
 Then require the public namespace:

@@ -2,6 +2,16 @@
 
 All notable user-visible changes are tracked here.
 
+## 0.4.5
+
+### Fixed
+
+- Emit exactly one terminal stream event while preserving the provider finish
+  reason and adding a fallback terminal event only when the provider omits one.
+- Preserve user-only ChatGPT OAuth input when Codex backend instructions use
+  the default, retain encrypted reasoning for replay, and report completed
+  function calls with the canonical `:tool-calls` finish reason.
+
 ## 0.4.4
 
 ### Changed
