@@ -96,6 +96,30 @@
                  {:message/role :user :message/content "Continue"}]})]
     (is (= "commentary" (get-in built [:body :input 0 :phase])))))
 
+(deftest completed-assistant-message-replays-once-with-phase
+  (let [profile (provider/get-provider :codex)
+        item {:type "message" :id "msg_reply" :role "assistant"
+              :status "completed" :phase "final_answer"
+              :content [{:type "output_text" :text "Original" :annotations []}]}
+        event (codex/parse-stream-event-codex
+               profile
+               (str "data: " (json/generate-string
+                              {:type "response.output_item.done" :output_index 1 :item item})))
+        provider-data {:codex (:provider-state/data event)}
+        build (fn [text]
+                (:input (:body (codex/build-request-codex
+                                 profile
+                                 {:request/model "gpt-6-astra"
+                                  :request/messages
+                                  [{:message/role :assistant :message/content text
+                                    :message/provider-data provider-data}]}))))]
+    (is (= [item] (build "Original"))
+        "Preserved output metadata must not duplicate canonical assistant text")
+    (is (= [{:type "message" :role "assistant" :status "completed"
+             :content [{:type "output_text" :text "Edited"}]}]
+           (build "Edited"))
+        "Editing canonical content must not silently replay stale provider text")))
+
 (deftest test-build-request-tools
   (let [t (codex/make-transport)
         profile (provider/get-provider :codex)

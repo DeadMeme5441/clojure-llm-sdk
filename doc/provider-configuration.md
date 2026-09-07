@@ -66,8 +66,83 @@ Supported config keys:
 | `:base-url` | Provider base URL override. |
 | `:headers` | Extra headers merged into the provider defaults. |
 | `:http-client` | Caller-managed hato Java HTTP client. |
-| `:connect-timeout-ms` | HTTP connect timeout. |
-| `:timeout-ms` | HTTP request timeout. |
+| `:connect-timeout-ms` | HTTP connect timeout; WebSocket upgrade timeout. |
+| `:timeout-ms` | HTTP request timeout; WebSocket server/consumer inactivity timeout (default 120000 ms). |
+| `:transport` | ChatGPT OAuth only: `:sse` (default) or `:websocket`. |
+| `:incremental?` | ChatGPT OAuth WebSockets: automatic continuation is enabled; `false` always sends full history. |
+
+## ChatGPT OAuth WebSockets
+
+`:codex-backend` reads the official Codex CLI OAuth credentials. HTTP/SSE is the
+default: live `gpt-6-astra` / low-effort conversation benchmarks had lower
+first-output latency over SSE, even after WebSocket connection/history reuse.
+This is a measured default, not a guarantee for every model or network.
+
+Select `:config {:transport :websocket}` to use
+`wss://chatgpt.com/backend-api/codex/responses`. Both buffered `complete` and
+`:stream? true` then use `response.create` with `stream: true`, matching the
+official Codex client. The API-key `:codex` and `:openai` transports are unchanged.
+
+```clojure
+(sdk/complete
+  :codex-backend
+  {:request/model "gpt-6-astra"
+   :request/messages [{:message/role :user :message/content "Hello"}]
+   :request/reasoning {:enabled true :effort :low}
+   :request/cache {:enabled? true :scope-id "conversation-42"}}
+  :stream? true
+  :on-event prn
+  :config {:transport :websocket :connect-timeout-ms 10000 :timeout-ms 120000})
+```
+
+Fully consumed successful responses return their connection to a pool of up to
+eight idle sockets, expiring after 60 seconds. Connections are isolated by URL,
+headers (including OAuth credentials, account and cache scope), HTTP client and
+timeout configuration. Concurrent calls lease separate connections rather than
+waiting for another response. Keep `:scope-id` stable within a conversation for
+prompt-cache affinity; changing handshake headers prevents connection reuse.
+
+WebSocket follow-ups automatically send `previous_response_id` and only new input
+when the full canonical history exactly extends the previous request plus its
+completed output. Instructions, tools, model and other generation settings must
+remain unchanged. The pool prefers the connection holding that conversation's
+baseline. History edits, compaction, unsupported output shapes and reconnects
+fall back to a full request; the SDK never guesses which messages to omit.
+
+Preserve `:response/provider-data` as `:message/provider-data` on assistant
+messages, alongside canonical content and tool calls. This retains encrypted
+reasoning and message phase needed for exact continuation. Replayed assistant
+message items are not duplicated, and edited canonical text wins over stale
+provider text. `:config {:incremental? false}` disables history optimization.
+
+Only the latest completed request/output is retained per connection, and only
+after its terminal bytes have been consumed. Streamed `response.output_item.done`
+items are authoritative: the Codex backend can leave the terminal `output` array
+empty. Unchanged system instructions and tool definitions are still sent on every
+turn, as required by the protocol. Smaller payloads do not guarantee lower
+model-generation latency.
+
+Partial responses are never automatically replayed, even with `:retry true`.
+An automatically generated continuation rejected with `previous_response_not_found`
+may resend the full original request once, only before any lifecycle or generation
+event has arrived. Explicit caller-provided response IDs and partial generations
+are never retried by this recovery path.
+Handshake/provider errors and premature disconnects throw structured exceptions;
+legitimate incomplete responses retain their canonical finish reason. Buffers and
+message sizes are bounded. Abandoned lazy streams expire on inactivity; prefer
+`:on-event` for deterministic cleanup, including when your callback throws.
+
+To use HTTP/SSE explicitly, pass `:config {:transport :sse}`. There is no silent
+fallback after a WebSocket failure. A caller-managed `:http-client` must be a
+`java.net.http.HttpClient` (as returned by hato). To dispose active and idle sockets:
+
+```clojure
+(require '[llm.sdk.websocket :as websocket])
+(websocket/close-connections!)
+```
+
+Wire protocol references: [Codex WebSocket endpoint](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/responses_websocket.rs)
+and [Codex client protocol selection](https://github.com/openai/codex/blob/main/codex-rs/core/src/client.rs).
 
 ## Kimi And Kimi Code
 

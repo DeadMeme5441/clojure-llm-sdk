@@ -2,6 +2,36 @@
 
 All notable user-visible changes are tracked here.
 
+## Unreleased
+
+### Changed
+
+- Add persistent Responses WebSockets for ChatGPT OAuth (`:codex-backend`) with
+  `:config {:transport :websocket}`. HTTP/SSE remains the default: live
+  `gpt-6-astra` / low-effort benchmarks favored SSE for first-output latency.
+  WebSockets use the official streaming payload, isolated concurrent leases,
+  bounded buffers, inactivity timeouts and explicit disposal. API-key providers
+  are unchanged.
+- Automatically continue matching completed WebSocket conversations with
+  `previous_response_id` and delta-only input. Prefer the correct cached
+  connection; send full history after edits, configuration changes or reconnects.
+  Recover a rejected automatic response ID once only before generation starts.
+  Disable continuation with `:config {:incremental? false}`.
+
+### Fixed
+
+- Deliver stream deltas without `mapcat` read-ahead that could block an event
+  until additional provider data arrived.
+- Close streaming response bodies when an event callback throws.
+- Preserve Codex backend request rules for custom endpoint URLs, and apply
+  configured headers to OAuth requests.
+- Preserve completed assistant message metadata for exact continuation without
+  duplicating its canonical text or overriding user edits.
+- Use streamed completed output items when the backend's terminal output array
+  is empty, preventing duplicate output in incremental requests.
+- Avoid redundant JSON serialization/deserialization when parsing buffered
+  Codex responses.
+
 ## 0.4.5
 
 ### Fixed

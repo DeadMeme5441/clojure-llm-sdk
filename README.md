@@ -121,7 +121,7 @@ Some provider names are intentionally distinct:
 - `:kimi-code` uses Kimi Code's coding endpoint and reads `KIMI_API_KEY`.
 - `:vertex-gemini` uses Google Application Default Credentials or `GOOGLE_OAUTH_ACCESS_TOKEN`.
 - `:vertex-anthropic` serves Claude models through Google Vertex AI using the same GCP credentials as `:vertex-gemini`, not an `ANTHROPIC_API_KEY`.
-- `:codex-backend` reads OAuth data from the official Codex CLI auth file.
+- `:codex-backend` reads OAuth data from the official Codex CLI auth file. HTTP/SSE remains the latency-oriented default; `:config {:transport :websocket}` enables persistent Responses WebSockets with incremental history reuse. `:openai` and API-key `:codex` are unchanged.
 
 Applications that manage secrets outside environment variables can pass per-call runtime config:
 

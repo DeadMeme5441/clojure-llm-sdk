@@ -18,7 +18,7 @@
            [java.security MessageDigest]
            [java.util Base64]))
 
-(declare parse-stream-event-codex)
+(declare ^:private parse-stream-data-codex)
 
 ;; ---------------------------------------------------------------------------
 ;; Finish reason mapping
@@ -242,6 +242,22 @@
     :assistant
     (let [phase (or (:message/phase msg)
                     (get-in msg [:message/provider-data :phase]))
+          message-items (replay-provider-items (:message/provider-data msg)
+                                               :codex_message_items)
+          content (:message/content msg)
+          content-text (when (seq content) (t/content->string content))
+          replay-text (->> message-items
+                           (mapcat :content)
+                           (keep #(when (= "output_text" (:type %)) (:text %)))
+                           (apply str))
+          replay-messages? (and (seq message-items)
+                                (or (nil? content-text) (= content-text replay-text))
+                                (or (nil? phase)
+                                    (every? #(= (if (keyword? phase)
+                                                  (str/replace (name phase) "-" "_")
+                                                  phase)
+                                                (:phase %))
+                                            message-items)))
           items (concat
                  ;; Replay encrypted reasoning items from previous turns
                  (when-let [reasoning (replay-provider-items
@@ -249,16 +265,13 @@
                                        :codex_reasoning_items)]
                    (mapv #(dissoc % :id) reasoning))
                  ;; Replay exact assistant message items from previous turns
-                 (when-let [msg-items (replay-provider-items
-                                      (:message/provider-data msg)
-                                      :codex_message_items)]
-                   msg-items)
+                 (when replay-messages? message-items)
                  ;; Current turn content
-                 (when (seq (:message/content msg))
+                 (when (and content-text (not replay-messages?))
                    [(cond-> {:type "message" :role "assistant"
                              :status "completed"
                              :content [{:type "output_text"
-                                        :text (t/content->string (:message/content msg))}]}
+                                        :text content-text}]}
                       phase
                       (assoc :phase (if (keyword? phase)
                                       (str/replace (name phase) "-" "_")
@@ -345,7 +358,8 @@
 
 (defn- codex-backend? [profile]
   (let [host (base-url-host profile)]
-    (or (= host "chatgpt.com")
+    (or (= :codex-backend (:profile/id profile))
+        (= host "chatgpt.com")
         (str/ends-with? (or host "") ".chatgpt.com"))))
 
 (defn- xai-host? [profile]
@@ -439,7 +453,8 @@
                               {"Accept" "text/event-stream"})
                        (provider/default-headers profile
                                                  (provider/resolve-auth-token profile)))
-        headers (merge base-headers codex-backend-headers xai-headers)]
+        headers (merge base-headers codex-backend-headers xai-headers
+                       (:profile/default-headers profile))]
     {:method :post
      :url (str (:profile/base-url profile) "/responses")
      :headers headers
@@ -549,9 +564,7 @@
   (let [provider-id (or (:profile/id profile) :codex)]
     (if (string? raw)
     (let [data-maps (parse-sse-text raw)
-          ;; Convert each data map to a faux SSE line and parse it
-          lines (map #(str "data: " (json/generate-string %)) data-maps)
-          events (mapcat #(event->seq (parse-stream-event-codex profile %)) lines)
+          events (mapcat #(event->seq (parse-stream-data-codex profile %)) data-maps)
           ;; Only add a fallback end-event if the SSE didn't already include one
           has-end? (some #(= (:event/type %) :stream/end) events)
           events (concat [(stream/start-event)] events (when-not has-end? [(stream/end-event)]))
@@ -616,9 +629,9 @@
 ;; Stream parsing
 ;; ---------------------------------------------------------------------------
 
-(defn parse-stream-event-codex
-  [profile line]
-  (when-let [data (parse-sse-line line)]
+(defn- parse-stream-data-codex
+  [profile data]
+  (when data
     (let [t (:type data)
           provider-id (or (:profile/id profile) :codex)]
       (cond
@@ -635,11 +648,13 @@
         (stream/reasoning-delta (:delta data) :encrypted true)
 
         (and (= t "response.output_item.done")
-             (= "reasoning" (get-in data [:item :type])))
+             (contains? #{"reasoning" "message"} (get-in data [:item :type])))
         (stream/provider-state-event
          provider-id
          {:responses/event data
-          :codex_reasoning_items
+          (if (= "reasoning" (get-in data [:item :type]))
+            :codex_reasoning_items
+            :codex_message_items)
           {(stream-index data) (:item data)}})
 
         (= t "response.output_item.added")
@@ -696,6 +711,10 @@
                                      {:responses/event data})
 
         :else nil))))
+
+(defn parse-stream-event-codex
+  [profile line]
+  (parse-stream-data-codex profile (parse-sse-line line)))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing

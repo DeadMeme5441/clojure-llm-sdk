@@ -7,6 +7,7 @@
             [llm.sdk.schema :as schema]
             [llm.sdk.transport :as transport]
             [llm.sdk.http :as http]
+            [llm.sdk.websocket :as websocket]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
             [llm.sdk.pricing :as pricing]
@@ -165,6 +166,15 @@
     (sequential? ev) ev
     :else [ev]))
 
+(defn- parse-stream-lines
+  "Parse one line at a time: mapcat's apply/concat reads ahead and can
+   block delivery of a delta until the provider sends another event."
+  [transport profile lines]
+  (lazy-seq
+   (when-let [lines (seq lines)]
+     (concat (event->seq (transport/parse-stream-event transport profile (first lines)))
+             (parse-stream-lines transport profile (rest lines))))))
+
 (defn- collect-sse-events-until-end
   "Read an SSE InputStream eagerly until EOF or the provider emits a
    terminal :stream/end event, then close it. This is used by providers
@@ -185,9 +195,14 @@
         {:events events
          :raw (str (str/join "\n" lines) "\n")}))))
 
+(defn- streaming-response [req]
+  (if (= :websocket (:transport req))
+    (websocket/response req)
+    (http/sse-response req)))
+
 (defn- complete-sse-non-streaming
   [transport profile req provider-id model]
-  (let [{:keys [status body]} (http/sse-response req)]
+  (let [{:keys [status body]} (streaming-response req)]
     (if (and (number? status) (>= status 400))
       (let [classified (transport/parse-error transport profile status body)]
         (throw (ex-info "Provider API error"
@@ -346,7 +361,10 @@
                 can't be safely resumed by the SDK.
      :config    Per-call runtime config: :api-key/:auth-token,
                 :base-url, :headers, :http-client,
-                :connect-timeout-ms, :timeout-ms."
+                :connect-timeout-ms, :timeout-ms.
+                ChatGPT OAuth (:codex-backend) defaults to HTTP/SSE;
+                :transport :websocket enables persistent incremental Responses.
+                :incremental? false disables automatic WebSocket continuation."
   [provider-id request & {:keys [stream? on-event retry config]}]
   (let [profile (some-> (provider/get-provider provider-id)
                         (provider/apply-runtime-config config))
@@ -363,15 +381,24 @@
         req (transport/build-request transport profile request)
         req (provider/apply-http-options profile req)
         req (sign-if-needed profile req)
+        req (if (= provider-id :codex-backend)
+              (let [mode (get config :transport :sse)]
+                (when-not (#{:websocket :sse} mode)
+                  (throw (ex-info "Unsupported Codex backend transport"
+                                  {:provider provider-id :transport mode})))
+                (assoc req :transport mode
+                           :incremental? (get config :incremental? true)))
+              req)
         binary-stream? (= :aws-eventstream (:profile/binary-stream profile))
         model (:request/model request)]
     (if stream?
       ;; Streaming path - retry NOT applied; a partially-consumed stream
       ;; can't be safely resumed by the SDK. Wrap your own retry loop
       ;; if you need it.
-      (let [events (if binary-stream?
+      (let [response (when-not binary-stream? (streaming-response req))
+            events (if binary-stream?
                      (binary-stream-events transport profile req)
-                     (let [{:keys [status body]} (http/sse-response req)
+                     (let [{:keys [status body]} response
                            _ (when (and (number? status) (>= status 400))
                                (let [classified (transport/parse-error transport profile status body)]
                                  (throw (ex-info "Provider streaming API error"
@@ -380,20 +407,18 @@
                                                   :body body
                                                   :provider provider-id}))))
                            ev-seq (http/line-seq-closeable body)]
-                       (mapcat (fn [line]
-                                 (let [ev (transport/parse-stream-event
-                                           transport profile line)]
-                                   (cond
-                                     (nil? ev) nil
-                                     (sequential? ev) ev
-                                     :else [ev])))
-                               ev-seq)))
+                       (parse-stream-lines transport profile ev-seq)))
             parsed-events (concat [(stream/start-event)]
                                   (ensure-terminal-end events))]
         (if on-event
-          (do (doseq [ev parsed-events] (on-event ev))
-              (stamp (stream/events->response parsed-events provider-id model)
-                     provider-id model))
+          (try
+            (doseq [ev parsed-events] (on-event ev))
+            (stamp (stream/events->response parsed-events provider-id model)
+                   provider-id model)
+            (finally
+              (when-let [body (:body response)]
+                (when (instance? java.io.Closeable body)
+                  (.close ^java.io.Closeable body)))))
           parsed-events))
       ;; Non-streaming path
       (complete-non-streaming transport profile req provider-id model
