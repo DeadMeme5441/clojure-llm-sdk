@@ -2,15 +2,31 @@
 
 All notable user-visible changes are tracked here.
 
-## Unreleased
+## 0.5.0
+
+### Breaking changes
+
+This is not a drop-in upgrade from 0.4.x. The main SDK entry points and
+namespaced request keys remain, but callers must account for these changes:
+
+- Perplexity now uses the Agent API. Use native provider/model IDs such as
+  `perplexity/sonar` and migrate Sonar-specific provider options.
+- OpenAI, OpenRouter, and Bedrock image generation require explicit
+  `:image/model`; retired or implicit model defaults are no longer selected.
+- Usage may omit unreported input/output token counts. Transcription can
+  report duration, and reranking can report `:usage/search-units`. Do not
+  interpret missing counters or unknown costs as zero.
+- Accumulated streaming errors throw with `:partial-response` in exception
+  data. Terminal events follow trailing metadata; premature EOF is incomplete.
+- Migrate persisted Gemini provider state to the appropriate `:gemini-native`
+  or `:vertex-gemini` identity rather than the old `:gemini` tag.
+- Unsupported native content/reasoning combinations now fail explicitly.
+  `extra_body` cannot override canonical model/messages/stream; Cohere and
+  Voyage rerank documents must be strings; Mistral embeddings reject
+  `:embed/user`. Bedrock pagination uses canonical `:rerank/next-token`.
 
 ### Changed
 
-- Migrate provider implementations to family-owned namespaces while keeping
-  the previous public namespaces as compatibility shims, and move Perplexity
-  from Sonar Chat Completions to the native Agent API with explicit guidance
-  for obsolete options. Require callers to select billable OpenAI, OpenRouter,
-  and Bedrock image models explicitly.
 - Add the three scoped surfaces identified by the pinned `litellm-clj`
   comparison: Z.AI chat, native Gemini batch embeddings, and embeddings for
   caller-registered Azure OpenAI deployments, including explicit Azure v1
