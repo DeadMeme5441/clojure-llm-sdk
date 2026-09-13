@@ -1,5 +1,7 @@
 (ns llm.sdk.providers.openrouter-image-test
   (:require [clojure.test :refer [deftest is testing]]
+            [llm.sdk.http :as http]
+            [llm.sdk.image :as image]
             [llm.sdk.provider :as provider]
             [llm.sdk.providers.openrouter.image :as openrouter-image]
             [llm.sdk.transport.image :as it]))
@@ -58,7 +60,9 @@
                      :completion_tokens 10
                      :completion_tokens_details {:image_tokens 8}
                      :total_tokens 16
-                     :cost 0.04}}
+                     :cost 0.0
+                     :cost_details {:upstream_inference_cost 0.0}
+                     :is_byok false}}
         parsed (it/parse-image-response t profile raw)]
     (is (= :openrouter (:image/provider parsed)))
     (is (= 1748372400 (:image/created parsed)))
@@ -68,8 +72,26 @@
              :image/mime-type "image/webp"}]
            (:image/images parsed)))
     (is (= 8 (get-in parsed [:response/usage :usage/image-tokens])))
-    (is (= 0.04 (get-in parsed [:response/cost :cost/usd])))
-    (is (false? (get-in parsed [:response/cost :cost/estimated?])))))
+    (is (= 0.0 (get-in parsed [:response/cost :cost/usd])))
+    (is (false? (get-in parsed [:response/cost :cost/estimated?])))
+    (is (= {:upstream_inference_cost 0.0}
+           (get-in parsed [:response/cost :cost/breakdown :cost_details])))
+    (is (false? (get-in parsed
+                        [:response/cost :cost/breakdown :is_byok])))))
+
+(deftest test-openrouter-native-image-requires-model-before-http
+  (let [called? (atom false)
+        error (with-redefs [http/request
+                            (fn [_]
+                              (reset! called? true)
+                              {:status 200 :body {:data []}})]
+                (try
+                  (image/generate-image :openrouter {:image/prompt "icon"})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e)))]
+    (is (= :request/missing-model (:error/type (ex-data error))))
+    (is (re-find #"explicit :image/model" (ex-message error)))
+    (is (false? @called?))))
 
 (deftest test-openrouter-profile-has-image-transport
   (let [profile (provider/get-provider :openrouter)]

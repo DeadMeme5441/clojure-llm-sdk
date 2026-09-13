@@ -78,7 +78,8 @@ Library docs:
 - [Context caching](doc/context-caching.md) - provider-native cache markers and honest cache attribution.
 - [Model registry and pricing](doc/model-registry.md) - model metadata lookup, live refresh, overrides, and cost estimation.
 - [Architecture](doc/architecture.md) - provider SDK boundaries and extension points.
-- [LiteLLM parity](doc/litellm-parity-survey.md) - what this SDK borrows from LiteLLM and what it intentionally leaves out.
+- [Python LiteLLM design survey](doc/litellm-parity-survey.md) - library-level ideas borrowed from the Python project and intentionally excluded proxy concerns.
+- [Provider parity ledger](doc/litellm-provider-parity.md) - constructor-backed coverage against Python LiteLLM plus the scoped comparison with the separate `unravel-team/litellm-clj` library.
 
 Project docs:
 
@@ -88,19 +89,33 @@ Project docs:
 
 ## Supported Surface
 
-The SDK currently registers 36 provider profiles across seven canonical modalities.
+The public API exposes these canonical surfaces:
 
 | Modality | Public function | Providers |
 |---|---|---|
-| Chat | `sdk/complete` | OpenAI, Anthropic, Anthropic on Vertex, Gemini, Vertex Gemini, OpenRouter, Codex, DeepSeek, Kimi, Kimi Code, Mistral, Groq, Cerebras, Together, xAI, HuggingFace Router, Perplexity, Bedrock, Ollama, and aggregator aliases |
-| Embeddings | `sdk/embed` | OpenAI, Cohere, Voyage, Mistral, Together, Jina, Ollama |
+| Chat | `sdk/complete` | OpenAI, Anthropic, Anthropic on Vertex, Gemini, Vertex Gemini, Z.AI, OpenRouter, Codex, DeepSeek, Kimi, Kimi Code, Mistral, Groq, Cerebras, Together, xAI, HuggingFace Router, Perplexity, Bedrock, Ollama, and aggregator aliases |
+| Embeddings | `sdk/embed` | OpenAI, Gemini Native, OpenRouter, Azure OpenAI deployment profiles, Cohere, Voyage, Mistral, Together, Jina, Nebius, and Ollama |
 | Moderation | `sdk/moderate` | OpenAI |
 | Rerank | `sdk/rerank` | Cohere, Voyage, Jina |
-| Image generation | `sdk/generate-image` | OpenAI, Vertex Gemini image generation (`:vertex-imagen`), Bedrock image models |
+| Image generation | `sdk/generate-image` | OpenAI, OpenRouter, Vertex Gemini image generation (`:vertex-imagen`), and Bedrock image models |
 | Audio transcription | `sdk/transcribe` | OpenAI Whisper, Groq Whisper |
 | Text-to-speech | `sdk/speak` | OpenAI TTS, ElevenLabs |
 
-See [Providers](doc/providers.md) for the full provider matrix and credential list.
+See [Providers](doc/providers.md) for the full provider matrix and credential
+list. These rows describe implemented constructors, not a promise that every
+catalog model is currently served or enabled for an account or region.
+
+Offline model and pricing lookup merges bundled snapshots generated from
+[LiteLLM revision `b1a61f5`](https://github.com/BerriAI/litellm/blob/b1a61f510c90ce7e4533e89247c941fa201ada4f/model_prices_and_context_window.json)
+and [models.dev revision `a2a6739`](https://github.com/anomalyco/models.dev/tree/a2a673950c6e09af0dbcb4744116401fc1ee0048).
+Entries retain source provenance;
+missing usage or rates remain unknown rather than becoming zero or borrowing a
+rate from another modality. Live listing is available only for providers with a
+supported model-list endpoint and reports that endpoint's account-visible view.
+
+OpenAI, OpenRouter, and Bedrock image calls require an explicit
+`:image/model`; none of these providers selects a billable image model
+implicitly.
 
 ## Credentials
 
@@ -110,6 +125,7 @@ Credentials are read from environment variables. The SDK does not load `.env` fi
 export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-api03-...
 export GEMINI_API_KEY=AIza...
+export ZAI_API_KEY=...
 export KIMI_API_KEY=...
 ```
 
@@ -120,6 +136,7 @@ Some provider names are intentionally distinct:
 - `:kimi` uses Moonshot's public API and reads `MOONSHOT_API_KEY`.
 - `:kimi-code` uses Kimi Code's coding endpoint and reads `KIMI_API_KEY`.
 - `:vertex-gemini` uses Google Application Default Credentials or `GOOGLE_OAUTH_ACCESS_TOKEN`.
+- `:zai` uses Z.AI's OpenAI-compatible GLM endpoint and reads `ZAI_API_KEY`.
 - `:vertex-anthropic` serves Claude models through Google Vertex AI using the same GCP credentials as `:vertex-gemini`, not an `ANTHROPIC_API_KEY`.
 - `:codex-backend` reads OAuth data from the official Codex CLI auth file. HTTP/SSE remains the latency-oriented default; `:config {:transport :websocket}` enables persistent Responses WebSockets with incremental history reuse. `:openai` and API-key `:codex` are unchanged.
 
@@ -149,6 +166,17 @@ Embeddings:
   :openai
   {:embed/model "text-embedding-3-small"
    :embed/inputs ["clojure" "lisp" "java"]})
+```
+
+Native Gemini embeddings use the existing `:gemini-native` profile:
+
+```clojure
+(sdk/embed
+  :gemini-native
+  {:embed/model "gemini-embedding-001"
+   :embed/inputs ["clojure" "lisp" "java"]
+   :embed/dimensions 256
+   :embed/provider-options {:task-type :retrieval-document}})
 ```
 
 Rerank:
@@ -185,7 +213,7 @@ Custom OpenAI-compatible alias:
    :capabilities #{:chat :streaming :tools}})
 ```
 
-Provider implementations are split by provider family, such as `llm.sdk.providers.openai.chat`, `llm.sdk.providers.anthropic.chat`, and `llm.sdk.providers.openrouter.chat`. Older flat namespaces remain compatibility shims for existing code.
+Provider implementations are split by provider family, such as `llm.sdk.providers.openai.chat`, `llm.sdk.providers.anthropic.chat`, `llm.sdk.providers.gemini.embeddings`, `llm.sdk.providers.zai.chat`, and `llm.sdk.providers.openrouter.chat`. Older flat namespaces remain compatibility shims for existing code.
 
 ## Validation
 

@@ -88,6 +88,46 @@
               :cache_read_input_tokens 9999})]  ; should be ignored
       (is (= 300 (:usage/cached-input-tokens u))))))
 
+(deftest test-normalize-openai-usage-together-flat-cache
+  (testing "Together reports cached prompt tokens in the flat usage envelope"
+    (let [raw {:prompt_tokens 1000
+               :completion_tokens 200
+               :total_tokens 1200
+               :cached_tokens 240
+               :cost 0.004
+               :cost_details {:upstream_inference_cost 0.003}}
+          u (usage/normalize-openai-usage raw)]
+      (is (= 760 (:usage/input-tokens u)))
+      (is (= 240 (:usage/cached-input-tokens u)))
+      (is (not (contains? u :usage/cache-write-tokens)))
+      (is (= raw (:usage/provider-raw u))))))
+
+(deftest test-normalize-openai-usage-openrouter-nested-cache-write
+  (testing "OpenRouter reports cache writes inside prompt token details"
+    (let [u (usage/normalize-openai-usage
+             {:prompt_tokens 1000
+              :completion_tokens 200
+              :total_tokens 1200
+              :prompt_tokens_details {:cached_tokens 300
+                                      :cache_write_tokens 50}})]
+      (is (= 650 (:usage/input-tokens u)))
+      (is (= 300 (:usage/cached-input-tokens u)))
+      (is (= 50 (:usage/cache-write-tokens u))))))
+
+(deftest test-normalize-openai-usage-cache-locations-are-fallbacks
+  (testing "duplicate representations of one cache counter are not subtracted twice"
+    (let [u (usage/normalize-openai-usage
+             {:prompt_tokens 1000
+              :completion_tokens 200
+              :prompt_tokens_details {:cached_tokens 300
+                                      :cache_write_tokens 50}
+              :cached_tokens 300
+              :cache_read_input_tokens 300
+              :cache_creation_input_tokens 50})]
+      (is (= 650 (:usage/input-tokens u)))
+      (is (= 300 (:usage/cached-input-tokens u)))
+      (is (= 50 (:usage/cache-write-tokens u))))))
+
 (deftest test-normalize-openai-usage-image-generation-shape
   (let [u (usage/normalize-openai-usage
            {:input_tokens 11
@@ -101,3 +141,28 @@
     (is (= 1056 (:usage/output-tokens u)))
     (is (= 1056 (:usage/image-tokens u)))
     (is (= 1067 (:usage/total-tokens u)))))
+
+(deftest test-normalize-openai-usage-audio-chat-shape
+  (let [raw {:prompt_tokens 40
+             :prompt_tokens_details {:audio_tokens 15
+                                     :cached_tokens 10}
+             :completion_tokens 20
+             :completion_tokens_details {:audio_tokens 5}
+             :total_tokens 60
+             :service_tier "default"}
+        u (usage/normalize-openai-usage raw)]
+    (is (= 30 (:usage/input-tokens u)))
+    (is (= 20 (:usage/output-tokens u)))
+    (is (= 20 (:usage/audio-tokens u)))
+    (is (= raw (:usage/provider-raw u)))))
+
+(deftest test-normalize-openai-usage-preserves-explicit-modality-zero
+  (let [u (usage/normalize-openai-usage
+           {:input_tokens 7
+            :input_tokens_details {:image_tokens 0
+                                   :audio_tokens 0}
+            :output_tokens 3
+            :output_tokens_details {:image_tokens 0
+                                    :audio_tokens 0}})]
+    (is (= 0 (:usage/image-tokens u)))
+    (is (= 0 (:usage/audio-tokens u)))))

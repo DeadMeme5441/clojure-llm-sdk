@@ -18,15 +18,17 @@
             [llm.sdk.transport.speak :as st]))
 
 (defn- stamp-tts-cost [provider-id request parsed]
-  (let [model (or (:audio/model parsed) (:speak/model request))
-        characters (count (:speak/input request))
-        pricing (pricing/get-pricing provider-id model)
-        result (pricing/tts-cost {:characters characters} pricing)
-        cost (pricing/cost-result->canonical
-              result
-              pricing
-              {:characters characters})]
-    (assoc parsed :response/cost cost)))
+  (if (:response/cost parsed)
+    parsed
+    (let [model (or (:audio/model parsed) (:speak/model request))
+          characters (count (:speak/input request))
+          pricing (pricing/get-pricing provider-id model)
+          result (pricing/tts-cost {:characters characters} pricing)
+          cost (pricing/cost-result->canonical
+                result
+                pricing
+                {:characters characters})]
+      (assoc parsed :response/cost cost))))
 
 (defn- http-client [{:keys [http-client connect-timeout-ms timeout-ms]}]
   (or http-client
@@ -86,8 +88,11 @@
                                  e))))
         status (:status resp)]
     (if (>= status 400)
-      (let [body (try (json/parse-string (String. ^bytes (:body resp)) true)
-                      (catch Exception _ (:body resp)))
+      (let [body (try
+                   (json/parse-string
+                    (String. ^bytes (:body resp) "UTF-8")
+                    true)
+                   (catch Exception _ (:body resp)))
             err (st/parse-speak-error transport profile status body)]
         (throw (ex-info "Provider TTS API error"
                         {:error err

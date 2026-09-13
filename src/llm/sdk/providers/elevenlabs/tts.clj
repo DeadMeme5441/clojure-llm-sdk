@@ -15,13 +15,18 @@
     :mp3 "mp3_44100_128"
     :opus "opus_48000_96"
     :pcm "pcm_44100"
-    (:aac :flac :wav)
+    :wav "wav_44100"
+    (:aac :flac)
     (throw (ex-info (str "ElevenLabs does not support " (name format)
                          " output")
                     {:provider :elevenlabs
                      :format format
-                     :supported-formats #{:mp3 :opus :pcm}}))
+                     :supported-formats #{:mp3 :opus :pcm :wav}}))
     nil))
+
+(defn- path-segment [value]
+  (-> (URLEncoder/encode (str value) "UTF-8")
+      (str/replace "+" "%20")))
 
 (defn- query-string [pairs]
   (when (seq pairs)
@@ -35,13 +40,23 @@
 
 (defn build-request
   [profile request]
-  (let [voice (or (:speak/voice request)
-                  (throw (ex-info "ElevenLabs requires :speak/voice (voice id)"
-                                  {:provider :elevenlabs})))
+  (let [voice-ref (or (:speak/voice request)
+                      (throw (ex-info
+                              "ElevenLabs requires :speak/voice (voice id)"
+                              {:provider :elevenlabs})))
+        voice (if (map? voice-ref) (:id voice-ref) voice-ref)
+        _ (when-not (string? voice)
+            (throw (ex-info
+                    "ElevenLabs :speak/voice must be a voice id or {:id ...}"
+                    {:provider :elevenlabs
+                     :voice voice-ref})))
         model (or (:speak/model request) "eleven_multilingual_v2")
         input (:speak/input request)
         options (or (:speak/provider-options request) {})
-        output-fmt (or (:output_format options)
+        native-output-fmt (:output_format options)
+        output-fmt (or (when (keyword? native-output-fmt)
+                         (name native-output-fmt))
+                       native-output-fmt
                        (output-format (:speak/format request)))
         query (cond-> []
                 output-fmt (conj [:output_format output-fmt])
@@ -65,7 +80,7 @@
                    (contains? request :speak/speed))
                (assoc :voice_settings voice-settings))
         url (str (:profile/base-url profile)
-                 "/v1/text-to-speech/" voice
+                 "/v1/text-to-speech/" (path-segment voice)
                  (query-string query))]
     {:method :post
      :url url

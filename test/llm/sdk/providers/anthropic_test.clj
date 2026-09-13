@@ -2,6 +2,7 @@
   (:require [cheshire.core :as json]
             [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
+            [llm.sdk.stream :as stream]
             [llm.sdk.transport :as transport]
             [llm.sdk.providers.anthropic :as anthropic]
             [llm.sdk.providers.anthropic.vertex :as vertex]))
@@ -604,10 +605,29 @@
             :citation/url "https://clojure.org/"
             :citation/title "Clojure"
             :citation/snippet "Clojure is a dynamic language"
-            :citation/source-id "enc_1"}
+            :citation/source-id "enc_1"
+            :citation/provider-data
+            {:anthropic/citation
+             {:type "web_search_result_location"
+              :url "https://clojure.org/"
+              :title "Clojure"
+              :cited_text "Clojure is a dynamic language"
+              :encrypted_index "enc_1"}}}
            (second parts)))
-    (is (= :provider-state (:part/type (nth parts 2))))
-    (is (= :unknown/provider-native (:part/type (nth parts 3))))
+    (is (= {:part/type :citation
+            :citation/snippet "Clojure"
+            :citation/text-range [0 7]
+            :citation/source-id "0"
+            :citation/provider-data
+            {:anthropic/citation
+             {:type "char_location"
+              :document_index 0
+              :start_char_index 0
+              :end_char_index 7
+              :cited_text "Clojure"}}}
+           (nth parts 2)))
+    (is (= :provider-state (:part/type (nth parts 3))))
+    (is (= :unknown/provider-native (:part/type (nth parts 4))))
     (is (= 2 (count (get-in parsed [:response/provider-data :citations]))))
     (is (= (:stop_details raw)
            (get-in parsed [:response/provider-data :stop_details])))
@@ -654,7 +674,16 @@
                               :message "Overloaded"}})]
     (is (= :stream/citation (:event/type citation)))
     (is (= "https://example.com" (:citation/url citation)))
-    (is (= :stream/provider-state (:event/type opaque-citation)))
+    (is (= :stream/citation (:event/type opaque-citation)))
+    (is (= "0" (:citation/source-id opaque-citation)))
+    (is (= [1 1] (:citation/text-range opaque-citation)))
+    (is (= {:type "page_location"
+            :document_index 0
+            :start_page_number 1
+            :end_page_number 1
+            :cited_text "Evidence"}
+           (get-in opaque-citation
+                   [:citation/provider-data :anthropic/citation])))
     (is (= :stream/provider-state (:event/type server-start)))
     (is (= "server_tool_use"
            (get-in server-start
@@ -781,3 +810,244 @@
                  [{:message/role :user
                    :message/content [{:part/type :file
                                       :file/id "file_1"}]}]))))))
+
+(deftest test-developer-instructions-remain-top-level-native-and-vertex
+  (let [request {:request/model "claude-opus-5"
+                 :request/messages
+                 [{:message/role :system :message/content "System policy"}
+                  {:message/role :user :message/content "Question"}
+                  {:message/role :developer
+                   :message/content [{:part/type :text
+                                      :text "Developer policy"}]}
+                  {:message/role :assistant :message/content "Answer"}]
+                 :request/provider-options
+                 {:vertex {:project "project-1"
+                           :location "us"
+                           :access-token "token-1"}}}
+        builds [(anthropic/build-request-anthropic
+                 (provider/get-provider :anthropic)
+                 request)
+                (vertex/build-request-vertex-anthropic
+                 (provider/get-provider :vertex-anthropic)
+                 request)]]
+    (doseq [built builds]
+      (is (= ["System policy" "Developer policy"]
+             (mapv :text (get-in built [:body :system]))))
+      (is (= ["user" "assistant"]
+             (mapv :role (get-in built [:body :messages])))))))
+
+(deftest test-opus-5-and-always-on-thinking-contracts
+  (let [build (fn [model reasoning]
+                (anthropic/build-request-anthropic
+                 (provider/get-provider :anthropic)
+                 {:request/model model
+                  :request/messages [{:message/role :user
+                                      :message/content "Think"}]
+                  :request/temperature 0.3
+                  :request/top-p 0.8
+                  :request/reasoning reasoning}))]
+    (testing "Opus 5 is adaptive and drops sampling parameters"
+      (let [body (:body (build "claude-opus-5"
+                               {:enabled true :effort :xhigh}))]
+        (is (= {:type "adaptive" :display "summarized"}
+               (:thinking body)))
+        (is (= "xhigh" (get-in body [:output_config :effort])))
+        (is (nil? (:temperature body)))
+        (is (nil? (:top_p body)))))
+    (testing "Opus 5 disabled thinking is valid only through high effort"
+      (let [body (:body (build "claude-opus-5"
+                               {:enabled false :effort :low}))]
+        (is (= {:type "disabled"} (:thinking body)))
+        (is (= "low" (get-in body [:output_config :effort]))))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"cannot disable thinking"
+           (build "claude-opus-5" {:enabled false :effort :max}))))
+    (testing "5.1 suffixes still match the always-on families"
+      (doseq [model ["claude-fable-5-1" "claude-mythos-5-1"]]
+        (is (= "adaptive"
+               (get-in (build model {:enabled true :effort :high})
+                       [:body :thinking :type])))
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"always-on"
+             (build model {:enabled false})))))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"effort :none"
+         (build "claude-opus-5" {:enabled true :effort :none})))))
+
+(deftest test-anthropic-rejects-incompatible-tools-and-content
+  (let [profile (provider/get-provider :anthropic)
+        base {:request/model "claude-opus-5"
+              :request/messages [{:message/role :user
+                                  :message/content "Use a tool"}]}]
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"does not support canonical :custom tools"
+         (anthropic/build-request-anthropic
+          profile
+          (assoc base
+                 :request/tools
+                 [{:type :custom
+                   :custom {:name "shell"
+                            :format {:type :text}}}]))))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"malformed JSON"
+         (anthropic/build-request-anthropic
+          profile
+          (assoc base
+                 :request/messages
+                 [{:message/role :assistant
+                   :message/tool-calls
+                   [{:part/type :tool-call
+                     :tool-call/id "toolu_bad"
+                     :tool-call/name "lookup"
+                     :tool-call/arguments "{not-json"}]}]))))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"does not support canonical content part :safety"
+         (anthropic/build-request-anthropic
+          profile
+          (assoc base
+                 :request/messages
+                 [{:message/role :assistant
+                   :message/content
+                   [{:part/type :safety
+                     :safety/category "policy"
+                     :safety/severity "high"
+                     :safety/blocked true}]}]))))))
+
+(deftest test-tool-calls-replay-once-with-native-metadata
+  (let [raw-block {:type "tool_use"
+                   :id "toolu_1"
+                   :name "lookup"
+                   :input {:query "Clojure"}
+                   :caller {:type "direct"}}
+        parsed (anthropic/parse-response-anthropic
+                {}
+                {:id "msg_tool"
+                 :model "claude-opus-5"
+                 :content [raw-block]
+                 :stop_reason "tool_use"
+                 :usage {:input_tokens 1 :output_tokens 1}})
+        tool-call (first (:response/tool-calls parsed))
+        built (anthropic/build-request-anthropic
+               (provider/get-provider :anthropic)
+               {:request/model "claude-opus-5"
+                :request/messages
+                [{:message/role :assistant
+                  :message/content [tool-call]
+                  :message/tool-calls [tool-call]}]})]
+    (is (= [raw-block]
+           (get-in built [:body :messages 0 :content])))))
+
+(deftest test-streamed-thinking-usage-and-replay-native-and-vertex
+  (let [wire-events
+        [{:type "message_start"
+          :message {:id "msg_stream"
+                    :model "claude-opus-5"
+                    :content []
+                    :usage {:input_tokens 25
+                            :cache_read_input_tokens 0
+                            :cache_creation_input_tokens 0}}}
+         {:type "content_block_start"
+          :index 0
+          :content_block {:type "thinking" :thinking ""}}
+         {:type "content_block_delta"
+          :index 0
+          :delta {:type "thinking_delta" :thinking "First"}}
+         {:type "content_block_delta"
+          :index 0
+          :delta {:type "signature_delta" :signature "sig_first"}}
+         {:type "content_block_stop" :index 0}
+         {:type "content_block_start"
+          :index 2
+          :content_block {:type "thinking" :thinking ""}}
+         {:type "content_block_delta"
+          :index 2
+          :delta {:type "signature_delta" :signature "sig_omitted"}}
+         {:type "content_block_stop" :index 2}
+         {:type "content_block_delta"
+          :index 3
+          :delta {:type "text_delta" :text "Done"}}
+         {:type "message_delta"
+          :delta {:stop_reason "end_turn"}
+          :usage {:output_tokens 15}}
+         {:type "message_stop"}]
+        line #(str "data: " (json/generate-string %))
+        cases
+        [{:provider :anthropic
+          :parse #(anthropic/parse-stream-event-anthropic {} (line %))
+          :build #(anthropic/build-request-anthropic
+                   (provider/get-provider :anthropic)
+                   %)}
+         {:provider :vertex-anthropic
+          :parse #(vertex/parse-stream-event-vertex-anthropic
+                   (provider/get-provider :vertex-anthropic)
+                   (line %))
+          :build #(vertex/build-request-vertex-anthropic
+                   (provider/get-provider :vertex-anthropic)
+                   %)}]]
+    (doseq [{:keys [provider parse build]} cases]
+      (let [events (->> wire-events
+                        (map parse)
+                        (mapcat #(cond
+                                   (nil? %) []
+                                   (vector? %) %
+                                   :else [%]))
+                        vec)
+            message-delta-usage
+            (:usage
+             (first
+              (filter #(and (= :stream/usage (:event/type %))
+                            (= {:output_tokens 15}
+                               (:usage/provider-raw (:usage %))))
+                      events)))
+            response (stream/events->response
+                      events provider "claude-opus-5")
+            reasoning (filterv #(= :reasoning (:part/type %))
+                               (:response/parts response))
+            request (cond-> {:request/model "claude-opus-5"
+                             :request/messages
+                             [{:message/role :assistant
+                               :message/content (:response/parts response)}]}
+                      (= provider :vertex-anthropic)
+                      (assoc :request/provider-options
+                             {:vertex {:project "project-1"
+                                       :location "us"
+                                       :access-token "token-1"}}))
+            replay (:body (build request))]
+        (is (= #:usage{:output-tokens 15
+                       :provider-raw {:output_tokens 15}}
+               message-delta-usage))
+        (is (= 25 (get-in response
+                          [:response/usage :usage/input-tokens])))
+        (is (= 15 (get-in response
+                          [:response/usage :usage/output-tokens])))
+        (is (= 40 (get-in response
+                          [:response/usage :usage/total-tokens])))
+        (is (= 0 (get-in response
+                         [:response/usage
+                          :usage/cached-input-tokens])))
+        (is (= 0 (get-in response
+                         [:response/usage
+                          :usage/cache-write-tokens])))
+        (is (= [{:part/type :reasoning
+                 :reasoning/text "First"
+                 :reasoning/encrypted false
+                 :reasoning/signature "sig_first"}
+                {:part/type :reasoning
+                 :reasoning/text ""
+                 :reasoning/encrypted false
+                 :reasoning/signature "sig_omitted"}]
+               reasoning))
+        (is (= [{:type "thinking"
+                 :thinking "First"
+                 :signature "sig_first"}
+                {:type "thinking"
+                 :thinking ""
+                 :signature "sig_omitted"}
+                {:type "text" :text "Done"}]
+               (get-in replay [:messages 0 :content])))))))

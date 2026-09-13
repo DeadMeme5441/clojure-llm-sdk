@@ -219,8 +219,8 @@
 
 (def Usage
   [:map {:closed true}
-   [:usage/input-tokens int?]
-   [:usage/output-tokens int?]
+   [:usage/input-tokens {:optional true} int?]
+   [:usage/output-tokens {:optional true} int?]
    [:usage/reasoning-tokens {:optional true} int?]
    [:usage/cached-input-tokens {:optional true} int?]
    [:usage/cache-write-tokens {:optional true} int?]
@@ -230,6 +230,27 @@
    [:usage/file-tokens {:optional true} int?]
    [:usage/citation-tokens {:optional true} int?]
    [:usage/search-queries {:optional true} int?]
+   [:usage/search-units {:optional true} int?]
+   [:usage/total-tokens {:optional true} int?]
+   [:usage/request-count {:optional true} int?]
+   [:usage/provider-raw {:optional true} map?]])
+
+(def StreamUsage
+  "Cumulative usage updates carried by stream events. Providers may report
+   counters in separate events, so every field is optional until accumulation."
+  [:map {:closed true}
+   [:usage/input-tokens {:optional true} int?]
+   [:usage/output-tokens {:optional true} int?]
+   [:usage/reasoning-tokens {:optional true} int?]
+   [:usage/cached-input-tokens {:optional true} int?]
+   [:usage/cache-write-tokens {:optional true} int?]
+   [:usage/image-tokens {:optional true} int?]
+   [:usage/audio-tokens {:optional true} int?]
+   [:usage/video-tokens {:optional true} int?]
+   [:usage/file-tokens {:optional true} int?]
+   [:usage/citation-tokens {:optional true} int?]
+   [:usage/search-queries {:optional true} int?]
+   [:usage/search-units {:optional true} int?]
    [:usage/total-tokens {:optional true} int?]
    [:usage/request-count {:optional true} int?]
    [:usage/provider-raw {:optional true} map?]])
@@ -381,6 +402,8 @@
    [:transcribe/file any?]
    [:transcribe/filename {:optional true} string?]
    [:transcribe/language {:optional true} string?]
+   [:transcribe/languages {:optional true} [:vector string?]]
+   [:transcribe/keywords {:optional true} [:vector string?]]
    [:transcribe/prompt {:optional true} string?]
    [:transcribe/temperature {:optional true} number?]
    [:transcribe/response-format {:optional true} [:enum :json :text :srt :verbose_json :vtt :diarized_json]]
@@ -399,6 +422,14 @@
    [:end {:optional true} any?]
    [:text {:optional true} any?]])
 
+(def TranscriptionDurationUsage
+  [:map {:closed true}
+   [:usage/duration-seconds number?]
+   [:usage/provider-raw {:optional true} map?]])
+
+(def TranscriptionUsage
+  [:or Usage TranscriptionDurationUsage])
+
 (def TranscribeResponse
   [:map {:closed true}
    [:transcription/text string?]
@@ -408,7 +439,7 @@
    [:transcription/duration-seconds {:optional true} number?]
    [:transcription/segments {:optional true} [:vector map?]]
    [:transcription/words {:optional true} [:vector map?]]
-   [:response/usage {:optional true} Usage]
+   [:response/usage {:optional true} TranscriptionUsage]
    [:response/cost {:optional true} Cost]
    [:response/raw {:optional true} any?]])
 
@@ -479,17 +510,41 @@
   [:orn
    [:start [:map [:event/type [:= :stream/start]] [:event/request-id {:optional true} string?]]]
    [:content-delta [:map [:event/type [:= :stream/content-delta]] [:event/delta string?]]]
-   [:reasoning-delta [:map [:event/type [:= :stream/reasoning-delta]] [:event/delta string?] [:event/encrypted {:optional true} boolean?] [:reasoning/signature {:optional true} string?]]]
-   [:tool-call-start [:map [:event/type [:= :stream/tool-call-start]] [:tool-call/index int?] [:tool-call/id string?] [:tool-call/name string?]]]
+   [:reasoning-delta
+    [:map
+     [:event/type [:= :stream/reasoning-delta]]
+     [:event/delta {:optional true} string?]
+     [:event/encrypted {:optional true} boolean?]
+     [:event/index {:optional true} int?]
+     [:reasoning/signature {:optional true} string?]]]
+   [:tool-call-start
+    [:map
+     [:event/type [:= :stream/tool-call-start]]
+     [:tool-call/index int?]
+     [:tool-call/id string?]
+     [:tool-call/name string?]
+     [:tool-call/provider-data {:optional true} map?]]]
    [:tool-call-delta [:map [:event/type [:= :stream/tool-call-delta]] [:tool-call/index int?] [:tool-call/arguments-delta string?]]]
    [:tool-call-end [:map [:event/type [:= :stream/tool-call-end]] [:tool-call/index int?]]]
-   [:usage [:map [:event/type [:= :stream/usage]] [:usage Usage] [:cost {:optional true} Cost]]]
+   [:usage [:map [:event/type [:= :stream/usage]] [:usage StreamUsage] [:cost {:optional true} Cost]]]
    [:provider-state [:map [:event/type [:= :stream/provider-state]] [:provider-state/provider keyword?] [:provider-state/data map?]]]
-   [:citation [:map
-               [:event/type [:= :stream/citation]]
-               [:citation/url string?]
-               [:citation/title {:optional true} string?]
-               [:citation/snippet {:optional true} string?]]]
+   [:citation
+    [:and
+     [:map
+      [:event/type [:= :stream/citation]]
+      [:citation/url {:optional true} string?]
+      [:citation/title {:optional true} string?]
+      [:citation/snippet {:optional true} string?]
+      [:citation/text-range {:optional true} [:tuple int? int?]]
+      [:citation/source-id {:optional true} string?]
+      [:citation/date {:optional true} string?]
+      [:citation/last-updated {:optional true} string?]
+      [:citation/source {:optional true} [:or keyword? string?]]
+      [:citation/provider-data {:optional true} map?]]
+     [:fn (fn [citation]
+            (or (:citation/url citation)
+                (:citation/source-id citation)
+                (:citation/provider-data citation)))]]]
    [:error [:map [:event/type [:= :stream/error]] [:error/error any?]]]
    [:end [:map [:event/type [:= :stream/end]] [:event/finish-reason {:optional true} [:enum :stop :length :tool-calls :content-filter :incomplete :unknown]]]]])
 
@@ -538,6 +593,7 @@
 (def validate-request (m/validator Request))
 (def validate-response (m/validator Response))
 (def validate-usage (m/validator Usage))
+(def validate-stream-usage (m/validator StreamUsage))
 (def validate-part (m/validator Part))
 (def validate-message (m/validator Message))
 (def validate-stream-event (m/validator StreamEvent))

@@ -30,21 +30,56 @@
 ;; Message conversion
 ;; ---------------------------------------------------------------------------
 
+(defn- instruction-role? [role]
+  (contains? #{:system :developer} role))
+
+(defn- instruction->system-block [message]
+  (let [content (:message/content message)]
+    (when (and (sequential? content)
+               (some #(not= :text (:part/type %)) content))
+      (throw (ex-info
+              "Anthropic system and developer instructions support text content only."
+              {:error/type :anthropic/unsupported-instruction-content
+               :message/role (:message/role message)})))
+    (let [text (t/content->string content)]
+      (when-not (string? text)
+        (throw (ex-info
+                "Anthropic system and developer instructions require text content."
+                {:error/type :anthropic/unsupported-instruction-content
+                 :message/role (:message/role message)})))
+      {:type "text" :text text})))
+
 (defn- extract-system [messages]
   (->> messages
        (keep (fn [message]
-               (when (= (:message/role message) :system)
-                 {:type "text"
-                  :text (t/content->string (:message/content message))})))
+               (when (instruction-role? (:message/role message))
+                 (instruction->system-block message))))
        vec
        not-empty))
 
-(defn- parse-json-object [s]
-  (if (seq s)
+(defn- parse-tool-call-input [tc]
+  (let [arguments (:tool-call/arguments tc)
+        error-data {:error/type :anthropic/invalid-tool-arguments
+                    :tool-call/id (:tool-call/id tc)
+                    :tool-call/name (:tool-call/name tc)}]
+    (when (str/blank? arguments)
+      (throw (ex-info
+              "Anthropic tool call arguments must be a JSON object."
+              error-data)))
     (try
-      (json/parse-string s true)
-      (catch Exception _ {}))
-    {}))
+      (let [parsed (json/parse-string arguments true)]
+        (when-not (map? parsed)
+          (throw (ex-info
+                  "Anthropic tool call arguments must decode to a JSON object."
+                  error-data)))
+        parsed)
+      (catch clojure.lang.ExceptionInfo e
+        (throw e))
+      (catch Exception e
+        (throw (ex-info
+                "Anthropic tool call arguments contain malformed JSON."
+                error-data
+                e))))))
 
 (defn- image-source [part]
   (let [url (:image/url part)
@@ -63,13 +98,21 @@
       {:type "url" :url url}
 
       :else
-      {:type "base64" :media_type mime :data ""})))
+      (throw (ex-info "Anthropic image content requires data or a URL."
+                      {:error/type :anthropic/missing-image-source})))))
 
 (defn- tool-call->anthropic-block [tc]
-  {:type "tool_use"
-   :id (:tool-call/id tc)
-   :name (:tool-call/name tc)
-   :input (parse-json-object (:tool-call/arguments tc))})
+  (let [input (parse-tool-call-input tc)
+        native (get-in tc
+                       [:tool-call/provider-data :anthropic/content-block])
+        base (if (and (map? native) (= "tool_use" (:type native)))
+               native
+               {:type "tool_use"})]
+    (assoc base
+           :type "tool_use"
+           :id (:tool-call/id tc)
+           :name (:tool-call/name tc)
+           :input input)))
 
 (defn- file-source [part]
   (cond
@@ -112,6 +155,24 @@
                     {:error/type :anthropic/invalid-thinking-signature})))
   block)
 
+(defn- unsupported-content! [part]
+  (throw (ex-info
+          (str "Anthropic does not support canonical content part "
+               (pr-str (:part/type part)) ".")
+          {:error/type :anthropic/unsupported-content-part
+           :part/type (:part/type part)})))
+
+(defn- text-content! [content error-type description]
+  (when (and (sequential? content)
+             (some #(not= :text (:part/type %)) content))
+    (throw (ex-info description
+                    {:error/type error-type})))
+  (let [text (t/content->string content)]
+    (when-not (string? text)
+      (throw (ex-info description
+                      {:error/type error-type})))
+    text))
+
 (defn- content->anthropic-blocks [content]
   (cond
     (nil? content)
@@ -138,37 +199,60 @@
                :provider-state
                (if (and (contains? #{:anthropic :vertex-anthropic}
                                    (:provider-state/provider part))
-                        (map? (get-in part [:provider-state/data :content-block])))
+                        (map? (get-in part
+                                      [:provider-state/data :content-block])))
                  (get-in part [:provider-state/data :content-block])
-                 {:type "text" :text (str part)})
+                 (unsupported-content! part))
                :unknown/provider-native
                (if (and (contains? #{:anthropic :vertex-anthropic}
                                    (:unknown/provider part))
                         (map? (:unknown/data part)))
                  (:unknown/data part)
-                 {:type "text" :text (str part)})
-               {:type "text" :text (str part)})))
+                 (unsupported-content! part))
+               (unsupported-content! part))))
           content)
 
-    :else [{:type "text" :text (str content)}]))
+    :else
+    (throw (ex-info "Anthropic message content must be text or content parts."
+                    {:error/type :anthropic/unsupported-message-content
+                     :content/type (type content)}))))
+
+(defn- same-tool-use? [left right]
+  (and (= "tool_use" (:type left))
+       (= "tool_use" (:type right))
+       (= (:id left) (:id right))
+       (= (:name left) (:name right))
+       (= (:input left) (:input right))))
+
+(defn- append-new-tool-calls [blocks tool-calls]
+  (reduce (fn [result tc]
+            (let [block (tool-call->anthropic-block tc)]
+              (if (some #(same-tool-use? % block) result)
+                result
+                (conj result block))))
+          (vec blocks)
+          tool-calls))
 
 (defn- message->anthropic [msg]
   (let [role (case (:message/role msg)
                (:user :tool) "user"
                :assistant "assistant"
-               :system "system"
                "user")]
     (cond
       (= (:message/role msg) :tool)
       {:role "user"
        :content [{:type "tool_result"
                   :tool_use_id (or (:message/tool-call-id msg) "tool_0")
-                  :content (t/content->string (:message/content msg))}]}
+                  :content (text-content!
+                            (:message/content msg)
+                            :anthropic/unsupported-tool-result-content
+                            "Anthropic tool result messages require text content.")}]}
 
       (seq (:message/tool-calls msg))
       {:role "assistant"
-       :content (into (content->anthropic-blocks (:message/content msg))
-                      (map tool-call->anthropic-block (:message/tool-calls msg)))}
+       :content (append-new-tool-calls
+                 (content->anthropic-blocks (:message/content msg))
+                 (:message/tool-calls msg))}
 
       :else
       {:role role
@@ -176,20 +260,32 @@
 
 (defn- messages->anthropic [messages]
   (->> messages
-       (remove #(= (:message/role %) :system))
+       (remove #(instruction-role? (:message/role %)))
        (mapv message->anthropic)))
 
 ;; ---------------------------------------------------------------------------
 ;; Tool conversion
 ;; ---------------------------------------------------------------------------
 
+(defn- unsupported-tool! [tool]
+  (throw (ex-info
+          (str "Anthropic does not support canonical "
+               (pr-str (:type tool)) " tools.")
+          {:error/type :anthropic/unsupported-tool
+           :tool/type (:type tool)})))
+
 (defn- tool->anthropic [tool]
-  (let [fn-data (:function tool)]
-    (cond-> {:name (:name fn-data)
-             :description (or (:description fn-data) "")
-             :input_schema (or (:parameters fn-data) {:type "object" :properties {}})}
-      (contains? fn-data :strict)
-      (assoc :strict (boolean (:strict fn-data))))))
+  (case (:type tool)
+    :function
+    (let [fn-data (:function tool)]
+      (cond-> {:name (:name fn-data)
+               :description (or (:description fn-data) "")
+               :input_schema (or (:parameters fn-data)
+                                 {:type "object" :properties {}})}
+        (contains? fn-data :strict)
+        (assoc :strict (boolean (:strict fn-data)))))
+
+    (unsupported-tool! tool)))
 
 (defn- tool-choice->anthropic [tc]
   (case tc
@@ -197,7 +293,9 @@
     :required {:type "any"}
     :none nil
     (when (map? tc)
-      {:type "tool" :name (get-in tc [:function :name])})))
+      (case (:type tc)
+        :function {:type "tool" :name (get-in tc [:function :name])}
+        (unsupported-tool! tc)))))
 
 ;; ---------------------------------------------------------------------------
 ;; OAuth token detection
@@ -312,55 +410,103 @@
 ;; Thinking / reasoning config
 ;; ---------------------------------------------------------------------------
 
-(defn- adaptive-thinking-model? [model]
+(defn- model-matches? [model fragments]
   (let [m (str/lower-case (or model ""))]
-    (some #(str/includes? m %)
-          ["claude-opus-4-6" "claude-sonnet-4-6"
-           "claude-opus-4-7" "claude-opus-4-8"
-           "claude-sonnet-5" "claude-fable-5"
-           "claude-mythos-preview" "claude-mythos-5"])))
+    (some #(str/includes? m %) fragments)))
+
+(defn- adaptive-thinking-model? [model]
+  (model-matches?
+   model
+   ["claude-opus-4-6" "claude-sonnet-4-6"
+    "claude-opus-4-7" "claude-opus-4-8"
+    "claude-opus-5" "claude-sonnet-5" "claude-fable-5"
+    "claude-mythos-preview" "claude-mythos-5"]))
+
+(defn- always-on-thinking-model? [model]
+  (model-matches?
+   model
+   ["claude-fable-5" "claude-mythos-preview" "claude-mythos-5"]))
+
+(defn- explicitly-disableable-thinking-model? [model]
+  (model-matches? model ["claude-opus-5" "claude-sonnet-5"]))
+
+(defn- opus-5-model? [model]
+  (model-matches? model ["claude-opus-5"]))
+
+(defn- effort-supported-model? [model]
+  (or (adaptive-thinking-model? model)
+      (model-matches? model ["claude-opus-4-5"])))
 
 (defn- xhigh-supported? [model]
-  (let [m (str/lower-case (or model ""))]
-    (some #(str/includes? m %)
-          ["claude-opus-4-7" "claude-opus-4-8"
-           "claude-sonnet-5" "claude-fable-5"
-           "claude-mythos-5"])))
+  (model-matches?
+   model
+   ["claude-opus-4-7" "claude-opus-4-8" "claude-opus-5"
+    "claude-sonnet-5" "claude-fable-5" "claude-mythos-5"]))
 
 (defn- no-sampling-params? [model]
-  (let [m (str/lower-case (or model ""))]
-    (some #(str/includes? m %)
-          ["claude-sonnet-4-6" "claude-opus-4-7" "claude-opus-4-8"
-           "claude-sonnet-5" "claude-fable-5"
-           "claude-mythos-preview" "claude-mythos-5"])))
+  (model-matches?
+   model
+   ["claude-sonnet-4-6" "claude-opus-4-7" "claude-opus-4-8"
+    "claude-opus-5" "claude-sonnet-5" "claude-fable-5"
+    "claude-mythos-preview" "claude-mythos-5"]))
+
+(defn- effort-value [model requested]
+  (when (= requested :none)
+    (throw (ex-info "Anthropic does not support reasoning effort :none."
+                    {:error/type :anthropic/unsupported-reasoning-effort
+                     :reasoning/effort requested})))
+  (let [effort (case requested
+                 :minimal "low"
+                 (name requested))]
+    (if (and (= effort "xhigh") (not (xhigh-supported? model)))
+      "max"
+      effort)))
 
 (defn- build-thinking-config [model reasoning]
-  (cond
-    (and reasoning
-         (false? (:enabled reasoning))
-         (str/includes? model "claude-sonnet-5"))
-    {:thinking {:type "disabled"}}
+  (let [enabled? (get reasoning :enabled true)
+        requested-effort (:effort reasoning)]
+    (cond
+      (nil? reasoning)
+      nil
 
-    (and reasoning (:enabled reasoning true))
-    (if (adaptive-thinking-model? model)
-      (let [requested (get reasoning :effort :medium)
-            effort (case requested
-                     :minimal "low"
-                     (name requested))
-            effort (if (and (= effort "xhigh") (not (xhigh-supported? model)))
-                     "max"
-                     effort)]
+      (false? enabled?)
+      (do
+        (when (always-on-thinking-model? model)
+          (throw (ex-info
+                  "Anthropic cannot disable thinking for this always-on model."
+                  {:error/type :anthropic/unsupported-thinking-configuration
+                   :request/model model})))
+        (let [requested-value (when requested-effort
+                                (effort-value model requested-effort))
+              effort (when (effort-supported-model? model)
+                       requested-value)]
+          (when (and (opus-5-model? model)
+                     (contains? #{"xhigh" "max"} effort))
+            (throw (ex-info
+                    "Anthropic Opus 5 cannot disable thinking at xhigh or max effort."
+                    {:error/type :anthropic/unsupported-thinking-configuration
+                     :request/model model
+                     :reasoning/effort requested-effort})))
+          (cond-> {}
+            (explicitly-disableable-thinking-model? model)
+            (assoc :thinking {:type "disabled"})
+            effort
+            (assoc :output_config {:effort effort}))))
+
+      (adaptive-thinking-model? model)
+      (let [effort (effort-value model
+                                 (get reasoning :effort :medium))]
         {:thinking {:type "adaptive" :display "summarized"}
          :output_config {:effort effort}})
+
+      :else
       {:thinking {:type "enabled"
                   :budget_tokens (or (:budget reasoning)
                                      (get {:xhigh 32000 :high 16000
                                            :medium 8000 :low 4000
                                            :minimal 1024}
                                           (get reasoning :effort :medium)
-                                          8000))}})
-
-    :else nil))
+                                          8000))}})))
 
 (defn- build-output-format [response-format]
   (when-let [schema (case (:type response-format)
@@ -501,18 +647,50 @@
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
 
+(defn- citation-text-range [citation]
+  (case (:type citation)
+    "char_location"
+    (when (and (some? (:start_char_index citation))
+               (some? (:end_char_index citation)))
+      [(:start_char_index citation) (:end_char_index citation)])
+
+    "page_location"
+    (when (and (some? (:start_page_number citation))
+               (some? (:end_page_number citation)))
+      [(:start_page_number citation) (:end_page_number citation)])
+
+    ("content_block_location" "search_result_location")
+    (when (and (some? (:start_block_index citation))
+               (some? (:end_block_index citation)))
+      [(:start_block_index citation) (:end_block_index citation)])
+
+    nil))
+
+(defn- citation-source-id [citation]
+  (case (:type citation)
+    "web_search_result_location" (:encrypted_index citation)
+    "search_result_location" (some-> (:search_result_index citation) str)
+    ("char_location" "page_location" "content_block_location")
+    (some-> (:document_index citation) str)
+    nil))
+
 (defn- citation->canonical [citation]
   (let [url (case (:type citation)
               "web_search_result_location" (:url citation)
               "search_result_location" (:source citation)
-              nil)]
-    (when (seq url)
-      (cond-> {:part/type :citation
-               :citation/url url}
-        (:title citation) (assoc :citation/title (:title citation))
-        (:cited_text citation) (assoc :citation/snippet (:cited_text citation))
-        (:encrypted_index citation) (assoc :citation/source-id
-                                           (:encrypted_index citation))))))
+              nil)
+        source-id (citation-source-id citation)
+        text-range (citation-text-range citation)
+        title (or (:title citation) (:document_title citation))
+        provider-data {:anthropic/citation citation}]
+    (cond-> {:part/type :citation
+             :citation/provider-data provider-data}
+      (seq url) (assoc :citation/url url)
+      title (assoc :citation/title title)
+      (:cited_text citation) (assoc :citation/snippet
+                                    (:cited_text citation))
+      text-range (assoc :citation/text-range text-range)
+      source-id (assoc :citation/source-id source-id))))
 
 (defn- native-provider-state-part [block]
   {:part/type :provider-state
@@ -523,12 +701,12 @@
   (case (:type block)
     "text"
     (into [{:part/type :text :text (:text block)}]
-          (keep citation->canonical)
+          (map citation->canonical)
           (:citations block))
 
     "thinking"
     [(cond-> {:part/type :reasoning
-              :reasoning/text (:thinking block)}
+              :reasoning/text (or (:thinking block) "")}
        (:signature block)
        (assoc :reasoning/signature (:signature block)))]
 
@@ -540,7 +718,9 @@
       :tool-call/id (:id block)
       :tool-call/name (:name block)
       :tool-call/arguments (json/generate-string (:input block))
-      :tool-call/provider-data {:anthropic/input (:input block)}}]
+      :tool-call/provider-data
+      {:anthropic/input (:input block)
+       :anthropic/content-block block}}]
 
     [{:part/type :unknown/provider-native
       :unknown/provider :anthropic
@@ -553,18 +733,16 @@
       1 (first events)
       events)))
 
-(defn- citation->stream-event [index citation]
-  (if-let [part (citation->canonical citation)]
-    (stream/citation-event (:citation/url part)
-                           :title (:citation/title part)
-                           :snippet (:citation/snippet part))
-    (stream/provider-state-event
-     :anthropic
-     {:content-blocks
-      {index {:citations
-              {(or (:encrypted_index citation)
-                   (str (hash citation)))
-               citation}}}})))
+(defn- citation->stream-event [_index citation]
+  (let [part (citation->canonical citation)]
+    (stream/citation-event
+     (:citation/url part)
+     :title (:citation/title part)
+     :snippet (:citation/snippet part)
+     :text-range (:citation/text-range part)
+     :source-id (:citation/source-id part)
+     :source (:citation/source part)
+     :provider-data (:citation/provider-data part))))
 
 (defn parse-response-anthropic
   [_profile raw]
@@ -602,38 +780,69 @@
 (defn- parse-sse-line [line]
   (sse/parse-json-data line))
 
+(defn- normalize-stream-usage [usage-raw]
+  (let [output-details (:output_tokens_details usage-raw)
+        server-tool-use (:server_tool_use usage-raw)]
+    (cond-> {:usage/provider-raw usage-raw}
+      (contains? usage-raw :input_tokens)
+      (assoc :usage/input-tokens (usage/->int (:input_tokens usage-raw)))
+      (contains? usage-raw :output_tokens)
+      (assoc :usage/output-tokens (usage/->int (:output_tokens usage-raw)))
+      (contains? usage-raw :cache_read_input_tokens)
+      (assoc :usage/cached-input-tokens
+             (usage/->int (:cache_read_input_tokens usage-raw)))
+      (contains? usage-raw :cache_creation_input_tokens)
+      (assoc :usage/cache-write-tokens
+             (usage/->int (:cache_creation_input_tokens usage-raw)))
+      (and (map? output-details)
+           (contains? output-details :thinking_tokens))
+      (assoc :usage/reasoning-tokens
+             (usage/->int (:thinking_tokens output-details)))
+      (and (map? server-tool-use)
+           (contains? server-tool-use :web_search_requests))
+      (assoc :usage/search-queries
+             (usage/->int (:web_search_requests server-tool-use))))))
+
 (defn parse-stream-event-anthropic
   [_profile line]
   (when-let [data (parse-sse-line line)]
     (let [t (:type data)]
       (cond
         (= t "content_block_delta")
-        (let [delta (:delta data)]
+        (let [delta (:delta data)
+              idx (:index data 0)]
           (case (:type delta)
             "text_delta" (stream/content-delta (:text delta))
-            "thinking_delta" (stream/reasoning-delta (:thinking delta))
+            "thinking_delta" (stream/reasoning-delta
+                              (:thinking delta)
+                              :index idx)
             "input_json_delta" (stream/tool-call-delta
-                                (:index data 0)
+                                idx
                                 (or (:partial_json delta) ""))
-            "signature_delta" (stream/provider-state-event
-                               :anthropic
-                               {:content-blocks
-                                {(:index data 0) {:signature (:signature delta)}}})
+            "signature_delta" (stream/reasoning-delta
+                               nil
+                               :index idx
+                               :signature (:signature delta))
             "citations_delta" (citation->stream-event
-                               (:index data 0)
+                               idx
                                (:citation delta))
             "compaction_delta" (stream/provider-state-event
                                 :anthropic
                                 {:content-blocks
-                                 {(:index data 0)
-                                  {:compaction delta}}})
+                                 {idx {:compaction delta}}})
             nil))
 
         (= t "content_block_start")
         (let [block (:content_block data)
               idx (:index data 0)]
           (if (= (:type block) "tool_use")
-            (stream/tool-call-start idx (:id block) (:name block))
+            (stream/tool-call-start
+             idx
+             (:id block)
+             (:name block)
+             :provider-data
+             {:anthropic/input (:input block)
+              :anthropic/content-block block})
             (stream/provider-state-event
              :anthropic
              {:content-blocks {idx {:block block}}})))
@@ -648,17 +857,18 @@
                            {:message (dissoc message :content :usage)})
               usage-ev (when-let [usage-raw (:usage message)]
                          (stream/usage-event
-                          (usage/normalize-usage :anthropic usage-raw)))]
+                          (normalize-stream-usage usage-raw)))]
           (one-or-many [provider-ev usage-ev]))
 
         (= t "message_stop")
         (stream/end-event)
 
         (= t "message_delta")
-        (let [usage-ev (when-let [usage-raw (get-in data [:usage])]
+        (let [usage-ev (when-let [usage-raw (:usage data)]
                          (stream/usage-event
-                          (usage/normalize-usage :anthropic usage-raw)))
-              finish-ev (when-let [stop-reason (get-in data [:delta :stop_reason])]
+                          (normalize-stream-usage usage-raw)))
+              finish-ev (when-let [stop-reason
+                                   (get-in data [:delta :stop_reason])]
                           (stream/end-event
                            :finish-reason (get stop-reason-map
                                                stop-reason

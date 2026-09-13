@@ -1,39 +1,75 @@
 {
-  "id": "ppx-12345",
-  "model": "sonar",
-  "object": "chat.completion",
-  "created": 1736500000,
-  "citations": [
-    "https://example.com/clojure-overview",
-    "https://example.com/clojure-history"
-  ],
-  "search_results": [
+  "id": "resp_ppx_12345",
+  "object": "response",
+  "created_at": 1789290000,
+  "status": "completed",
+  "model": "perplexity/sonar",
+  "output": [
     {
-      "url": "https://example.com/clojure-overview",
-      "title": "Clojure Programming Language Overview",
-      "snippet": "Clojure is a modern, dynamic, and functional Lisp on the JVM."
+      "type": "search_results",
+      "queries": [
+        "Clojure creator release year"
+      ],
+      "results": [
+        {
+          "id": 1,
+          "url": "https://example.com/clojure-overview",
+          "title": "Clojure Programming Language Overview",
+          "snippet": "Clojure is a modern, dynamic, and functional Lisp on the JVM.",
+          "source": "web",
+          "date": "2025-01-15",
+          "last_updated": "2025-01-16"
+        },
+        {
+          "id": 2,
+          "url": "https://example.com/clojure-history",
+          "title": "A Short History of Clojure",
+          "snippet": "Created by Rich Hickey, first released in 2007.",
+          "source": "web"
+        }
+      ]
     },
     {
-      "url": "https://example.com/clojure-history",
-      "title": "A Short History of Clojure",
-      "snippet": "Created by Rich Hickey, first released in 2007."
-    }
-  ],
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Clojure is a Lisp dialect on the JVM created by Rich Hickey in 2007."
-      },
-      "finish_reason": "stop"
+      "type": "message",
+      "id": "msg_ppx_12345",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Clojure is a Lisp dialect on the JVM created by Rich Hickey in 2007.[1][2]",
+          "annotations": [
+            {
+              "type": "url_citation",
+              "url": "https://example.com/clojure-overview",
+              "title": "Clojure Programming Language Overview",
+              "start_index": 71,
+              "end_index": 74
+            }
+          ]
+        }
+      ]
     }
   ],
   "usage": {
-    "prompt_tokens": 12,
-    "completion_tokens": 18,
+    "input_tokens": 12,
+    "output_tokens": 18,
     "total_tokens": 30,
-    "citation_tokens": 256,
-    "num_search_queries": 1
+    "input_tokens_details": {
+      "cache_read_input_tokens": 2,
+      "cache_creation_input_tokens": 1
+    },
+    "tool_calls_details": {
+      "web_search": {
+        "invocation": 1
+      }
+    },
+    "cost": {
+      "currency": "USD",
+      "input_cost": 0.000012,
+      "output_cost": 0.000018,
+      "tool_calls_cost": 0.005,
+      "total_cost": 0.00503
+    }
   }
 }

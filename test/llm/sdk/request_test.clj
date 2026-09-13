@@ -4,7 +4,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
             [llm.sdk.provider :as provider]
-            [llm.sdk.request :as request]))
+            [llm.sdk.request :as request]
+            [llm.sdk.transport :as transport]))
 
 (defn- with-captured-warn
   "Run f under a :warn-fn that collects messages into the given atom."
@@ -93,16 +94,42 @@
       (is (= 1 (count @warnings))))))
 
 ;; ---------------------------------------------------------------------------
-;; Perplexity profile carries the example supported-params set
+;; Perplexity Agent supported-parameter preprocessing
 ;; ---------------------------------------------------------------------------
 
-(deftest test-perplexity-profile-supports-restricted-set
-  (let [profile (provider/get-provider :perplexity)
-        supported (:profile/supported-params profile)]
-    (is (set? supported))
-    (is (contains? supported :request/temperature))
-    (is (contains? supported :request/max-tokens))
-    (is (not (contains? supported :request/tools))
-        "Perplexity doesn't accept tools")
-    (is (contains? supported :request/reasoning)
-        "Perplexity Sonar accepts reasoning_effort")))
+(deftest test-perplexity-tools-survive-preprocessing-and-build
+  (let [warnings (atom [])
+        profile (provider/get-provider :perplexity)
+        canonical-tool
+        {:type :function
+         :function {:name "lookup"
+                    :description "Look up a record"
+                    :parameters {:type "object"
+                                 :properties {:id {:type "string"}}
+                                 :required ["id"]}
+                    :strict true}}
+        canonical-request
+        {:request/model "perplexity/sonar"
+         :request/messages
+         [{:message/role :user :message/content "Look up record 42."}]
+         :request/tools [canonical-tool]
+         :request/provider-options {:perplexity {:web-search false}}}
+        processed (with-captured-warn
+                    warnings
+                    #(request/apply-supported-params profile canonical-request))
+        built (with-redefs [provider/resolve-auth-token
+                            (constantly "stub-token")]
+                (transport/build-request
+                 ((:profile/transport-constructor profile))
+                 profile
+                 processed))]
+    (is (empty? @warnings))
+    (is (= [canonical-tool] (:request/tools processed)))
+    (is (= [{:type "function"
+             :name "lookup"
+             :description "Look up a record"
+             :parameters {:type "object"
+                          :properties {:id {:type "string"}}
+                          :required ["id"]}
+             :strict true}]
+           (get-in built [:body :tools])))))

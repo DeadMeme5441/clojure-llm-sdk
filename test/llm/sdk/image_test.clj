@@ -12,28 +12,27 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest test-image-gen-request-schema
-  (testing "minimal request validates"
+  (testing "the canonical schema permits provider-independent requests"
     (is (schema/validate-image-gen-request
          {:image/prompt "a cat"})))
-  (testing "full request validates"
+  (testing "full request validates with a current explicit model"
     (is (schema/validate-image-gen-request
-         {:image/model "dall-e-3"
+         {:image/model "gpt-image-1"
           :image/prompt "a cat"
           :image/n 1
           :image/size "1024x1024"
-          :image/quality :hd
-          :image/style :vivid
+          :image/quality :high
           :image/response-format :b64_json
           :image/user "u-1"
-          :image/provider-options {:extra_body {:foo :bar}}})))
+          :image/provider-options {:extra_body {:background "opaque"}}})))
   (testing "missing prompt fails"
-    (is (not (schema/validate-image-gen-request {:image/model "dall-e-3"})))))
+    (is (not (schema/validate-image-gen-request {:image/model "gpt-image-1"})))))
 
 (deftest test-image-gen-response-schema
   (is (schema/validate-image-gen-response
        {:image/provider :openai
-        :image/model "dall-e-3"
-        :image/images [{:image/url "https://example.com/img.png"
+        :image/model "gpt-image-1"
+        :image/images [{:image/b64 "abc"
                         :image/revised-prompt "revised"}]
         :image/created 1736500000})))
 
@@ -49,11 +48,43 @@
   (is (thrown-with-msg? Exception #"Image generation not supported"
         (sdk/generate-image :anthropic {:image/prompt "x"}))))
 
+(deftest test-bedrock-requires-image-model-before-http
+  (let [called? (atom false)]
+    (with-redefs [http/request
+                  (fn [_]
+                    (reset! called? true)
+                    {:status 200 :body {:images ["unexpected"]}})]
+      (let [error (try
+                    (sdk/generate-image :bedrock {:image/prompt "x"})
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? error))
+        (is (= :request/missing-model (:error/type (ex-data error))))
+        (is (re-find #"explicit :image/model" (ex-message error)))
+        (is (false? @called?))))))
+
+(deftest test-openai-requires-image-model-before-http
+  (let [called? (atom false)]
+    (with-redefs [http/request
+                  (fn [_]
+                    (reset! called? true)
+                    {:status 200 :body {:data [{:b64_json "unexpected"}]}})]
+      (let [error (try
+                    (sdk/generate-image :openai {:image/prompt "x"})
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? error))
+        (is (= :request/missing-model (:error/type (ex-data error))))
+        (is (re-find #"explicit :image/model" (ex-message error)))
+        (is (false? @called?))))))
+
 (deftest test-generate-image-driver-4xx
   (with-redefs [http/request
                 (fn [_]
                   {:status 400 :body {:error {:message "Bad prompt"}}})]
-    (let [ex (try (sdk/generate-image :openai {:image/prompt "x"})
+    (let [ex (try (sdk/generate-image :openai
+                                      {:image/model "gpt-image-1"
+                                       :image/prompt "x"})
                   nil
                   (catch Exception e e))
           data (ex-data ex)]
@@ -65,13 +96,15 @@
                 (fn [_]
                   {:status 200
                    :body {:created 1736500000
-                          :data [{:url "https://example.com/img.png"
+                          :data [{:b64_json "abc"
                                   :revised_prompt "revised"}]}})]
-    (let [resp (sdk/generate-image :openai {:image/prompt "a cat"})]
+    (let [resp (sdk/generate-image :openai
+                                   {:image/model "gpt-image-1"
+                                    :image/prompt "a cat"})]
       (is (= :openai (:image/provider resp)))
+      (is (= "gpt-image-1" (:image/model resp)))
       (is (= 1 (count (:image/images resp))))
-      (is (= "https://example.com/img.png"
-             (:image/url (first (:image/images resp)))))
+      (is (= "abc" (:image/b64 (first (:image/images resp)))))
       (is (schema/validate-image-gen-response resp)))))
 
 (deftest test-generate-image-stamps-token-cost-when-usage-present

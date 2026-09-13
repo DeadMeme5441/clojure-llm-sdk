@@ -10,65 +10,76 @@
     :base-url "https://api.deepseek.com/v1"
     :env-var-names ["DEEPSEEK_API_KEY"]
     :capabilities #{:chat :streaming :tools :reasoning}
-    :quirks {:thinking-explicit true
-             :reasoning-content-echo true}}
+    :quirks {:reasoning-mode :deepseek
+             :reasoning-replay-field :reasoning_content}}
    {:id :kimi
     :base-url "https://api.moonshot.cn/v1"
     :env-var-names ["MOONSHOT_API_KEY"]
     :capabilities #{:chat :streaming :tools :json-schema :reasoning}
-    :quirks {:thinking-explicit true}}
+    :quirks {:reasoning-mode :kimi
+             :reasoning-replay-field :reasoning_content}}
    {:id :kimi-code
     :base-url "https://api.kimi.com/coding/v1"
     :env-var-names ["KIMI_API_KEY"]
     :capabilities #{:chat :streaming :tools :reasoning}
     :supports-model-listing? false
-    :quirks {:thinking-explicit true}}
+    :quirks {:reasoning-mode :kimi-code
+             :reasoning-replay-field :reasoning_content}}
    {:id :mistral
     :base-url "https://api.mistral.ai/v1"
     :env-var-names ["MISTRAL_API_KEY"]
     :capabilities #{:chat :streaming :tools :json-schema :reasoning}
-    :quirks {:reasoning-effort true}}
+    :quirks {:reasoning-mode :mistral}}
    {:id :groq
     :base-url "https://api.groq.com/openai/v1"
     :env-var-names ["GROQ_API_KEY"]
     :capabilities #{:chat :streaming :tools :json-schema :reasoning}
-    :quirks {:reasoning-format :raw
-             :reasoning-effort true
-             :reasoning-top-level true
+    :quirks {:reasoning-mode :groq
+             :stream-usage true
              :max-completion-tokens true
              :drops #{:logprobs :logit_bias :top_logprobs}}}
    {:id :cerebras
     :base-url "https://api.cerebras.ai/v1"
     :env-var-names ["CEREBRAS_API_KEY"]
     :capabilities #{:chat :streaming :tools :json-schema :reasoning}
-    :quirks {:reasoning-effort true}}
+    :quirks {:reasoning-mode :cerebras
+             :reasoning-replay-field :reasoning}}
    {:id :together
     :base-url "https://api.together.ai/v1"
     :env-var-names ["TOGETHER_API_KEY"]
-    :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}
+    :quirks {:reasoning-mode :together
+             :reasoning-replay-field :model-specific}}
    {:id :xai
     :base-url "https://api.x.ai/v1"
     :env-var-names ["XAI_API_KEY"]
     :capabilities #{:chat :streaming :tools :json-schema :reasoning}
-    :quirks {:reasoning-effort true
-             :reasoning-top-level true}}
+    :quirks {:reasoning-mode :xai
+             :reasoning-replay-field :reasoning_content
+             :stream-usage true
+             :max-completion-tokens true}}
    {:id :huggingface
     :base-url "https://router.huggingface.co/v1"
     :env-var-names ["HF_TOKEN"]
-    :capabilities #{:chat :streaming :tools :json-schema}}
+    :capabilities #{:chat :streaming :tools :json-schema}
+    :quirks {:stream-usage true}}
    {:id :sambanova
     :base-url "https://api.sambanova.ai/v1"
     :env-var-names ["SAMBANOVA_API_KEY"]
     :capabilities #{:chat :streaming :tools :json-schema :reasoning}
-    :quirks {:reasoning-effort true}}
+    :quirks {:reasoning-mode :sambanova
+             :stream-usage true}}
    {:id :deepinfra
     :base-url "https://api.deepinfra.com/v1/openai"
     :env-var-names ["DEEPINFRA_TOKEN"]
-    :capabilities #{:chat :streaming :tools :json-schema :reasoning}}
+    :capabilities #{:chat :streaming :tools :json-schema :reasoning}
+    :quirks {:reasoning-mode :deepinfra
+             :stream-usage true}}
    {:id :nebius
     :base-url "https://api.tokenfactory.nebius.com/v1"
     :env-var-names ["NEBIUS_API_KEY"]
-    :capabilities #{:chat :streaming :tools :json-schema}}
+    :capabilities #{:chat :streaming :tools :json-schema}
+    :quirks {:stream-usage true}}
    {:id :hyperbolic
     :base-url "https://api.hyperbolic.xyz/v1"
     :env-var-names ["HYPERBOLIC_API_KEY"]
@@ -96,11 +107,13 @@
    {:id :dashscope
     :base-url "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     :env-var-names ["DASHSCOPE_API_KEY"]
-    :capabilities #{:chat :streaming :tools :json-schema}}
+    :capabilities #{:chat :streaming :tools :json-schema}
+    :quirks {:stream-usage true}}
    {:id :volcengine
     :base-url "https://ark.cn-beijing.volces.com/api/v3"
     :env-var-names ["ARK_API_KEY"]
     :capabilities #{:chat :streaming :tools :json-schema}
+    :quirks {:stream-usage true}
     :supports-model-listing? false}])
 
 (def chat-alias-ids

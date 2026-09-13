@@ -20,7 +20,7 @@
      :height (Long/parseLong h)}))
 
 (defn- stamp-image-cost [provider-id request parsed]
-  (if (:response/cost parsed)
+  (if (contains? parsed :response/cost)
     parsed
     (let [model (:image/model parsed)
           usage (:response/usage parsed)
@@ -29,17 +29,40 @@
           n-images (or (some-> (:image/images parsed) count)
                        (:image/n request)
                        1)
-          cost (if usage
-                 (pricing/canonical-cost provider-id model usage)
-                 (let [result (pricing/image-cost (merge {:n-images n-images} dims)
-                                                  pricing)]
-                   (pricing/cost-result->canonical
-                    result
-                    pricing
-                    (cond-> {:images n-images}
-                      (:width dims) (assoc :width (:width dims))
-                      (:height dims) (assoc :height (:height dims))))))]
+          cost
+          (if usage
+            (pricing/canonical-cost
+             provider-id model usage
+             {:input-modality :text :output-modality :image})
+            (let [result (pricing/image-cost
+                          (merge {:n-images n-images} dims)
+                          pricing)]
+              (pricing/cost-result->canonical
+               result
+               pricing
+               (cond-> {:images n-images}
+                 (:width dims) (assoc :width (:width dims))
+                 (:height dims) (assoc :height (:height dims))))))]
       (assoc parsed :response/cost cost))))
+
+(defn- usable-image? [image]
+  (and (map? image)
+       (or (and (string? (:image/url image))
+                (not-empty (:image/url image)))
+           (and (string? (:image/b64 image))
+                (not-empty (:image/b64 image))))))
+
+(defn- validate-provider-response! [provider-id status body parsed]
+  (when-not (and (map? parsed)
+                 (seq (:image/images parsed))
+                 (every? usable-image? (:image/images parsed)))
+    (throw
+     (ex-info "Provider returned an invalid or empty image response"
+              {:provider provider-id
+               :status status
+               :error/type :provider/invalid-image-response
+               :response parsed
+               :body body}))))
 
 (defn generate-image
   "Send a canonical ImageGenRequest, return an ImageGenResponse.
@@ -78,7 +101,7 @@
                                  e))))
         status (:status resp)
         body (:body resp)]
-    (if (>= status 400)
+    (if-not (<= 200 status 299)
       (let [err (it/parse-image-error transport profile status body)]
         (throw (ex-info "Provider image API error"
                         {:error err
@@ -86,8 +109,8 @@
                          :body body
                          :provider provider-id})))
       (let [parsed (it/parse-image-response transport profile body)
-            parsed (assoc parsed :image/model
-                          (or (:image/model parsed)
-                              (:image/model request)
-                              "openai-image"))]
+            model (or (:image/model parsed) (:image/model request))
+            parsed (cond-> parsed
+                     model (assoc :image/model model))]
+        (validate-provider-response! provider-id status body parsed)
         (stamp-image-cost provider-id request parsed)))))

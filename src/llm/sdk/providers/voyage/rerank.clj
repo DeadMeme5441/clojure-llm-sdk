@@ -12,13 +12,25 @@
             [llm.sdk.errors :as errors]))
 
 (defn- ->int [x] (cond (int? x) x (number? x) (int x) :else 0))
+(defn- validate-documents! [documents]
+  (doseq [[index document] (map-indexed vector documents)]
+    (when-not (string? document)
+      (throw
+       (ex-info
+        "Voyage rerank documents must be strings"
+        {:error/type :request/invalid-rerank-document
+         :provider :voyage
+         :document/index index
+         :document/value document})))))
+
 
 (defn build-rerank-request-voyage
   [profile request]
-  (let [opts (:rerank/provider-options request)
+  (let [documents (:rerank/documents request)
+        opts (:rerank/provider-options request)
         body (cond-> {:model (:rerank/model request)
                       :query (:rerank/query request)
-                      :documents (:rerank/documents request)}
+                      :documents documents}
                (:rerank/top-n request)
                (assoc :top_k (:rerank/top-n request))
                (some? (:rerank/return-documents request))
@@ -27,17 +39,29 @@
                (contains? opts :truncation)
                (assoc :truncation (:truncation opts)))
         extra (:extra_body opts)
-        body (if (seq extra) (merge body extra) body)]
+        body (if (seq extra) (merge body extra) body)
+        _ (validate-documents! (:documents body))]
     {:method :post
      :url (str (:profile/base-url profile) "/rerank")
      :headers (provider/default-headers profile
                                         (provider/resolve-auth-token profile))
      :body body}))
 
+(defn- required-score [result]
+  (let [score (:relevance_score result)]
+    (when-not (number? score)
+      (throw
+       (ex-info
+        "Voyage rerank response result is missing a numeric relevance score"
+        {:error/type :response/missing-rerank-score
+         :provider :voyage
+         :result/index (:index result)})))
+    (double score)))
+
 (defn- result->canonical [r]
   (let [doc (:document r)]
     (cond-> {:rerank/index (:index r)
-             :rerank/score (double (or (:relevance_score r) 0.0))}
+             :rerank/score (required-score r)}
       (some? doc) (assoc :rerank/document
                          (cond
                            (string? doc) doc

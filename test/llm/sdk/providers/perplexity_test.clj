@@ -1,391 +1,437 @@
 (ns llm.sdk.providers.perplexity-test
-  "Coverage for the Perplexity adapter and the CitationPart /
-   stream/citation schema additions.
-
-   Live smoke lives in llm.sdk.live-perplexity-test."
-  (:require [clojure.test :refer [deftest is testing]]
+  "Coverage for the Perplexity Agent API request, typed response, and SSE
+   contracts. Live coverage lives in llm.sdk.live-perplexity-test."
+  (:require [cheshire.core :as json]
             [clojure.java.io :as io]
-            [cheshire.core :as json]
-            [llm.sdk.schema :as schema]
+            [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
+            [llm.sdk.providers.perplexity :as ppx]
+            [llm.sdk.schema :as schema]
             [llm.sdk.stream :as stream]
-            [llm.sdk.transport :as transport]
-            [llm.sdk.usage :as usage]
-            [llm.sdk.providers.perplexity :as ppx]))
+            [llm.sdk.transport :as transport]))
 
 (defn- load-fixture [path]
   (-> (io/resource path) slurp (json/parse-string true)))
 
-;; ---------------------------------------------------------------------------
-;; CitationPart schema
-;; ---------------------------------------------------------------------------
+(defn- build [request]
+  (with-redefs [provider/resolve-auth-token (constantly "stub-token")]
+    (transport/build-request (ppx/make-transport)
+                             (provider/get-provider :perplexity)
+                             request)))
 
-(deftest test-citation-part-validates-against-part-schema
-  (testing "minimal CitationPart (url only)"
-    (is (schema/validate-part
-         {:part/type :citation
-          :citation/url "https://example.com"})))
-  (testing "full CitationPart"
-    (is (schema/validate-part
-         {:part/type :citation
-          :citation/url "https://example.com"
-          :citation/title "Title"
-          :citation/snippet "Snippet"
-          :citation/text-range [10 24]
-          :citation/source-id "src-1"
-          :citation/date "2025-01-15"
-          :citation/last-updated "2025-01-16"
-          :citation/source "web"})))
-  (testing "missing :citation/url fails"
-    (is (not (schema/validate-part
-              {:part/type :citation})))))
+(defn- parse-response [raw]
+  (transport/parse-response (ppx/make-transport)
+                            (provider/get-provider :perplexity)
+                            raw))
 
-(deftest test-response-with-citation-parts-validates
-  (is (schema/validate-response
-       {:response/provider :perplexity
-        :response/model "sonar"
-        :response/parts [{:part/type :text :text "Answer."}
-                         {:part/type :citation
-                          :citation/url "https://example.com/a"
-                          :citation/title "A"}]
-        :response/finish-reason :stop})))
+(defn- parse-event [data]
+  (transport/parse-stream-event
+   (ppx/make-transport)
+   (provider/get-provider :perplexity)
+   (str "data: " (json/generate-string data))))
 
-;; ---------------------------------------------------------------------------
-;; Usage schema additions
-;; ---------------------------------------------------------------------------
+(defn- event-seq [event]
+  (cond
+    (nil? event) []
+    (sequential? event) event
+    :else [event]))
 
-(deftest test-usage-includes-citation-fields
-  (is (schema/validate-usage
-       {:usage/input-tokens 10
-        :usage/output-tokens 20
-        :usage/citation-tokens 256
-        :usage/search-queries 1}))
-  (testing "citation fields are optional"
-    (is (schema/validate-usage
-         {:usage/input-tokens 10 :usage/output-tokens 20}))))
+(deftest perplexity-agent-profile
+  (let [profile (provider/get-provider :perplexity)]
+    (is (= :perplexity-agent (:profile/protocol-family profile)))
+    (is (= "https://api.perplexity.ai" (:profile/base-url profile)))
+    (is (= ["PERPLEXITY_API_KEY"] (:profile/env-var-names profile)))
+    (is (= :bearer (:profile/auth-strategy profile)))
+    (is (false? (:profile/supports-model-listing profile)))
+    (is (fn? (:profile/transport-constructor profile)))
+    (is (every? (:profile/capabilities profile)
+                [:tools :web-search :reasoning :json-schema :multimodal]))
+    (is (every? (:profile/supported-params profile)
+                [:request/tools :request/reasoning :request/max-tokens
+                 :request/response-format]))
+    (is (not (contains? (:profile/supported-params profile)
+                        :request/tool-choice)))
+    (is (not (contains? (:profile/supported-params profile)
+                        :request/stop)))))
 
-(deftest test-normalize-perplexity-usage
-  (let [u (usage/normalize-usage :perplexity
-                                 {:prompt_tokens 12
-                                  :completion_tokens 18
-                                  :total_tokens 30
-                                  :citation_tokens 256
-                                  :num_search_queries 1})]
-    (is (= 12 (:usage/input-tokens u)))
-    (is (= 18 (:usage/output-tokens u)))
-    (is (= 30 (:usage/total-tokens u)))
-    (is (= 256 (:usage/citation-tokens u)))
-    (is (= 1 (:usage/search-queries u))))
-  (testing "citation fields absent on a non-Perplexity OpenAI-compat response"
-    (let [u (usage/normalize-usage :openai
-                                   {:prompt_tokens 10
-                                    :completion_tokens 5
-                                    :total_tokens 15})]
-      (is (nil? (:usage/citation-tokens u)))
-      (is (nil? (:usage/search-queries u))))))
-
-;; ---------------------------------------------------------------------------
-;; Profile registration
-;; ---------------------------------------------------------------------------
-
-(deftest test-perplexity-profile-registered
-  (let [p (provider/get-provider :perplexity)]
-    (is (some? p))
-    (is (= "https://api.perplexity.ai" (:profile/base-url p)))
-    (is (= ["PERPLEXITY_API_KEY"] (:profile/env-var-names p)))
-    (is (= :bearer (:profile/auth-strategy p)))
-    (is (fn? (:profile/transport-constructor p)))
-    (is (contains? (:profile/capabilities p) :web-search))
-    (is (contains? (:profile/capabilities p) :reasoning))
-    (is (contains? (:profile/supported-params p) :request/reasoning))))
-
-;; ---------------------------------------------------------------------------
-;; Request building — delegates to openai-chat shape
-;; ---------------------------------------------------------------------------
-
-(deftest test-build-request-shape
-  (let [t (ppx/make-transport)
-        profile (provider/get-provider :perplexity)
-        built (with-redefs [provider/resolve-auth-token
-                            (constantly "stub-token")]
-                (transport/build-request
-                 t profile
-                 {:request/model "sonar"
-                  :request/messages [{:message/role :user
-                                      :message/content "What is Clojure?"}]
-                  :request/max-tokens 100
-                  :request/reasoning {:enabled true :effort :high}
-                  :request/stream? true
-                  :request/provider-options
-                  {:extra_body
-                   {:search_mode "academic"
-                    :web_search_options
-                    {:search_context_size "high"}
-                    :return_images true}}}))]
-    (is (= "https://api.perplexity.ai/v1/sonar" (:url built)))
+(deftest builds-current-agent-request
+  (let [built
+        (build
+         {:request/model "perplexity/sonar"
+          :request/messages
+          [{:message/role :system :message/content "Be concise."}
+           {:message/role :user
+            :message/content
+            [{:part/type :text :text "Inspect this image."}
+             {:part/type :image
+              :image/url "https://example.com/image.png"}]}]
+          :request/tools
+          [{:type :function
+            :function {:name "lookup"
+                       :description "Look up a record"
+                       :parameters {:type "object"
+                                    :properties {:id {:type "string"}}}
+                       :strict true}}]
+          :request/reasoning {:enabled true :effort :high}
+          :request/temperature 0.2
+          :request/top-p 0.8
+          :request/max-tokens 250
+          :request/response-format
+          {:type :json_schema
+           :name "answer"
+           :description "A grounded answer"
+           :strict true
+           :json-schema {:type "object"
+                         :properties {:answer {:type "string"}}
+                         :required ["answer"]}}
+          :request/stream? true
+          :request/provider-options
+          {:perplexity
+           {:max-steps 3
+            :language-preference "en"
+            :previous-response-id "resp_previous"
+            :store false
+            :web-search
+            {:filters {:search-domain-filter ["clojure.org"]
+                       :search-recency-filter :month
+                       :search-after-date-filter "01/01/2026"}
+             :search-context-size :high
+             :max-results 8
+             :max-tokens 3000
+             :max-tokens-per-page 800
+             :user-location {:city "Boston" :country "US"}}}}})
+        body (:body built)]
+    (is (= :post (:method built)))
+    (is (= "https://api.perplexity.ai/v1/agent" (:url built)))
     (is (= "Bearer stub-token" (get-in built [:headers "Authorization"])))
-    (is (= "sonar" (get-in built [:body :model])))
-    (is (= 100 (get-in built [:body :max_tokens])))
-    (is (= "high" (get-in built [:body :reasoning_effort])))
-    (is (= "academic" (get-in built [:body :search_mode])))
-    (is (= "high"
-           (get-in built
-                   [:body :web_search_options :search_context_size])))
-    (is (true? (get-in built [:body :return_images])))
-    (is (true? (get-in built [:body :stream])))
-    (is (not (contains? (:body built) :extra_body)))))
+    (is (= "perplexity/sonar" (:model body)))
+    (is (= [{:type "message" :role "system" :content "Be concise."}
+            {:type "message" :role "user"
+             :content [{:type "input_text" :text "Inspect this image."}
+                       {:type "input_image"
+                        :image_url "https://example.com/image.png"}]}]
+           (:input body)))
+    (is (= {:type "function"
+            :name "lookup"
+            :description "Look up a record"
+            :parameters {:type "object"
+                         :properties {:id {:type "string"}}}
+            :strict true}
+           (first (:tools body))))
+    (is (= {:type "web_search"
+            :filters {:search_domain_filter ["clojure.org"]
+                      :search_recency_filter "month"
+                      :search_after_date_filter "01/01/2026"}
+            :search_context_size "high"
+            :max_results 8
+            :max_tokens 3000
+            :max_tokens_per_page 800
+            :user_location {:city "Boston" :country "US"}}
+           (second (:tools body))))
+    (is (= {:effort "high"} (:reasoning body)))
+    (is (= 250 (:max_output_tokens body)))
+    (is (= "json_schema" (get-in body [:response_format :type])))
+    (is (= {:type "object"
+            :properties {:answer {:type "string"}}
+            :required ["answer"]}
+           (get-in body [:response_format :json_schema :schema])))
+    (is (= 3 (:max_steps body)))
+    (is (= "en" (:language_preference body)))
+    (is (= "resp_previous" (:previous_response_id body)))
+    (is (false? (:store body)))
+    (is (true? (:stream body)))))
 
-;; ---------------------------------------------------------------------------
-;; Response parsing — citations and search_results
-;; ---------------------------------------------------------------------------
+(deftest web-search-is-grounded-by-default-and-explicitly-disableable
+  (let [request {:request/model "perplexity/sonar"
+                 :request/messages
+                 [{:message/role :user :message/content "What changed?"}]}
+        default-body (:body (build request))
+        disabled-body (:body (build (assoc request :request/provider-options
+                                           {:perplexity {:web-search false}})))]
+    (is (= [{:type "web_search"}] (:tools default-body)))
+    (is (not (contains? disabled-body :tools)))))
 
-(deftest test-parse-response-with-search-results
-  (testing "search_results yields rich CitationParts (title + snippet)"
-    (let [t (ppx/make-transport)
-          profile (provider/get-provider :perplexity)
-          raw (-> (load-fixture "fixtures/perplexity_response.json")
-                  (update-in [:search_results 0]
-                             assoc
-                             :date "2025-01-15"
-                             :last_updated "2025-01-16"
-                             :source "web"))
-          resp (transport/parse-response t profile raw)
-          parts (:response/parts resp)
-          citation-parts (filter #(= :citation (:part/type %)) parts)]
-      (is (= :perplexity (:response/provider resp)))
-      (is (= 2 (count citation-parts)))
-      (is (= "Clojure Programming Language Overview"
-             (:citation/title (first citation-parts))))
-      (is (= "Clojure is a modern, dynamic, and functional Lisp on the JVM."
-             (:citation/snippet (first citation-parts))))
-      (is (= "2025-01-15"
-             (:citation/date (first citation-parts))))
-      (is (= "2025-01-16"
-             (:citation/last-updated (first citation-parts))))
-      (is (= "web"
-             (:citation/source (first citation-parts))))
-      (is (= 256 (get-in resp [:response/usage :usage/citation-tokens])))
-      (is (= 1 (get-in resp [:response/usage :usage/search-queries]))))))
+(deftest explicit-model-fallback-chain-takes-precedence
+  (let [body (:body
+              (build
+               {:request/model "perplexity/sonar"
+                :request/messages
+                [{:message/role :user :message/content "Answer."}]
+                :request/provider-options
+                {:perplexity
+                 {:models ["perplexity/sonar"
+                           "anthropic/claude-sonnet-4-6"]}}}))]
+    (is (nil? (:model body)))
+    (is (= ["perplexity/sonar" "anthropic/claude-sonnet-4-6"]
+           (:models body)))))
 
-(deftest test-parse-response-preserves-search-media-and-reported-cost
-  (let [t (ppx/make-transport)
-        profile (provider/get-provider :perplexity)
-        raw {:id "x"
-             :model "sonar-pro"
-             :choices [{:index 0
-                        :message {:role "assistant" :content "Answer."}
-                        :finish_reason "stop"}]
-             :images [{:image_url "https://example.com/image.png"
-                       :origin_url "https://example.com"
-                       :title "Example" :width 800 :height 600}]
-             :related_questions ["What next?"]
-             :usage {:prompt_tokens 10
-                     :completion_tokens 20
-                     :total_tokens 30
-                     :reasoning_tokens 7
-                     :citation_tokens 4
-                     :num_search_queries 2
-                     :cost {:input_tokens_cost 0.001
-                            :output_tokens_cost 0.002
-                            :request_cost 0.006
-                            :total_cost 0.009}}}
-        resp (transport/parse-response t profile raw)]
-    (is (= 7 (get-in resp [:response/usage :usage/reasoning-tokens])))
-    (is (= 0.009 (get-in resp [:response/cost :cost/usd])))
-    (is (false? (get-in resp [:response/cost :cost/estimated?])))
-    (is (= ["What next?"]
-           (get-in resp [:response/provider-data :related_questions])))
-    (is (= "https://example.com/image.png"
-           (get-in resp [:response/provider-data :images 0 :image_url])))))
+(deftest function-call-state-replays-as-agent-input
+  (let [call {:part/type :tool-call
+              :tool-call/id "call_weather"
+              :tool-call/name "weather"
+              :tool-call/arguments "{\"city\":\"Paris\"}"
+              :tool-call/provider-data
+              {:id "fc_123"
+               :call_id "call_weather"
+               :status "completed"
+               :thought_signature "opaque-signature"}}
+        body (:body
+              (build
+               {:request/model "perplexity/sonar"
+                :request/messages
+                [{:message/role :assistant
+                  :message/content [{:part/type :reasoning
+                                     :reasoning/text "Need weather."}
+                                    call]
+                  :message/tool-calls [call]}
+                 {:message/role :tool
+                  :message/tool-call-id "call_weather"
+                  :message/name "weather"
+                  :message/content "{\"temperature\":18}"}]
+                :request/provider-options
+                {:perplexity {:web-search false}}}))]
+    (is (= [{:type "function_call"
+             :call_id "call_weather"
+             :name "weather"
+             :arguments "{\"city\":\"Paris\"}"
+             :thought_signature "opaque-signature"}
+            {:type "function_call_output"
+             :call_id "call_weather"
+             :name "weather"
+             :output "{\"temperature\":18}"}]
+           (:input body)))))
 
-(deftest test-parse-response-with-url-only-citations
-  (testing "fallback to :citations array (URL-only) when no :search_results"
-    (let [t (ppx/make-transport)
-          profile (provider/get-provider :perplexity)
-          raw {:id "x" :model "sonar"
-               :citations ["https://example.com/a" "https://example.com/b"]
-               :choices [{:message {:content "Answer."}
-                          :finish_reason "stop"}]
-               :usage {:prompt_tokens 5 :completion_tokens 5 :total_tokens 10}}
-          resp (transport/parse-response t profile raw)
-          citation-parts (filter #(= :citation (:part/type %)) (:response/parts resp))]
-      (is (= 2 (count citation-parts)))
-      (is (= "https://example.com/a" (:citation/url (first citation-parts))))
-      (is (nil? (:citation/title (first citation-parts)))))))
+(deftest removed-sonar-options-fail-with-migration-guidance
+  (let [request {:request/model "perplexity/sonar"
+                 :request/messages
+                 [{:message/role :user :message/content "Answer."}]}]
+    (doseq [options [{:extra_body {:return_images true}}
+                     {:perplexity {:disable_search true}}
+                     {:perplexity {:search-mode "academic"}}
+                     {:perplexity {:return-related-questions true}}
+                     {:perplexity {:return-images true}}]]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"(obsolete|removed)"
+           (build (assoc request :request/provider-options options)))))))
 
-(deftest test-parse-response-without-citations
-  (testing "response without citations is just a text part"
-    (let [t (ppx/make-transport)
-          profile (provider/get-provider :perplexity)
-          raw {:id "x" :model "sonar"
-               :choices [{:message {:content "Answer."}
-                          :finish_reason "stop"}]
-               :usage {:prompt_tokens 5 :completion_tokens 5 :total_tokens 10}}
-          resp (transport/parse-response t profile raw)]
-      (is (empty? (filter #(= :citation (:part/type %)) (:response/parts resp))))
-      (is (= 1 (count (filter #(= :text (:part/type %)) (:response/parts resp))))))))
+(deftest unsupported-agent-request-fields-fail-closed
+  (let [request {:request/model "perplexity/sonar"
+                 :request/messages
+                 [{:message/role :user :message/content "Answer."}]}]
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"provider/model IDs"
+         (build (assoc request :request/model "sonar"))))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"does not accept tool_choice"
+         (build (assoc request :request/tool-choice :required))))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"does not accept stop sequences"
+         (build (assoc request :request/stop ["END"]))))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"must be :text or :json_schema"
+         (build (assoc request :request/response-format
+                       {:type :json_object}))))))
 
-;; ---------------------------------------------------------------------------
-;; Stream parsing
-;; ---------------------------------------------------------------------------
+(deftest parses-typed-agent-response-with-citations-and-authoritative-cost
+  (let [response (parse-response
+                  (load-fixture "fixtures/perplexity_response.json"))
+        citations (filterv #(= :citation (:part/type %))
+                           (:response/parts response))]
+    (is (= :perplexity (:response/provider response)))
+    (is (= "perplexity/sonar" (:response/model response)))
+    (is (= :stop (:response/finish-reason response)))
+    (is (= "Clojure Programming Language Overview"
+           (:citation/title (first citations))))
+    (is (= "1" (:citation/source-id (first citations))))
+    (is (= "2025-01-15" (:citation/date (first citations))))
+    (is (= "2025-01-16" (:citation/last-updated (first citations))))
+    (is (= 2 (count citations)))
+    (is (= 9 (get-in response [:response/usage :usage/input-tokens])))
+    (is (= 2 (get-in response [:response/usage
+                               :usage/cached-input-tokens])))
+    (is (= 1 (get-in response [:response/usage
+                               :usage/cache-write-tokens])))
+    (is (= 1 (get-in response [:response/usage :usage/search-queries])))
+    (is (= 0.00503 (get-in response [:response/cost :cost/usd])))
+    (is (false? (get-in response [:response/cost :cost/estimated?])))
+    (is (= :perplexity-reported
+           (get-in response [:response/cost :cost/pricing-source])))
+    (is (= "completed"
+           (get-in response [:response/provider-data :status])))
+    (is (schema/validate-response response))))
 
-(deftest test-stream-content-delta
-  (let [t (ppx/make-transport)
-        profile (provider/get-provider :perplexity)
-        line "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}"
-        ev (transport/parse-stream-event t profile line)]
-    (is (= :stream/content-delta (:event/type ev)))
-    (is (= "Hi" (:event/delta ev)))))
+(deftest parses-function-calls-and-preserves-replay-state
+  (let [raw {:id "resp_tool"
+             :object "response"
+             :created_at 1789290000
+             :status "completed"
+             :model "anthropic/claude-sonnet-4-6"
+             :output [{:type "reasoning"
+                       :id "reasoning_1"
+                       :status "completed"
+                       :summary [{:type "summary_text"
+                                  :text "Need current weather."}]}
+                      {:type "function_call"
+                       :id "fc_123"
+                       :status "completed"
+                       :name "weather"
+                       :call_id "call_weather"
+                       :arguments "{\"city\":\"Paris\"}"
+                       :thought_signature "opaque-signature"}]
+             :usage {:input_tokens 5 :output_tokens 3 :total_tokens 8}}
+        response (parse-response raw)
+        call (first (:response/tool-calls response))]
+    (is (= :tool-calls (:response/finish-reason response)))
+    (is (= "Need current weather."
+           (:reasoning/text
+            (first (filter #(= :reasoning (:part/type %))
+                           (:response/parts response))))))
+    (is (= "call_weather" (:tool-call/id call)))
+    (is (= "fc_123" (get-in call [:tool-call/provider-data :id])))
+    (is (= "opaque-signature"
+           (get-in call [:tool-call/provider-data :thought_signature])))
+    (is (= call
+           (first (filter #(= :tool-call (:part/type %))
+                          (:response/parts response)))))))
 
-(deftest test-stream-full-mode-does-not-suppress-content-with-repeated-metadata
-  (let [t (ppx/make-transport)
-        profile (provider/get-provider :perplexity)
-        line (str "data: "
-                  (json/generate-string
-                   {:object "chat.completion.chunk"
-                    :search_results [{:url "https://example.com/a"
-                                      :title "A"
-                                      :snippet "Snip"}]
-                    :usage {:prompt_tokens 5
-                            :completion_tokens 1
-                            :total_tokens 6}
-                    :choices [{:delta {:content "Hi"}
-                               :finish_reason nil}]}))
-        ev (transport/parse-stream-event t profile line)]
-    (is (= :stream/content-delta (:event/type ev)))
-    (is (= "Hi" (:event/delta ev)))))
+(deftest url-annotations-are-used-without-search-results
+  (let [raw {:id "resp_annotation"
+             :object "response"
+             :created_at 1789290000
+             :status "completed"
+             :model "perplexity/sonar"
+             :output
+             [{:type "message" :id "msg_1" :status "completed"
+               :role "assistant"
+               :content
+               [{:type "output_text" :text "Grounded answer.[1]"
+                 :annotations
+                 [{:type "url_citation"
+                   :url "https://example.com/source"
+                   :title "Source"
+                   :start_index 16
+                   :end_index 19}]}]}]}
+        response (parse-response raw)
+        citation (first (filter #(= :citation (:part/type %))
+                                (:response/parts response)))]
+    (is (= "https://example.com/source" (:citation/url citation)))
+    (is (= [16 19] (:citation/text-range citation)))
+    (is (= "url_citation"
+           (get-in citation
+                   [:citation/provider-data :perplexity/annotation :type])))
+    (is (schema/validate-response response))))
 
-(deftest test-stream-concise-reasoning-and-done
-  (let [t (ppx/make-transport)
-        profile (provider/get-provider :perplexity)
-        reasoning-line
-        (str "data: "
-             (json/generate-string
-              {:object "chat.reasoning"
-               :choices
-               [{:delta
-                 {:reasoning_steps
-                  [{:thought "Searching primary sources"
-                    :type "web_search"}]}}]}))
-        reasoning-event
-        (transport/parse-stream-event t profile reasoning-line)
-        done-line
-        (str "data: "
-             (json/generate-string
-              {:object "chat.completion.done"
-               :search_results [{:url "https://example.com/a"
-                                 :title "A"
-                                 :snippet "Snip"}]
-               :usage {:prompt_tokens 5
-                       :completion_tokens 8
-                       :total_tokens 13
-                       :reasoning_tokens 3
-                       :cost {:input_tokens_cost 0.001
-                              :output_tokens_cost 0.002
-                              :total_cost 0.003}}
-               :choices [{:delta {}
-                          :message {:content "Aggregated answer"}
-                          :finish_reason "stop"}]}))
-        done-events
-        (transport/parse-stream-event t profile done-line)]
-    (is (= :stream/reasoning-delta (:event/type reasoning-event)))
-    (is (= "Searching primary sources" (:event/delta reasoning-event)))
-    (is (= [:stream/citation :stream/usage :stream/end]
-           (mapv :event/type done-events)))
-    (is (= 3
-           (get-in done-events
-                   [1 :usage :usage/reasoning-tokens])))
-    (is (= 0.003 (get-in done-events [1 :cost :cost/usd])))))
+(deftest incomplete-and-failed-lifecycle-states-are-not-success
+  (let [base {:id "resp_lifecycle"
+              :object "response"
+              :created_at 1789290000
+              :model "perplexity/sonar"
+              :output [{:type "message" :id "msg_1" :status "incomplete"
+                        :role "assistant"
+                        :content [{:type "output_text" :text "Partial"}]}]}]
+    (is (= :incomplete
+           (:response/finish-reason
+            (parse-response (assoc base :status "incomplete")))))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"quota exhausted"
+         (parse-response (assoc base
+                                :status "failed"
+                                :error {:code "quota"
+                                        :message "quota exhausted"}))))))
 
-(deftest test-stream-final-chunk-emits-citation-usage-end
-  (testing "final SSE chunk with citations, usage, and finish returns a vec of events"
-    (let [t (ppx/make-transport)
-          profile (provider/get-provider :perplexity)
-          line (str "data: "
-                    (json/generate-string
-                     {:choices [{:delta {} :finish_reason "stop"}]
-                      :search_results [{:url "https://example.com/a"
-                                        :title "A"
-                                        :snippet "Snip-a"
-                                        :date "2025-01-15"
-                                        :last_updated "2025-01-16"
-                                        :source "web"}
-                                       {:url "https://example.com/b"
-                                        :title "B"
-                                        :snippet "Snip-b"}]
-                      :usage {:prompt_tokens 5
-                              :completion_tokens 5
-                              :total_tokens 10
-                              :citation_tokens 50
-                              :num_search_queries 1}}))
-          evs (transport/parse-stream-event t profile line)
-          resp (stream/events->response evs :perplexity "sonar")
-          citation-part (first (filter #(= :citation (:part/type %))
-                                       (:response/parts resp)))]
-      (is (sequential? evs) "returns a vector of events")
-      (is (= 4 (count evs))
-          "two citations + one usage + one end")
-      (is (every? #(= :stream/citation (:event/type %)) (take 2 evs)))
-      (is (= "https://example.com/a" (:citation/url (first evs))))
-      (is (= "A" (:citation/title (first evs))))
-      (is (= "2025-01-15" (:citation/date (first evs))))
-      (is (= "2025-01-16" (:citation/last-updated (first evs))))
-      (is (= "web" (:citation/source (first evs))))
-      (is (every? schema/validate-stream-event evs))
-      (is (= {:citation/date "2025-01-15"
-              :citation/last-updated "2025-01-16"
-              :citation/source "web"}
-             (select-keys citation-part
-                          [:citation/date
-                           :citation/last-updated
-                           :citation/source])))
-      (is (schema/validate-response resp))
-      (is (= :stream/usage (:event/type (nth evs 2))))
-      (is (= 50 (get-in (nth evs 2) [:usage :usage/citation-tokens])))
-      (is (= :stream/end (:event/type (nth evs 3))))
-      (is (= :stop (:event/finish-reason (nth evs 3)))))))
+(deftest typed-sse-normalizes-text-search-tools-usage-and-cost
+  (let [raw-response
+        {:id "resp_stream"
+         :object "response"
+         :created_at 1789290000
+         :status "completed"
+         :model "perplexity/sonar"
+         :output
+         [{:type "search_results"
+           :queries ["Clojure creator"]
+           :results [{:id 1
+                      :url "https://example.com/clojure"
+                      :title "Clojure"
+                      :snippet "Created by Rich Hickey"
+                      :source "web"}]}
+          {:type "function_call"
+           :id "fc_1"
+           :status "completed"
+           :name "save"
+           :call_id "call_save"
+           :arguments "{\"answer\":\"Rich Hickey\"}"
+           :thought_signature "sig"}]
+         :usage
+         {:input_tokens 10
+          :output_tokens 4
+          :total_tokens 14
+          :tool_calls_details {:web_search {:invocation 1}}
+          :cost {:currency "USD"
+                 :input_cost 0.00001
+                 :output_cost 0.000004
+                 :tool_calls_cost 0.005
+                 :total_cost 0.005014}}}
+        wire-events
+        [{:type "response.created" :sequence_number 0
+          :response {:id "resp_stream" :object "response"
+                     :created_at 1789290000 :status "in_progress"
+                     :model "perplexity/sonar" :output []}}
+         {:type "response.reasoning.started" :sequence_number 1
+          :thought "Searching primary sources"}
+         {:type "response.reasoning.search_results" :sequence_number 2
+          :thought "Found the primary source"
+          :results (get-in raw-response [:output 0 :results])}
+         {:type "response.output_text.delta" :sequence_number 3
+          :item_id "msg_1" :output_index 1 :content_index 0
+          :delta "Rich Hickey created Clojure."}
+         {:type "response.output_item.done" :sequence_number 4
+          :output_index 2 :item (get-in raw-response [:output 1])}
+         {:type "response.completed" :sequence_number 5
+          :response raw-response}]
+        events (into [] (mapcat #(event-seq (parse-event %))) wire-events)
+        created-event (first events)
+        response (stream/events->response events :perplexity "perplexity/sonar")
+        citation (first (filter #(= :citation (:part/type %))
+                                (:response/parts response)))
+        call (first (:response/tool-calls response))]
+    (is (= :stream/provider-state (:event/type created-event)))
+    (is (= :perplexity (:provider-state/provider created-event)))
+    (is (= (first wire-events)
+           (get-in created-event [:provider-state/data :agent/events 0])))
+    (is (empty? (filter #(= :stream/start (:event/type %)) events)))
+    (is (= (first wire-events)
+           (get-in response
+                   [:response/provider-data :perplexity :agent/events 0])))
+    (is (= "Searching primary sources"
+           (:event/delta (first (filter #(= :stream/reasoning-delta
+                                             (:event/type %))
+                                        events)))))
+    (is (= "https://example.com/clojure" (:citation/url citation)))
+    (is (= "call_save" (:tool-call/id call)))
+    (is (= "sig" (get-in call [:tool-call/provider-data
+                                :thought_signature])))
+    (is (= 1 (get-in response [:response/usage :usage/search-queries])))
+    (is (= 0.005014 (get-in response [:response/cost :cost/usd])))
+    (is (= :tool-calls (:response/finish-reason response)))
+    (is (schema/validate-response response))
+    (is (every? schema/validate-stream-event events))))
 
-(deftest test-stream-citation-event-validates
-  (let [ev {:event/type :stream/citation
-            :citation/url "https://example.com"
-            :citation/title "Title"
-            :citation/snippet "Snippet"
-            :citation/date "2025-01-15"
-            :citation/last-updated "2025-01-16"
-            :citation/source "web"}]
-    (is (schema/validate-stream-event ev))))
+(deftest failed-stream-emits-an-error-not-an-end
+  (let [event (parse-event
+               {:type "response.failed"
+                :sequence_number 2
+                :error {:code "internal_error" :message "agent failed"}})]
+    (is (= :stream/error (:event/type event)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (stream/events->response [event]
+                                          :perplexity
+                                          "perplexity/sonar")))))
 
-;; ---------------------------------------------------------------------------
-;; events->response folds citation events into Response.parts
-;; ---------------------------------------------------------------------------
-
-(deftest test-events-fold-citations-into-parts
-  (let [events [{:event/type :stream/start}
-                {:event/type :stream/content-delta :event/delta "Hi"}
-                {:event/type :stream/citation
-                 :citation/url "https://example.com"
-                 :citation/title "Example"
-                 :citation/date "2025-01-15"
-                 :citation/last-updated "2025-01-16"
-                 :citation/source "web"}
-                {:event/type :stream/end :event/finish-reason :stop}]
-        resp (stream/events->response events :perplexity "sonar")
-        citation-parts (filter #(= :citation (:part/type %)) (:response/parts resp))]
-    (is (= 1 (count citation-parts)))
-    (is (= "https://example.com" (:citation/url (first citation-parts))))
-    (is (= "Example" (:citation/title (first citation-parts))))
-    (is (= "2025-01-15" (:citation/date (first citation-parts))))
-    (is (= "2025-01-16"
-           (:citation/last-updated (first citation-parts))))
-    (is (= "web" (:citation/source (first citation-parts))))))
-
-;; ---------------------------------------------------------------------------
-;; Error parsing
-;; ---------------------------------------------------------------------------
-
-(deftest test-parse-error-401
-  (let [t (ppx/make-transport)
-        profile (provider/get-provider :perplexity)
-        err (transport/parse-error
-             t profile 401 {:error {:message "Bad key"}})]
-    (is (= :auth (:error/reason err)))))
+(deftest parse-error-classifies-authentication-failure
+  (let [error (transport/parse-error
+               (ppx/make-transport)
+               (provider/get-provider :perplexity)
+               401
+               {:error {:message "Bad key"}})]
+    (is (= :auth (:error/reason error)))))

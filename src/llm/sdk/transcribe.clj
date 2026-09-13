@@ -6,6 +6,7 @@
    the missing capability surfaces at the call site."
   (:require [hato.client :as hc]
             [cheshire.core :as json]
+            [clojure.string :as str]
             [llm.sdk.provider :as provider]
             [llm.sdk.schema :as schema]
             [llm.sdk.errors :as errors]
@@ -13,16 +14,35 @@
             [llm.sdk.transport.transcribe :as tt]))
 
 (defn- stamp-transcription-cost [provider-id request parsed]
-  (let [model (:transcribe/model request)
-        duration (:transcription/duration-seconds parsed)
-        pricing (pricing/get-pricing provider-id model)
-        result (pricing/transcription-cost {:duration-seconds duration} pricing)
-        cost (pricing/cost-result->canonical
-              result
-              pricing
-              (cond-> {}
-                duration (assoc :duration-seconds duration)))]
-    (assoc parsed :response/cost cost)))
+  (if (contains? parsed :response/cost)
+    parsed
+    (let [model (:transcribe/model request)
+          usage (:response/usage parsed)
+          duration (or (:usage/duration-seconds usage)
+                       (:transcription/duration-seconds parsed))
+          pricing (pricing/get-pricing provider-id model)
+          token-usage?
+          (and usage
+               (some #(contains? usage %)
+                     [:usage/input-tokens :usage/output-tokens
+                      :usage/audio-tokens]))
+          cost
+          (if token-usage?
+            (pricing/canonical-cost
+             provider-id model usage
+             {:input-modality :audio :output-modality :text})
+            (let [result (pricing/transcription-cost
+                          {:usage usage :duration-seconds duration}
+                          pricing)]
+              (pricing/cost-result->canonical
+               result
+               pricing
+               (cond-> {}
+                 (some? duration) (assoc :duration-seconds duration)
+                 (:transcription-cost-per-minute pricing)
+                 (assoc :transcription-cost-per-minute
+                        (:transcription-cost-per-minute pricing))))))]
+      (assoc parsed :response/cost cost))))
 
 (defn- http-client [{:keys [http-client connect-timeout-ms timeout-ms]}]
   (or http-client
@@ -54,6 +74,12 @@
      :headers (:headers resp)
      :body parsed}))
 
+(defn- event-stream-response? [response]
+  (let [content-type (or (get-in response [:headers "content-type"])
+                         (get-in response [:headers "Content-Type"]))]
+    (and (string? content-type)
+         (str/includes? (str/lower-case content-type) "text/event-stream"))))
+
 (defn transcribe
   "Send a canonical TranscribeRequest and return a TranscribeResponse.
 
@@ -62,6 +88,8 @@
      :transcribe/file      java.io.File, path string, byte array, or InputStream
      :transcribe/filename  filename hint (informs server file-type detection)
      :transcribe/language  optional ISO-639-1 hint (e.g. \"en\")
+     :transcribe/languages optional language hints for gpt-transcribe
+     :transcribe/keywords  optional literal context terms for gpt-transcribe
      :transcribe/prompt    optional spelling/style prompt
      :transcribe/temperature   optional [0,1]
      :transcribe/response-format  :json|:text|:srt|:verbose_json|:vtt
@@ -102,12 +130,28 @@
                                  e))))
         status (:status resp)
         body (:body resp)]
-    (if (>= status 400)
+    (cond
+      (>= status 400)
       (let [err (tt/parse-transcribe-error transport profile status body)]
         (throw (ex-info "Provider transcribe API error"
                         {:error err
                          :status status
                          :body body
                          :provider provider-id})))
-      (stamp-transcription-cost provider-id request
-                                (tt/parse-transcribe-response transport profile body)))))
+
+      (event-stream-response? resp)
+      (let [err {:error/reason :unsupported-parameter
+                 :error/retryable false
+                 :error/message
+                 "Buffered transcription transport cannot consume an SSE response"}]
+        (throw (ex-info "Provider returned a streaming transcription response"
+                        {:error err
+                         :error/type :transcribe/streaming-response-unsupported
+                         :status status
+                         :body body
+                         :provider provider-id})))
+
+      :else
+      (stamp-transcription-cost
+       provider-id request
+       (tt/parse-transcribe-response transport profile body)))))

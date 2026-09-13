@@ -118,12 +118,21 @@
        (is (some? m))
        (is (= "gpt-4o" (:model/id m)))))))
 
-(deftest resolve-model-strips-provider-prefix
+(deftest resolve-model-prioritizes-explicit-provider-prefix
   (offline
    (fn []
-     (let [m (catalog/resolve-model "anthropic/claude-opus-4-7")]
-       (is (some? m))
-       (is (= "claude-opus-4-7" (:model/id m)))))))
+     (catalog/register-model :anthropic "collision-model"
+                             {:model/context-length 1})
+     (catalog/register-model :perplexity "anthropic/collision-model"
+                             {:model/context-length 2})
+     (catalog/register-model :openrouter "vendor/routed-model"
+                             {:model/context-length 3})
+     (let [native (catalog/resolve-model "anthropic/collision-model")
+           routed (catalog/resolve-model "openrouter/vendor/routed-model")]
+       (is (= "collision-model" (:model/id native)))
+       (is (= :anthropic (:model/provider native)))
+       (is (= "vendor/routed-model" (:model/id routed)))
+       (is (= :openrouter (:model/provider routed)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; register-model — override roundtrip

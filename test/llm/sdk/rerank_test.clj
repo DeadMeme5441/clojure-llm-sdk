@@ -24,6 +24,7 @@
           :rerank/documents ["a" "b"]
           :rerank/top-n 2
           :rerank/return-documents true
+          :rerank/next-token "page-2"
           :rerank/provider-options {:extra_body {:custom-flag true}}}))))
 
 (deftest test-rerank-response-schema
@@ -84,6 +85,22 @@
       (is (= 1 (count (:rerank/results resp))))
       (is (= 0.9 (:rerank/score (first (:rerank/results resp)))))
       (is (schema/validate-rerank-response resp)))))
+
+(deftest test-rerank-driver-omits-documents-when-explicitly-disabled
+  (let [raw {:id "x"
+             :results [{:index 0
+                        :relevance_score 0.875
+                        :document {:text "provider copy"}}]
+             :meta {:billed_units {:search_units 1}}}]
+    (with-redefs [http/request (fn [_] {:status 200 :body raw})]
+      (let [resp (sdk/rerank :cohere
+                             {:rerank/model "rerank-v4.0-pro"
+                              :rerank/query "q"
+                              :rerank/documents ["caller copy"]
+                              :rerank/return-documents false})]
+        (is (= {:rerank/index 0 :rerank/score 0.875}
+               (first (:rerank/results resp))))
+        (is (= raw (:rerank/raw resp)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public API surface

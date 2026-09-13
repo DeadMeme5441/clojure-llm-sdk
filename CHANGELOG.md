@@ -6,6 +6,19 @@ All notable user-visible changes are tracked here.
 
 ### Changed
 
+- Migrate provider implementations to family-owned namespaces while keeping
+  the previous public namespaces as compatibility shims, and move Perplexity
+  from Sonar Chat Completions to the native Agent API with explicit guidance
+  for obsolete options. Require callers to select billable OpenAI, OpenRouter,
+  and Bedrock image models explicitly.
+- Add the three scoped surfaces identified by the pinned `litellm-clj`
+  comparison: Z.AI chat, native Gemini batch embeddings, and embeddings for
+  caller-registered Azure OpenAI deployments, including explicit Azure v1
+  routing.
+- Refresh the bundled LiteLLM and models.dev catalogs and extend registry-backed
+  pricing across reported text, image, audio, cache, duration, request, and
+  rerank billing dimensions. Missing usage or rates remain unknown.
+
 - Add persistent Responses WebSockets for ChatGPT OAuth (`:codex-backend`) with
   `:config {:transport :websocket}`. HTTP/SSE remains the default: live
   `gpt-6-astra` / low-effort benchmarks favored SSE for first-output latency.
@@ -19,6 +32,14 @@ All notable user-visible changes are tracked here.
   Disable continuation with `:config {:incremental? false}`.
 
 ### Fixed
+
+- Align provider request, response, streaming, usage, file-attachment, stop
+  sequence, structured-error, and Cohere v2 embedding/rerank handling with the
+  current provider wire shapes while preserving provider-native replay and
+  typed output data.
+- Preserve response/parser-reported costs instead of overwriting them with
+  estimates, and avoid inventing required token totals or substituting
+  text-token rates for separately billed image and audio usage.
 
 - Deliver stream deltas without `mapcat` read-ahead that could block an event
   until additional provider data arrived.

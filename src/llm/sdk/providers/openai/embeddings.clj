@@ -10,9 +10,7 @@
             [llm.sdk.transport.embed :as et]
             [llm.sdk.provider :as provider]
             [llm.sdk.usage :as usage]
-            [llm.sdk.errors :as errors])
-  (:import [java.nio ByteBuffer ByteOrder]
-           [java.util Base64]))
+            [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
@@ -33,52 +31,59 @@
 
     :else model))
 
+(defn- embed-url [profile request]
+  (if-let [builder (:profile/url-builder profile)]
+    (builder profile request "/embeddings")
+    (str (:profile/base-url profile) "/embeddings")))
+
+(defn- embed-model [profile request]
+  (if (= :v1 (:azure/api-style profile))
+    (:azure/deployment profile)
+    (:embed/model request)))
+
 (defn build-embed-request-openai
   [profile request]
-  (let [model (normalize-model profile (:embed/model request))
+  (let [provider-id (:profile/id profile)
+        mistral? (= :mistral provider-id)
+        model (normalize-model profile (embed-model profile request))
         inputs (:embed/inputs request)
         ;; OpenAI accepts string OR vector of strings. We canonicalize
         ;; to vector on input, but if the caller passed a single input,
         ;; unwrap to a string for compatibility with strict providers
         ;; (and to keep tokens accounted as one).
         input-payload (if (= 1 (count inputs)) (first inputs) inputs)
-        body (cond-> {:model model :input input-payload}
-               (:embed/dimensions request)
-               (assoc :dimensions (:embed/dimensions request))
-               (:embed/encoding-format request)
-               (assoc :encoding_format (name (:embed/encoding-format request)))
-               (:embed/user request)
-               (assoc :user (:embed/user request)))
-        extra (get-in request [:embed/provider-options :extra_body])
-        body (if (seq extra) (merge body extra) body)]
-    {:method :post
-     :url (str (:profile/base-url profile) "/embeddings")
-     :headers (cond-> (provider/default-headers
-                       profile
-                       (provider/resolve-auth-token profile))
-                (= :openrouter (:profile/id profile))
-                (merge (openrouter-headers)))
-     :body body}))
+        dimension-field (if mistral? :output_dimension :dimensions)]
+    (when (and mistral? (:embed/user request))
+      (throw (ex-info "Mistral embeddings do not support :embed/user"
+                      {:provider :mistral
+                       :error/type :provider/unsupported-option
+                       :option :embed/user})))
+    (let [body (cond-> {:model model :input input-payload}
+                 (:embed/dimensions request)
+                 (assoc dimension-field (:embed/dimensions request))
+                 (:embed/encoding-format request)
+                 (assoc :encoding_format
+                        (name (:embed/encoding-format request)))
+                 (and (not mistral?) (:embed/user request))
+                 (assoc :user (:embed/user request)))
+          extra (get-in request [:embed/provider-options :extra_body])
+          body (if (seq extra) (merge body extra) body)]
+      {:method :post
+       :url (embed-url profile request)
+       :headers (cond-> (provider/default-headers
+                         profile
+                         (provider/resolve-auth-token profile))
+                  (= :openrouter provider-id)
+                  (merge (openrouter-headers)))
+       :body body})))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
 
-(defn- decode-base64-embedding [encoded]
-  (let [bytes (.decode (Base64/getDecoder) ^String encoded)]
-    (when-not (zero? (mod (alength bytes) Float/BYTES))
-      (throw (ex-info "Invalid base64 embedding byte length"
-                      {:byte-length (alength bytes)})))
-    (let [buffer (doto (ByteBuffer/wrap bytes)
-                   (.order ByteOrder/LITTLE_ENDIAN))]
-      (loop [values (transient [])]
-        (if (.hasRemaining buffer)
-          (recur (conj! values (.getFloat buffer)))
-          (persistent! values))))))
-
 (defn- parse-embedding [embedding]
   (if (string? embedding)
-    (decode-base64-embedding embedding)
+    (et/decode-float32-base64 embedding)
     embedding))
 
 (defn parse-embed-response-openai

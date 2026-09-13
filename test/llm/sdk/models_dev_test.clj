@@ -154,17 +154,23 @@
        (is (= :codex (:model/provider (mdev/lookup :codex "gpt-4o"))))))))
 
 (deftest lookup-honours-kimi-code-provider
-  (offline
-   (fn []
-     (testing ":kimi-code routes through the Kimi coding catalog"
-       (is (some? (mdev/lookup :kimi-code "k2p6")))
-       (is (= :kimi-code
-              (:model/provider (mdev/lookup :kimi-code "k2p6"))))))))
+  (let [model-id "fixture-kimi-code-model"
+        canned-tree
+        {:kimi-for-coding
+         {:models {(keyword model-id)
+                   {:id model-id :limit {:context 8192}}}}}]
+    (with-redefs [http/request
+                  (fn [_] {:status 200 :body canned-tree})]
+      (let [entry (mdev/lookup :kimi-code model-id)]
+        (is (some? entry))
+        (is (= model-id (:model/id entry)))
+        (is (= :kimi-code (:model/provider entry)))))))
 
 (deftest kimi-public-does-not-reuse-kimi-code-catalog
-  (offline
-   (fn []
-     (is (nil? (mdev/lookup :kimi "k2p6"))))))
+  (let [coding-catalog (get mdev/provider-id->models-dev-id :kimi-code)
+        public-catalog (get mdev/provider-id->models-dev-id :kimi)]
+    (is (= "kimi-for-coding" coding-catalog))
+    (is (not= coding-catalog public-catalog))))
 
 (deftest list-models-returns-many
   (offline

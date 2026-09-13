@@ -17,6 +17,7 @@
         input (if (= 1 (count inputs)) (first inputs) inputs)
         opts (:embed/provider-options request)
         encoding (:embed/encoding-format request)
+        output-dtype (:output-dtype opts)
         body (cond-> {:model (:embed/model request)
                       :input input}
                (:input-type opts) (assoc :input_type (:input-type opts))
@@ -26,10 +27,33 @@
                (assoc :output_dimension (:embed/dimensions request))
                (= :float encoding) (assoc :output_dtype "float")
                (= :base64 encoding) (assoc :encoding_format "base64")
-               (:output-dtype opts) (assoc :output_dtype (:output-dtype opts)))
+               output-dtype
+               (assoc :output_dtype
+                      (if (keyword? output-dtype)
+                        (name output-dtype)
+                        output-dtype)))
         body (if-let [extra (:extra_body opts)]
                (merge body extra)
-               body)]
+               body)
+        encoding-format (or (:encoding_format body)
+                            (get body "encoding_format"))
+        encoding-format (if (keyword? encoding-format)
+                          (name encoding-format)
+                          encoding-format)
+        output-dtype (or (:output_dtype body)
+                         (get body "output_dtype"))
+        output-dtype (if (keyword? output-dtype)
+                       (name output-dtype)
+                       output-dtype)]
+    (when (and (= "base64" encoding-format)
+               output-dtype
+               (not= "float" output-dtype))
+      (throw (ex-info
+              "Voyage base64 embeddings require float output_dtype"
+              {:provider :voyage
+               :error/type :request/unsupported-embedding-encoding
+               :encoding-format encoding-format
+               :output-dtype output-dtype})))
     {:method :post
      :url (str (:profile/base-url profile) "/embeddings")
      :headers (provider/default-headers
@@ -48,8 +72,12 @@
      :usage/provider-raw usage}))
 
 (defn- dense-vector [embedding]
-  (when (and (sequential? embedding)
-             (every? number? embedding))
+  (cond
+    (string? embedding)
+    (et/decode-float32-base64 embedding)
+
+    (and (sequential? embedding)
+         (every? number? embedding))
     (vec embedding)))
 
 (defn parse-embed-response-voyage

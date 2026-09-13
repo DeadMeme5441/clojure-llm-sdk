@@ -138,6 +138,41 @@
     (is (= "get_weather" (get-in built [:body :tools 0 :name])))
     (is (true? (get-in built [:body :tools 0 :strict])))))
 
+(deftest test-build-request-custom-tools-and-choice
+  (let [built (transport/build-request
+               (codex/make-transport)
+               (provider/get-provider :codex)
+               {:request/model "gpt-5"
+                :request/messages [{:message/role :user
+                                    :message/content "Run the parser"}]
+                :request/tools
+                [{:type :custom
+                  :custom {:name "parser"
+                           :description "Parse one expression"
+                           :format {:type :grammar
+                                    :grammar
+                                    {:definition "start: WORD"
+                                     :syntax :lark}}}}
+                 {:type :custom
+                  :custom {:name "shell"
+                           :format {:type :text}}}]
+                :request/tool-choice
+                {:type :custom :custom {:name "parser"}}})
+        tools (get-in built [:body :tools])]
+    (is (= [{:type "custom"
+             :name "parser"
+             :description "Parse one expression"
+             :format {:type "grammar"
+                      :definition "start: WORD"
+                      :syntax "lark"}}
+            {:type "custom"
+             :name "shell"
+             :format {:type "text"}}]
+           tools))
+    (is (every? (comp seq :name) tools))
+    (is (= {:type "custom" :name "parser"}
+           (get-in built [:body :tool_choice])))))
+
 (deftest test-build-request-file-input
   (let [t (codex/make-transport)
         profile (provider/get-provider :codex)
@@ -330,7 +365,7 @@
                      {:codex_reasoning_items {0 reasoning-item}}}}
                    {:message/role :user
                     :message/content "Continue."}]})]
-      (is (= (dissoc reasoning-item :id)
+      (is (= reasoning-item
              (get-in built [:body :input 0])))
       (is (= "user" (get-in built [:body :input 1 :role]))))))
 
@@ -363,12 +398,13 @@
              :usage {:input_tokens 15 :output_tokens 8}}
         resp (transport/parse-response t profile raw)]
     (is (= 2 (count (:response/parts resp))))
-    (is (= :text (:part/type (first (:response/parts resp)))))
-    (is (= :reasoning (:part/type (second (:response/parts resp)))))
-    (is (= "encrypted-thinking-blob" (:reasoning/text (second (:response/parts resp)))))
+    (is (= :reasoning (:part/type (first (:response/parts resp)))))
+    (is (= :text (:part/type (second (:response/parts resp)))))
+    (is (= "encrypted-thinking-blob"
+           (:reasoning/text (first (:response/parts resp)))))
     (is (seq (get-in resp [:response/provider-data :codex_reasoning_items])))))
 
-(deftest test-parse-response-tool-call
+(deftest test-parse-and-replay-response-function-call
   (let [t (codex/make-transport)
         profile (provider/get-provider :codex)
         raw {:id "resp_3"
@@ -380,39 +416,102 @@
                        :arguments "{\"location\":\"NYC\"}"}]
              :status "completed"
              :usage {:input_tokens 20 :output_tokens 10}}
-        resp (transport/parse-response t profile raw)]
+        resp (transport/parse-response t profile raw)
+        call (first (:response/tool-calls resp))
+        replay (get-in
+                (transport/build-request
+                 t profile
+                 {:request/model "o3"
+                  :request/messages
+                  [{:message/role :assistant
+                    :message/tool-calls [call]}
+                   {:message/role :tool
+                    :message/tool-call-id "call_abc"
+                    :message/content "sunny"}]})
+                [:body :input])]
     (is (= :tool-calls (:response/finish-reason resp)))
     (is (= 1 (count (:response/tool-calls resp))))
-    (is (= "get_weather" (get-in resp [:response/tool-calls 0 :tool-call/name])))
-    (is (= "{\"location\":\"NYC\"}" (get-in resp [:response/tool-calls 0 :tool-call/arguments])))
-    (is (= "fc_123" (get-in resp [:response/tool-calls 0 :tool-call/provider-data :response_item_id])))))
+    (is (= "get_weather" (:tool-call/name call)))
+    (is (= "{\"location\":\"NYC\"}" (:tool-call/arguments call)))
+    (is (= "fc_123"
+           (get-in call [:tool-call/provider-data :response_item_id])))
+    (is (= [{:type "function_call"
+             :id "fc_123"
+             :call_id "call_abc"
+             :name "get_weather"
+             :arguments "{\"location\":\"NYC\"}"}
+            {:type "function_call_output"
+             :call_id "call_abc"
+             :output "sunny"}]
+           replay))))
 
-(deftest test-parse-response-current-reasoning-summary-and-custom-tool
+(deftest test-custom-tool-full-roundtrip-preserves-kind-order-and-ids
   (let [t (codex/make-transport)
         profile (provider/get-provider :codex)
+        reasoning {:type "reasoning"
+                   :id "rs_1"
+                   :summary [{:type "summary_text"
+                              :text "Checked the constraints."}]
+                   :encrypted_content "opaque-reasoning"}
+        message {:type "message"
+                 :id "msg_1"
+                 :role "assistant"
+                 :status "completed"
+                 :phase "commentary"
+                 :content [{:type "output_text" :text "Running it."}]}
+        custom-call {:type "custom_tool_call"
+                     :id "ct_1"
+                     :call_id "call_custom"
+                     :name "shell"
+                     :input "pwd"
+                     :status "completed"}
         raw {:id "resp-current"
              :model "gpt-5"
-             :output [{:type "reasoning"
-                       :id "rs_1"
-                       :summary [{:type "summary_text"
-                                  :text "Checked the constraints."}]}
-                      {:type "custom_tool_call"
-                       :id "ct_1"
-                       :call_id "call_custom"
-                       :name "shell"
-                       :input "pwd"
-                       :status "completed"}]
+             :output [reasoning message custom-call]
              :status "completed"
              :incomplete_details {:reason nil}
              :service_tier "flex"}
-        resp (transport/parse-response t profile raw)]
-    (is (= "Checked the constraints."
-           (get-in resp [:response/parts 0 :reasoning/text])))
-    (is (= "shell" (get-in resp [:response/tool-calls 0 :tool-call/name])))
-    (is (= "pwd" (get-in resp [:response/tool-calls 0 :tool-call/arguments])))
+        resp (transport/parse-response t profile raw)
+        call (first (:response/tool-calls resp))
+        assistant {:message/role :assistant
+                   :message/phase :commentary
+                   :message/content
+                   [{:part/type :text :text "Running it."} call]
+                   ;; Some consumers expose calls in both canonical locations.
+                   :message/tool-calls [call]
+                   :message/provider-data
+                   {:codex (:response/provider-data resp)}}
+        replay (get-in
+                (transport/build-request
+                 t profile
+                 {:request/model "gpt-5"
+                  :request/messages
+                  [assistant
+                   {:message/role :tool
+                    :message/tool-call-id "call_custom"
+                    :message/name "shell"
+                    :message/content "project-root"}]})
+                [:body :input])]
+    (is (= [:reasoning :text :tool-call]
+           (mapv :part/type (:response/parts resp))))
+    (is (= "shell" (:tool-call/name call)))
+    (is (= "pwd" (:tool-call/arguments call)))
     (is (= "custom_tool_call"
-           (get-in resp [:response/tool-calls 0 :tool-call/provider-data :wire_type])))
-    (is (= "flex" (get-in resp [:response/provider-data :service_tier])))))
+           (get-in call [:tool-call/provider-data :wire_type])))
+    (is (= "flex" (get-in resp [:response/provider-data :service_tier])))
+    (is (= [reasoning
+            message
+            {:type "custom_tool_call"
+             :id "ct_1"
+             :call_id "call_custom"
+             :name "shell"
+             :input "pwd"}
+            {:type "custom_tool_call_output"
+             :call_id "call_custom"
+             :output "project-root"}]
+           replay))
+    (is (= 1 (count (filter #(= "custom_tool_call" (:type %)) replay)))
+        "A call supplied in content and message/tool-calls replays once")))
 
 (deftest test-parse-response-empty-output
   (testing "empty output with output_text synthesizes a message item"
@@ -464,6 +563,40 @@
     (is (= 16 (:usage/output-tokens usage)))
     (is (= 9 (:usage/reasoning-tokens usage)))
     (is (= 39 (:usage/total-tokens usage)))))
+
+(deftest failed-responses-propagate-with-partial-output
+  (let [t (codex/make-transport)
+        profile (provider/get-provider :codex)
+        json-failure
+        {:id "resp_failed"
+         :model "gpt-5"
+         :status "failed"
+         :output [{:type "message"
+                   :role "assistant"
+                   :status "incomplete"
+                   :content [{:type "output_text" :text "partial"}]}]
+         :error {:code "server_error" :message "generation failed"}}
+        sse-failure
+        (str "data: "
+             (json/generate-string
+              {:type "response.output_text.delta" :delta "partial"})
+             "\n\ndata: "
+             (json/generate-string
+              {:type "response.failed"
+               :response {:id "resp_failed"
+                          :model "gpt-5"
+                          :status "failed"
+                          :usage {:input_tokens 3 :output_tokens 1}}})
+             "\n\n")]
+    (doseq [raw [json-failure sse-failure]]
+      (let [failure (try
+                      (transport/parse-response t profile raw)
+                      nil
+                      (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? failure))
+        (is (= "partial"
+               (get-in (ex-data failure)
+                       [:partial-response :response/parts 0 :text])))))))
 
 (deftest test-parse-response-incomplete-function
   (testing "queued/in_progress function_call items are skipped"
@@ -541,15 +674,36 @@
         profile (provider/get-provider :codex)
         start (transport/parse-stream-event
                t profile
-               "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"custom_tool_call\",\"call_id\":\"call_2\",\"name\":\"shell\"}}")
+               "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"custom_tool_call\",\"id\":\"ct_2\",\"call_id\":\"call_2\",\"name\":\"shell\"}}")
         delta (transport/parse-stream-event
                t profile
                "data: {\"type\":\"response.custom_tool_call_input.delta\",\"output_index\":1,\"delta\":\"pwd\"}")
         done (transport/parse-stream-event
               t profile
-              "data: {\"type\":\"response.custom_tool_call_input.done\",\"output_index\":1,\"input\":\"pwd\"}")]
+              "data: {\"type\":\"response.custom_tool_call_input.done\",\"output_index\":1,\"input\":\"pwd\"}")
+        full (transport/parse-response
+              t profile
+              {:id "resp_2"
+               :model "gpt-5"
+               :status "completed"
+               :output [{:type "message"
+                         :id "msg_2"
+                         :role "assistant"
+                         :status "completed"
+                         :content []}
+                        {:type "custom_tool_call"
+                         :id "ct_2"
+                         :call_id "call_2"
+                         :name "shell"
+                         :input "pwd"}]})
+        full-metadata (get-in full
+                              [:response/tool-calls 0
+                               :tool-call/provider-data])]
     (is (= :stream/tool-call-start (:event/type start)))
     (is (= "shell" (:tool-call/name start)))
+    (is (= full-metadata (:tool-call/provider-data start)))
+    (is (= "custom_tool_call"
+           (get-in start [:tool-call/provider-data :wire_type])))
     (is (= "pwd" (:tool-call/arguments-delta delta)))
     (is (= :stream/tool-call-end (:event/type done)))))
 

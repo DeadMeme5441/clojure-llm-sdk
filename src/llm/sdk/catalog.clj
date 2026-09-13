@@ -116,16 +116,20 @@
 ;; ---------------------------------------------------------------------------
 
 (defn resolve-model
-  "Fuzzy-match a model name against the registry. Tries: exact id,
-   provider-prefixed id (anthropic/claude → claude), then substring
-   over every known model id. Returns a registry entry or nil."
+  "Fuzzy-match a model name against the registry. Tries: an explicit known
+   provider plus its remaining model path, exact id, provider-prefix removal,
+   then substring over every known model id. Returns a registry entry or nil."
   [model-name]
-  (or (find-by-id model-name)
-      (let [without-prefix (second (re-find #"^[^/]+/(.+)$" model-name))]
-        (when without-prefix (find-by-id without-prefix)))
-      (let [all (registry/list-all)]
-        (some (fn [e]
-                (when (and (:model/id e)
-                           (str/includes? model-name (:model/id e)))
-                  e))
-              all))))
+  (let [[_ prefix without-prefix] (re-find #"^([^/]+)/(.+)$" model-name)
+        provider (some-> prefix keyword)]
+    (or (when (and provider
+                   (contains? (registry/known-providers) provider))
+          (registry/lookup provider without-prefix))
+        (find-by-id model-name)
+        (when without-prefix (find-by-id without-prefix))
+        (let [all (registry/list-all)]
+          (some (fn [e]
+                  (when (and (:model/id e)
+                             (str/includes? model-name (:model/id e)))
+                    e))
+                all)))))

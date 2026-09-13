@@ -38,6 +38,7 @@ Important chat credentials:
 | xAI | `:xai` | `XAI_API_KEY` |
 | HuggingFace Router | `:huggingface` | `HF_TOKEN` |
 | Perplexity | `:perplexity` | `PERPLEXITY_API_KEY` |
+| Z.AI | `:zai` | `ZAI_API_KEY` |
 
 See [.env.example](../.env.example) for the full credential template across chat, embeddings, rerank, audio, image, and AWS providers.
 
@@ -110,10 +111,13 @@ baseline. History edits, compaction, unsupported output shapes and reconnects
 fall back to a full request; the SDK never guesses which messages to omit.
 
 Preserve `:response/provider-data` as `:message/provider-data` on assistant
-messages, alongside canonical content and tool calls. This retains encrypted
-reasoning and message phase needed for exact continuation. Replayed assistant
-message items are not duplicated, and edited canonical text wins over stale
-provider text. `:config {:incremental? false}` disables history optimization.
+messages, alongside canonical content and tool calls. Keep each tool call's
+`:tool-call/provider-data` as well: it may carry custom/provider-native
+identity required for replay. Together these fields retain encrypted
+reasoning, tool identity, and message phase needed for exact continuation.
+Replayed assistant message items are not duplicated, and edited canonical text
+wins over stale provider text. `:config {:incremental? false}` disables history
+optimization.
 
 Only the latest completed request/output is retained per connection, and only
 after its terminal bytes have been consumed. Streamed `response.output_item.done`
@@ -144,6 +148,30 @@ fallback after a WebSocket failure. A caller-managed `:http-client` must be a
 Wire protocol references: [Codex WebSocket endpoint](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/responses_websocket.rs)
 and [Codex client protocol selection](https://github.com/openai/codex/blob/main/codex-rs/core/src/client.rs).
 
+## OpenAI-Compatible Alias Options
+
+Built-in aliases such as `:deepseek`, `:kimi`, `:groq`, `:cerebras`,
+`:together`, and `:xai` accept canonical `:request/reasoning`; their profiles
+translate it into the model/provider-specific wire fields implemented by the
+adapter. Do not copy native reasoning examples from another alias: supported
+efforts and wire shapes differ by provider and model.
+
+For an OpenAI-compatible extension that has no canonical key, use the exact
+escape-hatch spelling implemented by the shared adapter:
+
+```clojure
+{:request/provider-options
+ {:extra_body {:native_field "value"}}}
+```
+
+Keys inside `:extra_body` are native wire keys and are not renamed.
+`:model`, `:messages`, and `:stream` are protected and cannot be overridden
+through this map. OpenRouter has a dedicated adapter: put routing preferences
+directly at `:request/provider-options :provider`, Pareto routing at
+`:request/provider-options :pareto :min-coding-score`, and metadata header
+selection at `:request/provider-options :metadata-level`; canonical reasoning
+stays under `:request/reasoning`.
+
 ## Kimi And Kimi Code
 
 There are two separate providers:
@@ -160,6 +188,89 @@ Kimi Code uses the OpenAI Chat Completions wire shape with the `kimi-for-coding`
    :request/messages [{:message/role :user
                        :message/content "Reply with ok"}]})
 ```
+
+## Z.AI
+
+`:zai` targets `https://api.z.ai/api/paas/v4`, reads `ZAI_API_KEY`, and uses
+caller-supplied GLM model ids. Use canonical `:request/reasoning`; reasoning
+content is retained for assistant-message replay. The implemented native
+options are kebab-case keys nested under `:zai`:
+
+```clojure
+{:request/provider-options
+ {:zai {:do-sample true
+        :tool-stream true
+        :request-id "request-42"
+        :user-id "user-42"}}}
+```
+
+Unknown or misplaced options are rejected. Z.AI supports automatic function
+tool choice (`:auto`) but not custom tools or JSON Schema response format.
+Canonical image parts are accepted as multimodal input; this does not imply
+file or video attachment support. The SDK has no invented Z.AI pricing table,
+and a configured transport does not establish live model availability.
+
+## Perplexity Agent API
+
+The public provider id remains `:perplexity`, and callers continue to use the
+canonical `sdk/complete` request and response schemas. The transport posts to
+`https://api.perplexity.ai/v1/agent`, converts canonical messages to Agent
+`input` items, and expects typed Agent `output` items rather than Chat
+Completions `choices`. Use an actual provider-qualified Agent model id, not a
+legacy unqualified Sonar id:
+
+```clojure
+(sdk/complete
+  :perplexity
+  {:request/model "perplexity/sonar"
+   :request/messages [{:message/role :user
+                       :message/content "What changed in Clojure recently?"}]
+   :request/max-tokens 512})
+```
+
+Grounded retrieval is an Agent `web_search` tool. The adapter includes it by
+default to preserve the provider's grounded-search behavior; the SDK never
+turns on sandbox or other action tools implicitly. Configure the tool with
+kebab-case options under the Perplexity namespace:
+
+```clojure
+{:request/provider-options
+ {:perplexity
+  {:web-search
+   {:search-context-size :high
+    :max-results 10
+    :filters {:search-domain-filter ["clojure.org"]
+              :search-recency-filter :month}}}}}
+```
+
+Use `{:request/provider-options {:perplexity {:web-search false}}}` to
+explicitly disable grounded search. Other constructor-backed Agent options are
+`:max-steps`, `:language-preference`, `:models`, `:previous-response-id`, and
+`:store`. `:models` is a fallback chain of native provider-qualified model ids;
+it is not an alias for an old Sonar tier or preset.
+
+Typed message text, search results, URL annotations, sparse usage, reported
+cost, and Responses-style SSE lifecycle events are normalized into the
+canonical response and indexed stream-event schemas. Web-search invocations
+are retained as informational `:usage/search-queries`; they are not Cohere
+rerank `:usage/search-units` and are never substituted for that billing unit.
+Token counters remain absent when the Agent response does not report them. A
+provider-reported Agent cost is authoritative over registry estimation.
+
+Legacy `:extra_body` and Sonar-only `disable_search`,
+`enable_search_classifier`, `search_mode`, `search_type`,
+`return_related_questions`, `search_language_filter`, `stream_mode`,
+`return_images`, `num_images`, `image_domain_filter`, `image_format_filter`,
+`return_videos`, `num_videos`, `media_response`, `web_search_options`,
+`num_search_results`, and `reasoning_effort` are rejected before transport.
+Flat Sonar search/date filters are rejected too; move their supported
+equivalents under `:perplexity :web-search :filters` as shown above. Canonical
+`:request/stop` and `:request/tool-choice` are unsupported by this endpoint.
+Presets are not inferred or exposed as aliases.
+
+The adapter does not imply that a particular model is enabled for the caller
+or currently available. Provider-qualified model availability and account
+access must be confirmed against the live Agent API.
 
 ## Vertex Gemini
 
@@ -185,6 +296,28 @@ export GOOGLE_CLOUD_PROJECT=my-project
    :request/messages [{:message/role :user
                        :message/content "Hi"}]})
 ```
+
+## Gemini Native Embeddings
+
+The same `:gemini-native` profile also supports `sdk/embed` through
+`models/{model}:batchEmbedContents`; it is not a Vertex embedding alias.
+Inputs preserve their order. `:embed/dimensions` becomes
+`outputDimensionality`, and the only native options are `:task-type` and
+`:title` directly under `:embed/provider-options`:
+
+```clojure
+(sdk/embed
+  :gemini-native
+  {:embed/model "gemini-embedding-001"
+   :embed/inputs ["first" "second"]
+   :embed/dimensions 768
+   :embed/provider-options {:task-type :retrieval-document
+                            :title "Reference notes"}})
+```
+
+Gemini embeddings return numeric vectors only. Usage is included only when
+Gemini reports `usageMetadata`; missing usage remains unknown rather than
+becoming zero.
 
 ## Vertex Anthropic (Claude)
 
@@ -214,30 +347,79 @@ Model ids are the Vertex Claude ids, such as `claude-opus-4-6`, `claude-sonnet-4
 
 The provider reuses the native Anthropic Messages shaping, so thinking blocks, tool use, file/document attachments, and native cache markers behave exactly as on `:anthropic`.
 
+## Explicit Image Models
+
+OpenAI, OpenRouter, and Bedrock image generation require `:image/model` on
+every request. The SDK does not silently select or replace a billable model.
+OpenAI accepts the implemented GPT Image serializers, OpenRouter accepts the
+provider-qualified id for its native `/images` endpoint, and Bedrock dispatches
+by explicit Amazon or Stability id. Serializer support is a transport
+capability, not proof that the model is live, entitled, or regionally enabled.
+
+## AWS Bedrock Image Models
+
+Bedrock image generation requires `:image/model` on every request. The retired
+implicit Titan Image Generator choice was removed without substituting another
+billable model:
+
+```clojure
+(sdk/generate-image
+  :bedrock
+  {:image/model "amazon.nova-canvas-v1:0"
+   :image/prompt "A linocut print of a lighthouse in a winter storm"
+   :image/size "1024x1024"})
+```
+
+The image constructor supports explicit Amazon Titan Image Generator and Nova
+Canvas ids, legacy Stability SDXL ids, and current Stability Stable Image Core,
+Ultra, and SD3.5 ids, each with its own native request shape. Examples include
+`amazon.titan-image-generator-v2:0`, `amazon.nova-canvas-v1:0`,
+`stability.stable-diffusion-xl-v1`, `stability.stable-image-core-v1:1`,
+`stability.stable-image-ultra-v1:1`, and `stability.sd3-5-large-v1:0`.
+Serialization support does not imply that a model is enabled in the caller's
+AWS account or region.
+
 ## Azure OpenAI Deployments
 
-Azure routes by deployment name in the URL. Register a provider profile per deployment:
+Register a provider profile per Azure deployment. The default
+`:api-style :classic` routes chat and embeddings through
+`/openai/deployments/{deployment}/chat/completions` and
+`/openai/deployments/{deployment}/embeddings`, with the required
+`:api-version` query parameter:
 
 ```clojure
 (require '[llm.sdk.providers.openai.chat :as openai-chat])
 
 (openai-chat/register-azure-deployment!
-  {:id :azure-gpt4o-prod
+  {:id :azure-model-prod
    :endpoint "https://my-resource.openai.azure.com"
-   :deployment "gpt-4o-prod"
+   :deployment "model-prod"
    :api-version "2024-08-01-preview"
    :env-var-names ["AZURE_OPENAI_API_KEY"]})
 
-(sdk/complete
-  :azure-gpt4o-prod
-  {:request/model "ignored-by-azure"
-   :request/messages [{:message/role :user
-                       :message/content "Hi"}]})
+(sdk/embed
+  :azure-model-prod
+  {:embed/model "model-prod"
+   :embed/inputs ["clojure" "lisp"]})
 ```
 
-Default Azure auth uses the `api-key` header. Use `:auth-strategy :bearer` for AAD bearer tokens.
+For Azure's v1 API, set `:api-style :v1`; `:api-version` is then optional.
+Chat and embeddings use `/openai/v1/chat/completions` and
+`/openai/v1/embeddings`, and the registered deployment is sent as the body
+`model`:
 
-The legacy namespace `llm.sdk.providers.openai-chat` remains as a compatibility shim.
+```clojure
+(openai-chat/register-azure-deployment!
+  {:id :azure-model-v1
+   :endpoint "https://my-resource.openai.azure.com"
+   :deployment "model-v1"
+   :api-style :v1})
+```
+
+Both styles attach chat and embedding transports to the registered profile.
+Default Azure auth uses the `api-key` header. Use `:auth-strategy :bearer` for
+an AAD bearer token. The legacy namespace
+`llm.sdk.providers.openai-chat` forwards to the same implementation.
 
 ## Custom OpenAI-Compatible Providers
 
@@ -250,11 +432,18 @@ For a provider that accepts OpenAI Chat Completions shape, register an alias:
   {:id :my-private-llm
    :base-url "https://llm.example.com/v1"
    :env-var-names ["MY_LLM_KEY"]
-   :capabilities #{:chat :streaming :tools}
-   :quirks {:drops #{:frequency_penalty :presence_penalty}}})
+   :capabilities #{:chat :streaming :tools}})
 ```
 
-The alias reuses the OpenAI-compatible request builder, response parser, streaming parser, and usage normalizer.
+The alias reuses the OpenAI-compatible request builder, response parser,
+streaming parser, and usage normalizer. Registration keys are `:id`,
+`:base-url`, `:env-var-names`, `:auth-strategy`, `:auth-header-name`,
+`:default-headers`, `:capabilities`, `:quirks`,
+`:supports-model-listing?`, and `:supported-params`. Quirk keys implemented by
+the adapter are `:drops`, `:reasoning-mode`, `:reasoning-replay-field`,
+`:stream-usage`, `:max-completion-tokens`, and `:custom-tools`. These are
+profile construction options, not request-native fields; only set behavior
+your endpoint actually implements.
 
 ## Live Model Listing
 

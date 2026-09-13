@@ -43,11 +43,20 @@
    "claude-sonnet-4" "anthropic.claude-sonnet-4-20250514-v1:0"
    "claude-sonnet-4-5" "anthropic.claude-sonnet-4-5-20250929-v1:0"
    "claude-sonnet-4-6" "anthropic.claude-sonnet-4-6"
+   "claude-sonnet-5" "anthropic.claude-sonnet-5"
    "claude-opus-4" "anthropic.claude-opus-4-20250514-v1:0"
    "claude-opus-4-1" "anthropic.claude-opus-4-1-20250805-v1:0"
    "claude-opus-4-5" "anthropic.claude-opus-4-5-20251101-v1:0"
    "claude-opus-4-6" "anthropic.claude-opus-4-6-v1"
+   "claude-opus-4-7" "anthropic.claude-opus-4-7"
+   "claude-opus-4-8" "anthropic.claude-opus-4-8"
+   "claude-opus-5" "anthropic.claude-opus-5"
    "claude-haiku-4-5" "anthropic.claude-haiku-4-5-20251001-v1:0"
+   "claude-fable-5" "anthropic.claude-fable-5"
+   "claude-fable-5-1" "anthropic.claude-fable-5-1"
+   "claude-mythos-preview" "anthropic.claude-mythos-preview"
+   "claude-mythos-5" "anthropic.claude-mythos-5"
+   "claude-mythos-5-1" "anthropic.claude-mythos-5-1"
    "nova-micro" "amazon.nova-micro-v1:0"
    "nova-lite" "amazon.nova-lite-v1:0"
    "nova-pro" "amazon.nova-pro-v1:0"
@@ -127,13 +136,25 @@
 ;; Message conversion
 ;; ---------------------------------------------------------------------------
 
+(def ^:private document-formats
+  #{"pdf" "csv" "doc" "docx" "xls" "xlsx" "html" "txt" "md"})
+
+(defn- invalid-request! [message type data]
+  (throw (ex-info message
+                  (merge {:provider :bedrock
+                          :error/type type}
+                         data))))
+
 (defn- bedrock-document-name [part]
-  (-> (t/file-name part)
-      (str/replace #"[^A-Za-z0-9 \-\(\)\[\]]" " ")
-      (str/replace #"\s+" " ")
-      str/trim
-      (not-empty)
-      (or "Document")))
+  (let [document-name (t/file-name part)]
+    (when-not (and (string? document-name)
+                   (<= 1 (count document-name) 200)
+                   (re-matches #"[A-Za-z0-9\s()\[\]-]+" document-name)
+                   (not (re-find #"\s{2,}" document-name)))
+      (invalid-request! "Invalid Bedrock Converse document name"
+                        :request/invalid-document-name
+                        {:document-name document-name}))
+    document-name))
 
 (defn- bedrock-document-source [part]
   (cond
@@ -191,13 +212,33 @@
         (:reasoning/signature part)
         (assoc :signature (:reasoning/signature part)))})})
 
+(defn- tool-call-input [part]
+  (if-let [native-input (or (get-in part
+                                    [:tool-call/provider-data
+                                     :bedrock/tool-use
+                                     :input])
+                            (get-in part
+                                    [:tool-call/provider-data
+                                     :bedrock/input]))]
+    native-input
+    (try
+      (json/parse-string (:tool-call/arguments part))
+      (catch Exception cause
+        (throw (ex-info "Invalid JSON tool-call arguments for Bedrock Converse"
+                        {:provider :bedrock
+                         :tool-call/id (:tool-call/id part)
+                         :error/type :request/invalid-tool-call-arguments}
+                        cause))))))
+
 (defn- tool-call->bedrock [part]
-  {:toolUse
-   {:toolUseId (:tool-call/id part)
-    :name (:tool-call/name part)
-    :input (try
-             (json/parse-string (:tool-call/arguments part))
-             (catch Exception _ {}))}})
+  (let [native-tool-use (get-in part
+                                [:tool-call/provider-data
+                                 :bedrock/tool-use])]
+    {:toolUse
+     (assoc (or native-tool-use {})
+            :toolUseId (:tool-call/id part)
+            :name (:tool-call/name part)
+            :input (tool-call-input part))}))
 
 (defn- tool-result->bedrock [part]
   {:toolResult
@@ -206,8 +247,16 @@
      (contains? part :tool-result/is-error)
      (assoc :status (if (:tool-result/is-error part) "error" "success")))})
 
+(defn- bedrock-document-format [part]
+  (let [format (some-> (t/file-extension part) name str/lower-case)]
+    (when-not (contains? document-formats format)
+      (invalid-request! "Unsupported Bedrock Converse document format"
+                        :request/unsupported-document-format
+                        {:format format}))
+    format))
+
 (defn- file->bedrock-document [part]
-  (cond-> {:document {:format (t/file-extension part)
+  (cond-> {:document {:format (bedrock-document-format part)
                       :name (bedrock-document-name part)
                       :source (bedrock-document-source part)}}
     (contains? part :file/citations)
@@ -222,6 +271,7 @@
 
     (string? content)
     [{:text content}]
+
     (sequential? content)
     (mapv (fn [part]
             (case (:part/type part)
@@ -235,39 +285,103 @@
               :unknown/provider-native
               (if (= :bedrock (:unknown/provider part))
                 (:unknown/data part)
-                {:text (str part)})
-              {:text (str part)}))
+                (invalid-request!
+                 "Cannot replay another provider's native content on Bedrock"
+                 :request/unsupported-content
+                 {:part-type (:part/type part)
+                  :part-provider (:unknown/provider part)}))
+              (invalid-request! "Unsupported Bedrock Converse content part"
+                                :request/unsupported-content
+                                {:part-type (:part/type part)})))
           content)
-    :else [{:text (str content)}]))
+
+    :else
+    [{:text (str content)}]))
+
+(defn- append-tool-calls [content tool-calls]
+  (first
+   (reduce
+    (fn [[blocks seen] tool-call]
+      (let [block (tool-call->bedrock tool-call)
+            native (:toolUse block)]
+        (if (contains? seen native)
+          [blocks seen]
+          [(conj blocks block) (conj seen native)])))
+    [(vec content) (set (keep :toolUse content))]
+    tool-calls)))
+
+(defn- validate-message-content! [role content]
+  (let [document? (boolean (some :document content))
+        image? (boolean (some :image content))
+        text? (boolean (some #(contains? % :text) content))]
+    (when (and document? (not= role :user))
+      (invalid-request! "Bedrock Converse documents require a user message"
+                        :request/invalid-document-role
+                        {:role role}))
+    (when (and document? (not text?))
+      (invalid-request!
+       "Bedrock Converse document messages require accompanying text"
+       :request/document-without-text
+       {:role role}))
+    (when (and image? (not= role :user))
+      (invalid-request! "Bedrock Converse images require a user message"
+                        :request/invalid-image-role
+                        {:role role}))))
+
+(defn- validate-canonical-media-role! [msg]
+  (let [role (:message/role msg)
+        content (:message/content msg)]
+    (when (sequential? content)
+      (when (and (some #(= :file (:part/type %)) content)
+                 (not= role :user))
+        (invalid-request! "Bedrock Converse documents require a user message"
+                          :request/invalid-document-role
+                          {:role role}))
+      (when (and (some #(= :image (:part/type %)) content)
+                 (not= role :user))
+        (invalid-request! "Bedrock Converse images require a user message"
+                          :request/invalid-image-role
+                          {:role role}))
+      (when (and (contains? #{:system :developer} role)
+                 (some #(not= :text (:part/type %)) content))
+        (invalid-request!
+         "Bedrock Converse system instructions support only text content"
+         :request/unsupported-content
+         {:role role})))))
 
 (defn- message->bedrock [msg]
-  (let [role (case (:message/role msg)
-               :user "user"
-               :assistant "assistant"
-               "user")]
+  (let [role (:message/role msg)]
     (cond
-
-      (= (:message/role msg) :tool)
+      (= role :tool)
       {:role "user"
        :content [{:toolResult
                   (cond-> {:toolUseId (or (:message/tool-call-id msg) "tool_0")
-                           :content [{:text (t/content->string (:message/content msg))}]}
-                    (some? (get-in msg [:message/provider-data :bedrock/status]))
-                    (assoc :status (get-in msg [:message/provider-data :bedrock/status])))}]}
+                           :content [{:text (t/content->string
+                                             (:message/content msg))}]}
+                    (some? (get-in msg [:message/provider-data
+                                       :bedrock/status]))
+                    (assoc :status
+                           (get-in msg [:message/provider-data
+                                       :bedrock/status])))}]}
 
-      (seq (:message/tool-calls msg))
-      {:role "assistant"
-       :content (into (content->bedrock (:message/content msg))
-                      (map (fn [tc]
-                             {:toolUse
-                              {:toolUseId (:tool-call/id tc)
-                               :name (:tool-call/name tc)
-                               :input (try (json/parse-string (:tool-call/arguments tc))
-                                           (catch Exception _ {}))}})
-                           (:message/tool-calls msg)))}
+      (contains? #{:user :assistant} role)
+      (let [_ (when (and (seq (:message/tool-calls msg))
+                         (not= role :assistant))
+                (invalid-request!
+                 "Bedrock Converse tool calls require an assistant message"
+                 :request/invalid-tool-call-role
+                 {:role role}))
+            content (append-tool-calls
+                     (content->bedrock (:message/content msg))
+                     (:message/tool-calls msg))]
+        (validate-message-content! role content)
+        {:role (name role)
+         :content content})
 
       :else
-      {:role role :content (content->bedrock (:message/content msg))})))
+      (invalid-request! "Unsupported Bedrock Converse message role"
+                        :request/unsupported-role
+                        {:role role}))))
 
 (defn- build-messages [messages]
   (mapv message->bedrock messages))
@@ -297,44 +411,174 @@
     (merge (dissoc options :bedrock)
            (or (:bedrock options) {}))))
 
+(def ^:private adaptive-only-claude-models
+  ["claude-fable-5" "claude-mythos-5" "claude-mythos-preview"])
+
+(def ^:private adaptive-claude-models
+  (into adaptive-only-claude-models
+        ["claude-opus-4-6" "claude-opus-4-7" "claude-opus-4-8"
+         "claude-opus-5" "claude-sonnet-4-6" "claude-sonnet-5"]))
+
+(def ^:private extended-claude-models
+  ["claude-3-7-sonnet" "claude-sonnet-4-20250514"
+   "claude-sonnet-4-5" "claude-sonnet-4-6"
+   "claude-opus-4-20250514" "claude-opus-4-1"
+   "claude-opus-4-5" "claude-opus-4-6"
+   "claude-haiku-4-5"])
+
+(def ^:private manual-thinking-unsupported-models
+  (into adaptive-only-claude-models
+        ["claude-opus-4-7" "claude-opus-4-8"
+         "claude-opus-5" "claude-sonnet-5"]))
+
+(defn- model-matches? [model fragments]
+  (let [model (str/lower-case (or model ""))]
+    (boolean (some #(str/includes? model %) fragments))))
+
+(defn- claude-model? [model]
+  (str/includes? (str/lower-case (or model "")) "anthropic.claude-"))
+
+(defn- nova-reasoning-model? [model]
+  (model-matches? model ["amazon.nova-pro-" "amazon.nova-lite-"]))
+
+(defn- canonical-effort [model effort]
+  (case effort
+    :minimal "low"
+    :low "low"
+    :medium "medium"
+    :high "high"
+    :xhigh "xhigh"
+    :max "max"
+    (invalid-request! "Unsupported Bedrock reasoning effort"
+                      :request/unsupported-reasoning-effort
+                      {:model model :effort effort})))
+
+(defn- claude-effort [model effort]
+  (let [effort (canonical-effort model effort)]
+    (when (and (= effort "xhigh")
+               (not (model-matches? model
+                                    ["claude-opus-4-6"
+                                     "claude-opus-5"])))
+      (invalid-request! "Claude model does not support xhigh reasoning effort"
+                        :request/unsupported-reasoning-effort
+                        {:model model :effort :xhigh}))
+    (when (and (= effort "max")
+               (not (model-matches? model
+                                    ["claude-opus-4-6"
+                                     "claude-sonnet-4-6"
+                                     "claude-opus-5"])))
+      (invalid-request! "Claude model does not support max reasoning effort"
+                        :request/unsupported-reasoning-effort
+                        {:model model :effort :max}))
+    effort))
+
+(defn- nova-reasoning-fields [model reasoning]
+  (when (contains? reasoning :budget)
+    (invalid-request! "Amazon Nova reasoning does not accept a token budget"
+                      :request/invalid-reasoning
+                      {:model model}))
+  (when (and (false? (:enabled reasoning))
+             (contains? reasoning :effort))
+    (invalid-request! "Disabled Amazon Nova reasoning cannot set effort"
+                      :request/invalid-reasoning
+                      {:model model :effort (:effort reasoning)}))
+  {:reasoningConfig
+   (cond-> {:type (if (false? (:enabled reasoning))
+                    "disabled"
+                    "enabled")}
+     (contains? reasoning :effort)
+     (assoc :maxReasoningEffort
+            (case (:effort reasoning)
+              :low "low"
+              :medium "medium"
+              :high "high"
+              (invalid-request!
+               "Amazon Nova supports only low, medium, or high reasoning effort"
+               :request/unsupported-reasoning-effort
+               {:model model :effort (:effort reasoning)}))))})
+
+(defn- claude-reasoning-fields [model reasoning]
+  (let [enabled? (not (false? (:enabled reasoning)))
+        budget (:budget reasoning)
+        adaptive? (model-matches? model adaptive-claude-models)
+        extended? (model-matches? model extended-claude-models)
+        adaptive-only? (model-matches? model adaptive-only-claude-models)]
+    (when-not (or adaptive? extended?)
+      (invalid-request! "Canonical reasoning is not supported for this Claude model"
+                        :request/unsupported-reasoning
+                        {:model model}))
+    (cond
+      (not enabled?)
+      (do
+        (when adaptive-only?
+          (invalid-request! "Claude model requires adaptive thinking"
+                            :request/invalid-reasoning
+                            {:model model}))
+        (when (contains? reasoning :budget)
+          (invalid-request! "Disabled Claude thinking cannot set a budget"
+                            :request/invalid-reasoning
+                            {:model model}))
+        (when (and (contains? reasoning :effort)
+                   (not (model-matches? model ["claude-opus-5"])))
+          (invalid-request!
+           "Only Claude Opus 5 supports effort with disabled thinking"
+           :request/invalid-reasoning
+           {:model model :effort (:effort reasoning)}))
+        (let [effort (when (contains? reasoning :effort)
+                       (claude-effort model (:effort reasoning)))]
+          (when (#{"xhigh" "max"} effort)
+            (invalid-request!
+             "Claude Opus 5 disabled thinking caps effort at high"
+             :request/unsupported-reasoning-effort
+             {:model model :effort (:effort reasoning)}))
+          (cond-> {:thinking {:type "disabled"}}
+            effort (assoc :output_config {:effort effort}))))
+
+      budget
+      (do
+        (when (model-matches? model manual-thinking-unsupported-models)
+          (invalid-request! "Claude model does not support manual thinking budgets"
+                            :request/invalid-reasoning
+                            {:model model}))
+        (when (contains? reasoning :effort)
+          (invalid-request! "Manual Claude thinking cannot set adaptive effort"
+                            :request/invalid-reasoning
+                            {:model model}))
+        (when (< budget 1024)
+          (invalid-request! "Claude thinking budget must be at least 1024 tokens"
+                            :request/invalid-reasoning
+                            {:model model :budget budget}))
+        {:thinking {:type "enabled" :budget_tokens budget}})
+
+      adaptive?
+      (cond-> {:thinking {:type "adaptive"}}
+        (contains? reasoning :effort)
+        (assoc :output_config
+               {:effort (claude-effort model (:effort reasoning))}))
+
+      :else
+      (invalid-request!
+       "Bedrock Claude extended thinking requires :request/reasoning :budget"
+       :request/invalid-reasoning
+       {:model model}))))
+
 (defn- reasoning-fields [model reasoning]
   (when reasoning
     (cond
-      (and (= false (:enabled reasoning))
-           (not (str/includes? model "anthropic.")))
+      (nova-reasoning-model? model)
+      (nova-reasoning-fields model reasoning)
+
+      (claude-model? model)
+      (claude-reasoning-fields model reasoning)
+
+      (false? (:enabled reasoning))
       nil
 
-      (not (str/includes? model "anthropic."))
-      (throw (ex-info "Canonical Bedrock reasoning is only translated for Anthropic Claude models"
-                      {:provider :bedrock
-                       :model model
-                       :error/type :request/unsupported-reasoning}))
-
-      (= false (:enabled reasoning))
-      {:thinking {:type "disabled"}}
-
-      (:budget reasoning)
-      {:thinking {:type "enabled"
-                  :budget_tokens (:budget reasoning)}}
-
-      (and (not= false (:enabled reasoning))
-           (str/includes? model "-4-6"))
-      (cond-> {:thinking {:type "adaptive"}}
-        (:effort reasoning)
-        (assoc :output_config
-               {:effort (case (:effort reasoning)
-                          (:minimal :low) "low"
-                          :medium "medium"
-                          :high "high"
-                          :xhigh "max")}))
-
-      (:enabled reasoning)
-      (throw (ex-info "Bedrock Claude extended thinking requires :request/reasoning :budget"
-                      {:provider :bedrock
-                       :model model
-                       :error/type :request/invalid-reasoning}))
-
-      :else nil)))
+      :else
+      (invalid-request!
+       "Canonical Bedrock reasoning is unsupported for this model"
+       :request/unsupported-reasoning
+       {:model model}))))
 
 (defn- response-format->output-config [response-format]
   (when (and (= :json_schema (:type response-format))
@@ -363,8 +607,56 @@
       (System/getenv "AWS_DEFAULT_REGION")
       "us-east-1"))
 
-(defn- bedrock-base-url []
-  (str "https://bedrock-runtime." (aws-region) ".amazonaws.com"))
+(defn- endpoint-region [base-url]
+  (try
+    (let [host (some-> base-url java.net.URI. .getHost str/lower-case)]
+      (second
+       (re-matches
+        #"bedrock(?:-agent)?-runtime(?:-fips)?\.([a-z0-9-]+)\.(?:amazonaws\.com(?:\.cn)?|api\.aws)"
+        (or host ""))))
+    (catch Exception _ nil)))
+
+(defn- bedrock-base-url [profile]
+  (str/replace
+   (or (:profile/base-url profile)
+       (str "https://bedrock-runtime." (aws-region) ".amazonaws.com"))
+   #"/+$"
+   ""))
+(defn- agent-runtime-base-url [base-url]
+  (str/replace base-url
+               #"(?i)^(https?://)bedrock-runtime(?=[.-])"
+               "$1bedrock-agent-runtime"))
+
+
+(defn- signing-region [profile options base-url]
+  (or (endpoint-region base-url)
+      (:aws-region options)
+      (:profile/aws-region profile)
+      (aws-region)))
+
+(defn runtime-routing
+  "Resolve a Bedrock endpoint and its SigV4 region. The two-argument
+   form keeps the existing Bedrock Runtime route used by Converse and
+   InvokeModel. Passing :agent-runtime converts standard AWS Runtime
+   hosts to Agent Runtime while leaving explicit custom endpoints intact."
+  ([profile options]
+   (runtime-routing profile options :runtime))
+  ([profile options runtime]
+   (let [base-url (bedrock-base-url profile)
+         base-url (case runtime
+                    :runtime base-url
+                    :agent-runtime (agent-runtime-base-url base-url)
+                    (throw
+                     (ex-info "Unsupported Bedrock runtime route"
+                              {:runtime runtime})))]
+     {:base-url base-url
+      :region (signing-region profile options base-url)})))
+
+(defn- validate-cache-ttl! [ttl]
+  (when (and (some? ttl) (not (#{"5m" "1h"} ttl)))
+    (invalid-request! "Bedrock Converse cache TTL must be 5m or 1h"
+                      :request/unsupported-cache-ttl
+                      {:ttl ttl})))
 
 (defn- cache-point-block [ttl]
   {:cachePoint (cond-> {:type "default"}
@@ -391,19 +683,66 @@
              (update last-msg :content append-cache-point ttl)))
     messages))
 
+(defn- active-claude-thinking? [model fields]
+  (and (claude-model? model)
+       (contains? #{"adaptive" "enabled"}
+                  (get-in fields [:thinking :type]))))
+
+(defn- forced-tool-choice? [tool-choice]
+  (or (= tool-choice :required)
+      (and (map? tool-choice)
+           (= (:type tool-choice) :function))))
+
+(defn- validate-thinking-combinations!
+  [model fields request additional-model-fields]
+  (when (active-claude-thinking? model fields)
+    (let [sampling-fields
+          (cond-> []
+            (some? (:request/temperature request)) (conj :temperature)
+            (some? (:request/top-p request)) (conj :top-p)
+            (some #(contains? additional-model-fields %)
+                  [:top_k :topK "top_k" "topK"])
+            (conj :top-k))]
+      (when (seq sampling-fields)
+        (invalid-request!
+         "Claude thinking is incompatible with modified sampling parameters"
+         :request/incompatible-reasoning
+         {:model model :sampling-fields sampling-fields}))
+      (when (forced-tool-choice? (:request/tool-choice request))
+        (invalid-request! "Claude thinking does not support forced tool use"
+                          :request/incompatible-reasoning
+                          {:model model
+                           :tool-choice (:request/tool-choice request)}))
+      (when-let [budget (get-in fields [:thinking :budget_tokens])]
+        (when (and (some? (:request/max-tokens request))
+                   (>= budget (:request/max-tokens request)))
+          (invalid-request!
+           "Claude thinking budget must be less than max tokens"
+           :request/invalid-reasoning
+           {:model model
+            :budget budget
+            :max-tokens (:request/max-tokens request)}))))))
+
 (defn build-request-bedrock
-  [_profile request]
+  [profile request]
   (let [stream? (boolean (:request/stream? request))
         canonical-model (:request/model request)
         model (resolve-model-id canonical-model)
         options (bedrock-provider-options request)
-        messages (remove #(= (:message/role %) :system) (:request/messages request))
-        system-texts (keep #(when (= (:message/role %) :system)
+        _valid-media-roles
+        (doseq [message (:request/messages request)]
+          (validate-canonical-media-role! message))
+        instruction-role? #(contains? #{:system :developer}
+                                      (:message/role %))
+        messages (remove instruction-role? (:request/messages request))
+        system-texts (keep #(when (instruction-role? %)
                               (t/content->string (:message/content %)))
                            (:request/messages request))
         cache-on? (cache/cache-enabled? request)
         cache-ttl (get-in request [:request/cache :ttl])
-        system-content (when (seq system-texts) (mapv #(hash-map :text %) system-texts))
+        _cache-valid (validate-cache-ttl! cache-ttl)
+        system-content (when (seq system-texts)
+                         (mapv #(hash-map :text %) system-texts))
         system-content (if (and cache-on? system-content)
                          (append-cache-point system-content cache-ttl)
                          system-content)
@@ -419,22 +758,29 @@
         tool-config (when tools
                       (cond-> {:tools tools}
                         tool-choice (assoc :toolChoice tool-choice)))
+        reasoning (reasoning-fields model (:request/reasoning request))
+        native-additional-model-fields
+        (or (:additional-model-request-fields options) {})
+        additional-model-fields
+        (merge native-additional-model-fields reasoning)
+        _thinking-valid
+        (validate-thinking-combinations!
+         model additional-model-fields request native-additional-model-fields)
         inference-config
         (cond-> {}
-          (:request/temperature request)
+          (some? (:request/temperature request))
           (assoc :temperature (:request/temperature request))
-          (:request/max-tokens request)
+          (some? (:request/max-tokens request))
           (assoc :maxTokens (:request/max-tokens request))
-          (:request/top-p request)
+          (some? (:request/top-p request))
           (assoc :topP (:request/top-p request))
           (:request/stop request)
           (assoc :stopSequences (t/stop-sequences (:request/stop request))))
-        additional-model-fields
-        (merge (reasoning-fields model (:request/reasoning request))
-               (:additional-model-request-fields options))
         output-config (or (:output-config options)
-                          (response-format->output-config (:request/response-format request)))
-        request-metadata (merge (metadata->bedrock (:request/metadata request))
+                          (response-format->output-config
+                           (:request/response-format request)))
+        request-metadata (merge (metadata->bedrock
+                                 (:request/metadata request))
                                 (:request-metadata options))
         body (cond-> {:messages native-messages}
                (seq system-content) (assoc :system system-content)
@@ -458,19 +804,43 @@
                (:service-tier options)
                (assoc :serviceTier (:service-tier options)))
         path (if stream? "/converse-stream" "/converse")
-        url (str (bedrock-base-url) "/model/" model path)]
+        {:keys [base-url region]} (runtime-routing profile options)
+        url (str base-url "/model/" model path)]
     {:method :post
      :url url
      :headers (cond-> {"Content-Type" "application/json"
                        "Accept" "application/json"}
                 stream? (assoc "Accept" "application/vnd.amazon.eventstream"))
      :llm.sdk.providers.bedrock/aws-service "bedrock"
-     :llm.sdk.providers.bedrock/aws-region (aws-region)
+     :llm.sdk.providers.bedrock/aws-region region
      :body body}))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
+
+(defn- citation-snippet [citation]
+  (not-empty
+   (str/join "\n" (keep :text (:sourceContent citation)))))
+
+(defn- citation-text-range [citation]
+  (let [{:keys [start end]}
+        (get-in citation [:location :documentChar])]
+    (when (and (int? start) (int? end))
+      [start end])))
+
+(defn- citation->canonical [citation]
+  (let [url (get-in citation [:location :web :url])
+        source-id (some-> (:source citation) str)
+        snippet (citation-snippet citation)
+        text-range (citation-text-range citation)]
+    (cond-> {:part/type :citation
+             :citation/provider-data {:bedrock/citation citation}}
+      url (assoc :citation/url url)
+      source-id (assoc :citation/source-id source-id)
+      (:title citation) (assoc :citation/title (:title citation))
+      snippet (assoc :citation/snippet snippet)
+      text-range (assoc :citation/text-range text-range))))
 
 (defn- content-block->canonical [part]
   (cond
@@ -482,7 +852,8 @@
       [{:part/type :tool-call
         :tool-call/id (:toolUseId tu)
         :tool-call/name (:name tu)
-        :tool-call/arguments (json/generate-string (:input tu))}])
+        :tool-call/arguments (json/generate-string (:input tu))
+        :tool-call/provider-data {:bedrock/tool-use tu}}])
 
     (get-in part [:reasoningContent :reasoningText])
     (let [reasoning (get-in part [:reasoningContent :reasoningText])]
@@ -497,11 +868,19 @@
       :reasoning/encrypted true}]
 
     (:citationsContent part)
-    (mapv (fn [generated]
-            {:part/type :text :text (:text generated)})
-          (keep #(when (:text %) %) (get-in part [:citationsContent :content])))
+    (let [citations-content (:citationsContent part)]
+      (into
+       (mapv (fn [generated]
+               {:part/type :text :text (:text generated)})
+             (keep #(when (:text %) %)
+                   (:content citations-content)))
+       (map citation->canonical)
+       (:citations citations-content)))
 
-    :else []))
+    :else
+    [{:part/type :unknown/provider-native
+      :unknown/provider :bedrock
+      :unknown/data part}]))
 
 (defn parse-response-bedrock
   [_profile raw]
@@ -539,9 +918,26 @@
   (try (json/parse-string line true)
        (catch Exception _ nil)))
 
+(defn- one-or-many [events]
+  (let [events (vec (remove nil? events))]
+    (case (count events)
+      0 nil
+      1 (first events)
+      events)))
+
+(defn- citation-stream-event [citation]
+  (let [canonical (citation->canonical citation)]
+    (stream/citation-event
+     (:citation/url canonical)
+     :title (:citation/title canonical)
+     :snippet (:citation/snippet canonical)
+     :text-range (:citation/text-range canonical)
+     :source-id (:citation/source-id canonical)
+     :provider-data (:citation/provider-data canonical))))
+
 (defn- frame->event
-  "Turn a single decoded frame into a canonical StreamEvent map (or nil
-   when there's nothing to emit)."
+  "Turn a decoded frame into a canonical StreamEvent, a vector of events, or
+   nil when the frame carries no observable data."
   [{:keys [event-type data] :as _frame}]
   (case event-type
     "contentBlockDelta"
@@ -553,51 +949,73 @@
         (stream/content-delta (:text delta))
 
         (:text reasoning)
-        (stream/reasoning-delta (:text reasoning))
+        (stream/reasoning-delta (:text reasoning) :index index)
 
         (:redactedContent reasoning)
-        (stream/reasoning-delta (:redactedContent reasoning) :encrypted true)
+        (stream/reasoning-delta (:redactedContent reasoning)
+                                :encrypted true
+                                :index index)
 
         (:signature reasoning)
-        (stream/provider-state-event
-         :bedrock
-         {:content-block-index index
-          :reasoning/signature (:signature reasoning)})
+        (stream/reasoning-delta nil
+                                :index index
+                                :signature (:signature reasoning))
 
         (:toolUse delta)
         (stream/tool-call-delta index (get-in delta [:toolUse :input]))
 
         (:citation delta)
-        (stream/provider-state-event :bedrock {:citation (:citation delta)})
+        (citation-stream-event (:citation delta))
 
         (:image delta)
-        (stream/provider-state-event :bedrock {:image-delta (:image delta)})
+        (stream/provider-state-event
+         :bedrock
+         {:content-blocks {index {:image-delta (:image delta)}}})
 
         (:toolResult delta)
-        (stream/provider-state-event :bedrock {:tool-result-delta (:toolResult delta)})))
+        (stream/provider-state-event
+         :bedrock
+         {:content-blocks {index
+                           {:tool-result-delta (:toolResult delta)}}})))
 
     "contentBlockStart"
-    (let [block (get-in data [:start :toolUse])]
-      (when block
-        (stream/tool-call-start (or (:contentBlockIndex data) 0)
-                                (:toolUseId block)
-                                (:name block))))
+    (let [index (or (:contentBlockIndex data) 0)
+          start (:start data)
+          tool-use (:toolUse start)]
+      (if tool-use
+        (stream/tool-call-start
+         index
+         (:toolUseId tool-use)
+         (:name tool-use)
+         :provider-data {:bedrock/tool-use tool-use})
+        (stream/provider-state-event
+         :bedrock
+         {:content-blocks {index {:start start}}})))
 
-    "messageStart" nil
+    "contentBlockStop"
+    (stream/provider-state-event
+     :bedrock
+     {:content-blocks {(or (:contentBlockIndex data) 0) {:stopped true}}})
+
+    "messageStart"
+    (stream/provider-state-event :bedrock {:messageStart data})
+
     "messageStop"
-    (stream/end-event :finish-reason
-                      (get stop-reason-map (:stopReason data) :unknown))
+    (let [provider-data
+          (not-empty (select-keys data [:additionalModelResponseFields]))]
+      (one-or-many
+       [(when provider-data
+          (stream/provider-state-event :bedrock provider-data))
+        (stream/end-event
+         :finish-reason
+         (get stop-reason-map (:stopReason data) :unknown))]))
 
     "metadata"
-    (let [usage-event (when-let [u (:usage data)]
-                        (stream/usage-event (normalize-bedrock-usage u)))
-          provider-data (not-empty (dissoc data :usage))
-          state-event (when provider-data
-                        (stream/provider-state-event :bedrock provider-data))]
-      (cond
-        (and usage-event state-event) [usage-event state-event]
-        usage-event usage-event
-        state-event state-event))
+    (one-or-many
+     [(when-let [u (:usage data)]
+        (stream/usage-event (normalize-bedrock-usage u)))
+      (when-let [provider-data (not-empty (dissoc data :usage))]
+        (stream/provider-state-event :bedrock provider-data))])
 
     (when (and event-type (str/ends-with? event-type "Exception"))
       (stream/error-event {:provider :bedrock
@@ -619,13 +1037,15 @@
       :type (get-in input [:headers ":exception-type"])
       :data (:data input)})
 
-    ;; Legacy: caller passed a JSON line shaped like the older
-    ;; intermediate format used by the prior scaffold. Translate it
-    ;; into the frame shape and reuse the dispatcher above.
+    ;; Accept the same legacy intermediate shape as either an already-parsed
+    ;; map or a JSON line, then normalize both through frame->event.
+    (and (map? input) (:type input))
+    (frame->event {:event-type (:type input)
+                   :data (or (get input (keyword (:type input))) input)})
+
     (string? input)
     (when-let [data (parse-event-line input)]
-      (frame->event {:event-type (:type data)
-                     :data (or (get data (keyword (:type data))) data)}))
+      (parse-stream-event-bedrock nil data))
 
     :else nil))
 
@@ -672,9 +1092,11 @@
 (provider/register-provider
  {:profile/id :bedrock
   :profile/protocol-family :bedrock
-  :profile/base-url "https://bedrock-runtime.us-east-1.amazonaws.com"
+  :profile/base-url (str "https://bedrock-runtime." (aws-region)
+                         ".amazonaws.com")
   :profile/auth-strategy :aws-sigv4
   :profile/aws-service "bedrock"
+  :profile/aws-region (aws-region)
   :profile/supports-model-listing false
   :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning
                           :guardrails :cache :multimodal :file-attachments}

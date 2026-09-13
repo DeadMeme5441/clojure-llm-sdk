@@ -9,7 +9,8 @@
    events.
 
   Reference: litellm-ref/llms/cohere/chat/v2_transformation.py."
-  (:require [llm.sdk.sse :as sse]
+  (:require [clojure.string :as str]
+            [llm.sdk.sse :as sse]
             [llm.sdk.transport :as t]
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
@@ -51,6 +52,14 @@
     (vec (remove #(= (:part/type %) :file) content))
     content))
 
+(defn- unsupported-content-part! [part]
+  (throw (ex-info
+          (str "Cohere does not support canonical content part "
+               (pr-str (:part/type part)) ".")
+          {:provider :cohere
+           :part/type (:part/type part)
+           :error/type :provider/unsupported-content-part})))
+
 (defn- content->cohere
   "Cohere v2 accepts either a plain string or a typed content array."
   [content]
@@ -63,33 +72,92 @@
               :text {:type "text" :text (:text part)}
               :image {:type "image_url"
                       :image_url {:url (:image/url part)}}
+              :reasoning {:type "thinking"
+                          :thinking (:reasoning/text part)}
               :file (t/unsupported-file-part! :cohere part)
-              ;; Surface tool-results inline as text — caller may have
-              ;; rolled them into the previous message.
-              {:type "text" :text (str part)}))
+              (unsupported-content-part! part)))
           content)
-    :else (str content)))
+    :else
+    (unsupported-content-part! content)))
+
+(defn- canonical-tool-call->cohere [tc]
+  (let [native (:tool-call/provider-data tc)
+        base (if (map? native) native {})]
+    (-> base
+        (assoc :id (:tool-call/id tc)
+               :type "function")
+        (assoc :function
+               (merge (:function base)
+                      {:name (:tool-call/name tc)
+                       :arguments (:tool-call/arguments tc)})))))
+
+(defn- same-tool-call? [a b]
+  (= (select-keys a [:tool-call/id :tool-call/name :tool-call/arguments])
+     (select-keys b [:tool-call/id :tool-call/name :tool-call/arguments])))
+
+(defn- assistant-tool-calls [msg]
+  (let [content-calls (or (t/extract-tool-calls-from-parts
+                           (:message/content msg))
+                          [])
+        field-calls (or (:message/tool-calls msg) [])]
+    (reduce (fn [calls tc]
+              (if (some #(same-tool-call? % tc) calls)
+                calls
+                (conj calls tc)))
+            []
+            (concat content-calls field-calls))))
+
+(defn- assistant-content [content]
+  (content->cohere
+   (if (sequential? content)
+     (vec (remove #(#{:file :tool-call} (:part/type %)) content))
+     content)))
+
+(defn- tool-content->string [content]
+  (cond
+    (string? content) content
+    (sequential? content)
+    (apply str
+           (map (fn [part]
+                  (case (:part/type part)
+                    :text (:text part)
+                    :tool-result (:tool-result/content part)
+                    (unsupported-content-part! part)))
+                content))
+    :else
+    (unsupported-content-part! content)))
 
 (defn- message->cohere [msg]
   (case (:message/role msg)
-    :system   {:role "system"    :content (content->cohere (strip-file-parts (:message/content msg)))}
-    :user     {:role "user"      :content (content->cohere (strip-file-parts (:message/content msg)))}
+    (:system :developer)
+    {:role "system"
+     :content (content->cohere (strip-file-parts (:message/content msg)))}
+
+    :user
+    {:role "user"
+     :content (content->cohere (strip-file-parts (:message/content msg)))}
+
     :assistant
     (let [base {:role "assistant"
-                :content (content->cohere (strip-file-parts (:message/content msg)))}
-          tcs (:message/tool-calls msg)]
+                :content (assistant-content (:message/content msg))}
+          tcs (assistant-tool-calls msg)]
       (cond-> base
         (seq tcs) (assoc :tool_calls
-                         (mapv (fn [tc]
-                                 {:id (:tool-call/id tc)
-                                  :type "function"
-                                  :function {:name (:tool-call/name tc)
-                                             :arguments (:tool-call/arguments tc)}})
-                               tcs))))
-    :tool {:role "tool"
-           :tool_call_id (or (:message/tool-call-id msg) "tool_0")
-           :content [{:type "document"
-                      :document {:data (t/content->string (:message/content msg))}}]}))
+                         (mapv canonical-tool-call->cohere tcs))))
+
+    :tool
+    {:role "tool"
+     :tool_call_id (or (:message/tool-call-id msg) "tool_0")
+     :content [{:type "document"
+                :document {:data (tool-content->string
+                                  (:message/content msg))}}]}
+
+    (throw (ex-info
+            (str "Cohere does not support message role "
+                 (pr-str (:message/role msg)) ".")
+            {:provider :cohere
+             :message/role (:message/role msg)
+             :error/type :provider/unsupported-message-role}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Tool conversion
@@ -135,6 +203,17 @@
                      "enabled")}
       (:budget reasoning) (assoc :token_budget (:budget reasoning)))))
 
+(defn- chat-url [profile]
+  (let [base (-> (or (:profile/base-url profile)
+                     "https://api.cohere.com")
+                 (str/replace #"/+$" ""))]
+    (cond
+      (str/ends-with? base "/v2/chat") base
+      (str/ends-with? base "/v1")
+      (str (subs base 0 (- (count base) 3)) "/v2/chat")
+      (str/ends-with? base "/v2") (str base "/chat")
+      :else (str base "/v2/chat"))))
+
 (defn build-request-cohere
   [profile request]
   (let [stream? (boolean (:request/stream? request))
@@ -177,8 +256,7 @@
         body (if-let [extra-body (:extra_body extras)]
                (merge body extra-body)
                body)
-        chat-url (or (:profile/chat-url profile)
-                     "https://api.cohere.com/v2/chat")]
+        chat-url (chat-url profile)]
     {:method :post
      :url chat-url
      :headers (provider/default-headers
@@ -213,13 +291,14 @@
         document (:document source)
         url (or (:url c) (:url source) (:url document))
         title (or (:title c) (:title source) (:title document))
-        source-id (or (:id source) (:id c))]
-    (cond-> {:part/type :citation}
+        source-id (or (:id source) (:id document) (:id c))]
+    (cond-> {:part/type :citation
+             :citation/provider-data c}
       url (assoc :citation/url url)
       title (assoc :citation/title title)
       (:text c) (assoc :citation/snippet (:text c))
       source-id (assoc :citation/source-id source-id)
-      (and (int? (:start c)) (int? (:end c)))
+      (and (integer? (:start c)) (integer? (:end c)))
       (assoc :citation/text-range [(:start c) (:end c)]))))
 
 (defn parse-response-cohere
@@ -237,7 +316,8 @@
                             {:part/type :tool-call
                              :tool-call/id (:id tc)
                              :tool-call/name (get-in tc [:function :name])
-                             :tool-call/arguments (get-in tc [:function :arguments])})
+                             :tool-call/arguments (get-in tc [:function :arguments])
+                             :tool-call/provider-data tc})
                           (:tool_calls msg)))
         citations (mapv citation->part (:citations msg))
         finish (or (get finish-reason-map (:finish_reason raw)) :stop)]
@@ -259,11 +339,19 @@
   (sse/parse-json-data line))
 
 (defn- citation-event-from [c]
-  (let [url (or (:url c) (some :url (:sources c)))]
-    (when url
-      (stream/citation-event url
-                             :title (:title c)
-                             :snippet (:text c)))))
+  (let [source (first (:sources c))
+        document (:document source)
+        url (or (:url c) (:url source) (:url document))
+        title (or (:title c) (:title source) (:title document))
+        source-id (or (:id source) (:id document) (:id c))
+        text-range (when (and (integer? (:start c)) (integer? (:end c)))
+                     [(:start c) (:end c)])]
+    (stream/citation-event url
+                           :title title
+                           :snippet (:text c)
+                           :text-range text-range
+                           :source-id source-id
+                           :provider-data c)))
 
 (defn parse-stream-event-cohere
   [_profile line]
@@ -275,7 +363,7 @@
       (let [content (get-in data [:delta :message :content])]
         (case (:type content)
           "thinking" (when-let [text (:thinking content)]
-                       (stream/reasoning-delta text))
+                       (stream/reasoning-delta text :index (:index data)))
           (when-let [text (:text content)]
             (stream/content-delta text))))
       "content-end" nil
@@ -287,7 +375,8 @@
       "tool-call-start"
       (let [idx (or (:index data) 0)
             tc (get-in data [:delta :message :tool_calls])]
-        (stream/tool-call-start idx (:id tc) (get-in tc [:function :name])))
+        (stream/tool-call-start idx (:id tc) (get-in tc [:function :name])
+                                :provider-data tc))
 
       "tool-call-delta"
       (let [idx (or (:index data) 0)
@@ -343,10 +432,9 @@
 ;; Augment the existing :cohere profile with native v2 chat support while
 ;; preserving the embedding and rerank constructors installed by their
 ;; provider namespaces.
-(let [existing (provider/get-provider :cohere)
+(let [existing (dissoc (provider/get-provider :cohere) :profile/chat-url)
       base (merge existing
                   {:profile/protocol-family :cohere
-                   :profile/chat-url "https://api.cohere.com/v2/chat"
                    :profile/capabilities
                    (into #{:chat :streaming :tools :json-schema :reasoning
                            :citations :file-attachments}

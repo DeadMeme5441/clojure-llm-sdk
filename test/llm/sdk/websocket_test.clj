@@ -56,7 +56,7 @@
     (locking out
       (.write out (int (bit-or opcode (if final? 128 0))))
       (if (< n 126)
-        (.write out (int n))
+        (.write out n)
         (do (.write out (int 126))
             (.write out (int (bit-and 255 (bit-shift-right n 8))))
             (.write out (int (bit-and 255 n)))))
@@ -494,6 +494,41 @@
                 (is (< (count (json/generate-string second-wire))
                        (count (json/generate-string (:body second-req))))))
               (is (= 1 @(:accepted server))))))))))
+
+(deftest incremental-custom-tool-replay-retains-wire-kind-and-input
+  (let [turn (atom 0)
+        output-item {:type "custom_tool_call"
+                     :id "ct_custom"
+                     :status "completed"
+                     :call_id "call_custom"
+                     :name "shell"
+                     :input "pwd"
+                     :async true
+                     :caller {:type "direct"}
+                     :namespace "ops"}
+        replay-item (dissoc output-item :status)
+        result-item {:type "custom_tool_call_output"
+                     :call_id "call_custom"
+                     :output "project-root"}]
+    (with-server
+      (fn [socket _]
+        (let [n (swap! turn inc)]
+          (send-json!
+           socket
+           (assoc-in (completed (str "custom-" n))
+                     [:response :output]
+                     (if (= n 1) [output-item] [])))))
+      (fn [server]
+        (let [base (request server)
+              next-req (append-input base [replay-item result-item])]
+          (consume base)
+          (consume next-req)
+          (let [[_ next-wire] (mapv :body @(:requests server))]
+            (is (= "custom-1" (:previous_response_id next-wire)))
+            (is (= [result-item] (:input next-wire)))
+            (is (= "custom_tool_call_output"
+                   (get-in next-wire [:input 0 :type]))))
+          (is (= 1 @(:accepted server))))))))
 
 (deftest incremental-requires-exact-history-and-request-properties
   (doseq [[label change]

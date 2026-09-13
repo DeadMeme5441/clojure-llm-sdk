@@ -164,72 +164,166 @@
          (is (= 3 (get-in resp [:response/cache :cache/cached-tokens])))
          (is (number? (get-in resp [:response/cost :cost/usd]))))))))
 
-(deftest perplexity-stamps-citations-search-usage-and-cost
+(deftest perplexity-agent-stamps-typed-search-usage-and-cost
   (offline
    (fn []
      (registry/register-entry!
-      :perplexity "sonar-pro"
+      :perplexity "perplexity/sonar"
       {:model/cost {:input-per-million 1.0
                     :output-per-million 2.0
                     :search-per-call 0.005}})
      (with-redefs [http/request
                    (fn [_]
                      {:status 200
-                      :body (assoc
-                             (openai-style-body
-                              "sonar-pro"
-                              {:prompt_tokens 100
-                               :completion_tokens 20
+                      :body
+                      {:id "resp_agent"
+                       :object "response"
+                       :created_at 1771891737
+                       :status "completed"
+                       :model "perplexity/sonar"
+                       :output
+                       [{:type "search_results"
+                         :queries ["Clojure release"]
+                         :results [{:id 1
+                                    :url "https://example.com/a"
+                                    :title "A"
+                                    :snippet "snippet"}]}
+                        {:type "message"
+                         :id "msg_agent"
+                         :status "completed"
+                         :role "assistant"
+                         :content [{:type "output_text"
+                                    :text "ok"
+                                    :annotations
+                                    [{:type "url_citation"
+                                      :url "https://example.com/a"
+                                      :title "A"
+                                      :start_index 0
+                                      :end_index 2}]}]}]
+                       :usage {:input_tokens 100
+                               :output_tokens 20
                                :total_tokens 120
-                               :citation_tokens 7
-                               :num_search_queries 1})
-                             :search_results [{:url "https://example.com/a"
-                                               :title "A"
-                                               :snippet "snippet"}])})]
-       (let [resp (sdk/complete :perplexity
-                                {:request/model "sonar-pro"
-                                 :request/messages [{:message/role :user
-                                                     :message/content "hi"}]})]
+                               :tool_calls_details
+                               {:web_search {:invocation 1}}
+                               :cost {:currency "USD"
+                                      :input_cost 0.001
+                                      :output_cost 0.002
+                                      :tool_calls_cost 0.005
+                                      :total_cost 0.008}}}})]
+       (let [resp (sdk/complete
+                   :perplexity
+                   {:request/model "perplexity/sonar"
+                    :request/messages [{:message/role :user
+                                        :message/content "hi"}]})]
          (is (canonical-shape-ok? resp :perplexity))
+         (is (= "perplexity/sonar" (:response/model resp)))
+         (is (= "ok" (->> (:response/parts resp)
+                           (filter #(= :text (:part/type %)))
+                           first
+                           :text)))
          (is (= 1 (count (filter #(= :citation (:part/type %))
                                  (:response/parts resp)))))
-         (is (= 7 (get-in resp [:response/usage :usage/citation-tokens])))
          (is (= 1 (get-in resp [:response/usage :usage/search-queries])))
          (is (number? (get-in resp [:response/cost :cost/usd]))))))))
 
-(deftest perplexity-stream-flattens-final-citation-usage-end
+(deftest perplexity-agent-stream-flattens-responses-events
   (offline
    (fn []
      (registry/register-entry!
-      :perplexity "sonar-pro"
+      :perplexity "perplexity/sonar"
       {:model/cost {:input-per-million 1.0
                     :output-per-million 2.0
                     :search-per-call 0.005}})
      (with-redefs [http/sse-response
                    (fn [_]
                      {:status 200
-                      :body (sse-stream
-                             (str "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"
-                                  "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],"
-                                  "\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,"
-                                  "\"total_tokens\":12,\"prompt_tokens_details\":{\"cached_tokens\":0},"
-                                  "\"num_search_queries\":1},"
-                                  "\"citations\":[\"https://example.com/source\"]}\n\n"
-                                  "data: [DONE]\n\n"))})]
+                      :body
+                      (sse-stream
+                       (str
+                        "data: {\"type\":\"response.created\","
+                        "\"sequence_number\":0,\"response\":{\"id\":\"resp_agent\","
+                        "\"object\":\"response\",\"created_at\":1771891737,"
+                        "\"status\":\"in_progress\",\"model\":\"perplexity/sonar\","
+                        "\"output\":[]}}\n\n"
+                        "data: {\"type\":\"response.output_text.delta\","
+                        "\"sequence_number\":1,\"item_id\":\"msg_agent\","
+                        "\"output_index\":1,\"content_index\":0,"
+                        "\"delta\":\"ok\"}\n\n"
+                        "data: {\"type\":\"response.reasoning.search_results\","
+                        "\"sequence_number\":2,\"results\":[{\"id\":1,"
+                        "\"url\":\"https://example.com/source\","
+                        "\"title\":\"Source\",\"snippet\":\"snippet\"}]}\n\n"
+                        "data: {\"type\":\"response.completed\","
+                        "\"sequence_number\":3,\"response\":{"
+                        "\"id\":\"resp_agent\",\"object\":\"response\","
+                        "\"created_at\":1771891737,\"status\":\"completed\","
+                        "\"model\":\"perplexity/sonar\",\"output\":[{"
+                        "\"type\":\"message\",\"id\":\"msg_agent\","
+                        "\"status\":\"completed\",\"role\":\"assistant\","
+                        "\"content\":[{\"type\":\"output_text\","
+                        "\"text\":\"ok\",\"annotations\":[]}]}],"
+                        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,"
+                        "\"total_tokens\":12,\"tool_calls_details\":{"
+                        "\"web_search\":{\"invocation\":1}},\"cost\":{"
+                        "\"currency\":\"USD\",\"input_cost\":0.00001,"
+                        "\"output_cost\":0.000004,\"tool_calls_cost\":0.005,"
+                        "\"total_cost\":0.005014}}}}\n\n"))})]
        (let [events-seen (atom [])
-             resp (sdk/complete :perplexity
-                                {:request/model "sonar-pro"
-                                 :request/messages [{:message/role :user
-                                                     :message/content "hi"}]}
-                                :stream? true
-                                :on-event #(swap! events-seen conj %))]
+             resp (sdk/complete
+                   :perplexity
+                   {:request/model "perplexity/sonar"
+                    :request/messages [{:message/role :user
+                                        :message/content "hi"}]}
+                   :stream? true
+                   :on-event #(swap! events-seen conj %))
+             events @events-seen
+             event-types (mapv :event/type events)
+             semantic-events
+             (filterv #(contains? #{:stream/content-delta
+                                    :stream/citation
+                                    :stream/usage}
+                                  (:event/type %))
+                      events)
+             created-response
+             (get-in resp [:response/provider-data :perplexity
+                           :agent/events 0 :response])]
          (is (canonical-shape-ok? resp :perplexity))
-         (is (= [:stream/start :stream/content-delta :stream/citation
-                 :stream/usage :stream/end]
-                (mapv :event/type @events-seen)))
+         (is (= :stream/start (first event-types)))
+         (is (= :stream/end (last event-types)))
+         (is (= 1 (count (filter #{:stream/start} event-types))))
+         (is (= 1 (count (filter #{:stream/end} event-types))))
+         (is (= [:stream/usage :stream/end] (take-last 2 event-types)))
+         (is (= [:stream/content-delta :stream/citation :stream/usage]
+                (mapv :event/type semantic-events)))
+         (is (= "ok" (:event/delta (first semantic-events))))
+         (is (= {:citation/url "https://example.com/source"
+                 :citation/title "Source"
+                 :citation/snippet "snippet"
+                 :citation/source-id "1"}
+                (select-keys (second semantic-events)
+                             [:citation/url :citation/title
+                              :citation/snippet :citation/source-id])))
+         (is (= {:usage/input-tokens 10
+                 :usage/output-tokens 2
+                 :usage/total-tokens 12
+                 :usage/search-queries 1}
+                (select-keys (:usage (nth semantic-events 2))
+                             [:usage/input-tokens :usage/output-tokens
+                              :usage/total-tokens :usage/search-queries])))
+         (is (= {:id "resp_agent"
+                 :object "response"
+                 :created_at 1771891737
+                 :status "in_progress"
+                 :model "perplexity/sonar"
+                 :output []}
+                created-response))
          (is (= :stop (:response/finish-reason resp)))
-         (is (= :miss (get-in resp [:response/cache :cache/status])))
-         (is (number? (get-in resp [:response/cost :cost/usd]))))))))
+         (is (= 1 (get-in resp [:response/usage :usage/search-queries])))
+         (is (= :unknown (get-in resp [:response/cache :cache/status])))
+         (is (= 0.005014 (get-in resp [:response/cost :cost/usd])))
+         (is (false? (get-in resp [:response/cost :cost/estimated?])))
+         (is (= :perplexity-reported
+                (get-in resp [:response/cost :cost/pricing-source]))))))))
 
 (deftest openai-stamps-honest-cache-unknown
   (offline

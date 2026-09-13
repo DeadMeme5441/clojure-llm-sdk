@@ -1,7 +1,8 @@
 (ns llm.sdk.stream
   "Streaming event taxonomy and reducer.
    Stream events → final canonical response.
-   Preserves event order in output parts.")
+   Preserves event order in output parts."
+  (:require [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
 ;; Event constructors
@@ -15,16 +16,21 @@
   {:event/type :stream/content-delta
    :event/delta delta})
 
-(defn reasoning-delta [delta & {:keys [encrypted]}]
-  {:event/type :stream/reasoning-delta
-   :event/delta delta
-   :event/encrypted (boolean encrypted)})
+(defn reasoning-delta
+  [delta & {:keys [encrypted index signature]}]
+  (cond-> {:event/type :stream/reasoning-delta
+           :event/encrypted (boolean encrypted)}
+    (some? delta) (assoc :event/delta delta)
+    (some? index) (assoc :event/index index)
+    (some? signature) (assoc :reasoning/signature signature)))
 
-(defn tool-call-start [index id name]
-  {:event/type :stream/tool-call-start
-   :tool-call/index index
-   :tool-call/id id
-   :tool-call/name name})
+(defn tool-call-start
+  [index id name & {:keys [provider-data]}]
+  (cond-> {:event/type :stream/tool-call-start
+           :tool-call/index index
+           :tool-call/id id
+           :tool-call/name name}
+    (some? provider-data) (assoc :tool-call/provider-data provider-data)))
 
 (defn tool-call-delta [index arguments-delta]
   {:event/type :stream/tool-call-delta
@@ -46,18 +52,20 @@
    :provider-state/data data})
 
 (defn citation-event
-  "Emit one citation. Adapters that surface citations on a final SSE
-   chunk (Perplexity is the first) return a vector ending in usage
-   and end events; sdk/complete flattens multi-event return values
-   from parse-stream-event."
-  [url & {:keys [title snippet date last-updated source]}]
-  (cond-> {:event/type :stream/citation
-           :citation/url url}
+  "Emit one citation. A URL is optional when the provider supplies another
+   stable source identifier or provider-native metadata."
+  [url & {:keys [title snippet text-range source-id date last-updated source
+                 provider-data]}]
+  (cond-> {:event/type :stream/citation}
+    (some? url) (assoc :citation/url url)
     title (assoc :citation/title title)
     snippet (assoc :citation/snippet snippet)
+    text-range (assoc :citation/text-range text-range)
+    source-id (assoc :citation/source-id source-id)
     date (assoc :citation/date date)
     last-updated (assoc :citation/last-updated last-updated)
-    source (assoc :citation/source source)))
+    source (assoc :citation/source source)
+    provider-data (assoc :citation/provider-data provider-data)))
 
 (defn error-event [error]
   {:event/type :stream/error
@@ -72,10 +80,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defrecord Accumulator
-  [parts tool-calls-indexed finish-reason usage cost provider-data])
+  [parts tool-calls-indexed finish-reason usage cost provider-data errors])
 
 (defn- empty-acc []
-  (->Accumulator [] {} nil nil nil {}))
+  (->Accumulator [] {} nil nil nil {} []))
 
 (defn- deep-merge
   [& maps]
@@ -85,15 +93,64 @@
               b))]
     (apply merge-with merge-entry maps)))
 
+(defn- derived-total-tokens
+  [usage]
+  (+ (or (:usage/input-tokens usage) 0)
+     (or (:usage/cached-input-tokens usage) 0)
+     (or (:usage/cache-write-tokens usage) 0)
+     (or (:usage/output-tokens usage) 0)))
+
+(defn- merge-usage
+  [current update]
+  (let [update (or update {})
+        merged (deep-merge (or current {}) update)
+        merged (assoc merged
+                      :usage/input-tokens
+                      (or (:usage/input-tokens merged) 0)
+                      :usage/output-tokens
+                      (or (:usage/output-tokens merged) 0))]
+    (if (contains? update :usage/total-tokens)
+      merged
+      (assoc merged :usage/total-tokens (derived-total-tokens merged)))))
+
 (defn- update-last-text [parts delta]
   (if (and (seq parts) (= (:part/type (peek parts)) :text))
     (conj (pop parts) (update (peek parts) :text str delta))
     (conj parts {:part/type :text :text delta})))
 
-(defn- update-last-reasoning [parts delta encrypted]
-  (if (and (seq parts) (= (:part/type (peek parts)) :reasoning))
-    (conj (pop parts) (update (peek parts) :reasoning/text str delta))
-    (conj parts {:part/type :reasoning :reasoning/text delta :reasoning/encrypted (boolean encrypted)})))
+(def ^:private reasoning-index-key ::reasoning-index)
+
+(defn- revise-reasoning-part
+  [part delta encrypted signature index]
+  (cond-> (or part
+              (cond-> {:part/type :reasoning
+                       :reasoning/text ""
+                       :reasoning/encrypted (boolean encrypted)}
+                (some? index) (assoc reasoning-index-key index)))
+    (some? delta) (update :reasoning/text str delta)
+    encrypted (assoc :reasoning/encrypted true)
+    (some? signature) (assoc :reasoning/signature signature)))
+
+(defn- update-reasoning
+  [parts delta encrypted signature index]
+  (let [parts (vec parts)
+        pos (if (some? index)
+              (first
+               (keep-indexed
+                (fn [i part]
+                  (when (and (= :reasoning (:part/type part))
+                             (= index (get part reasoning-index-key)))
+                    i))
+                parts))
+              (when (and (seq parts)
+                         (= :reasoning (:part/type (peek parts)))
+                         (not (contains? (peek parts) reasoning-index-key)))
+                (dec (count parts))))]
+    (if (some? pos)
+      (update parts pos revise-reasoning-part
+              delta encrypted signature index)
+      (conj parts
+            (revise-reasoning-part nil delta encrypted signature index)))))
 
 (defn- base-tool-call [index]
   {:tool-call/index index
@@ -142,17 +199,27 @@
     (update acc :parts update-last-text (:event/delta event))
 
     :stream/reasoning-delta
-    (update acc :parts update-last-reasoning (:event/delta event) (:event/encrypted event))
+    (update acc :parts update-reasoning
+            (:event/delta event)
+            (:event/encrypted event)
+            (:reasoning/signature event)
+            (:event/index event))
 
     :stream/tool-call-start
     (revise-tool-call acc (:tool-call/index event)
                       (fn [tc]
-                        (assoc tc
-                               :tool-call/id (or (:tool-call/id event)
-                                                 (:tool-call/id tc))
-                               :tool-call/name (or (:tool-call/name event)
-                                                   (:tool-call/name tc))
-                               :tool-call/arguments (or (:tool-call/arguments tc) ""))))
+                        (-> tc
+                            (assoc :tool-call/id (or (:tool-call/id event)
+                                                     (:tool-call/id tc))
+                                   :tool-call/name (or (:tool-call/name event)
+                                                      (:tool-call/name tc))
+                                   :tool-call/arguments (or (:tool-call/arguments tc) ""))
+                            (update :tool-call/provider-data
+                                    #(assoc (deep-merge
+                                             (or % {})
+                                             (or (:tool-call/provider-data event) {}))
+                                            :stream/index
+                                            (:tool-call/index event))))))
 
     :stream/tool-call-delta
     (revise-tool-call acc (:tool-call/index event)
@@ -164,8 +231,8 @@
     acc ;; marker only
 
     :stream/usage
-    (cond-> (assoc acc :usage (:usage event))
-      (:cost event) (assoc :cost (:cost event)))
+    (cond-> (update acc :usage merge-usage (:usage event))
+      (:cost event) (update :cost #(deep-merge (or % {}) (:cost event))))
 
     :stream/provider-state
     (update-in acc [:provider-data (:provider-state/provider event)]
@@ -173,13 +240,16 @@
 
     :stream/citation
     (update acc :parts conj
-            (cond-> {:part/type :citation
-                     :citation/url (:citation/url event)}
-              (:citation/title event) (assoc :citation/title (:citation/title event))
-              (:citation/snippet event) (assoc :citation/snippet (:citation/snippet event))
-              (:citation/date event) (assoc :citation/date (:citation/date event))
-              (:citation/last-updated event) (assoc :citation/last-updated (:citation/last-updated event))
-              (:citation/source event) (assoc :citation/source (:citation/source event))))
+            (merge {:part/type :citation}
+                   (select-keys
+                    event
+                    [:citation/url :citation/title :citation/snippet
+                     :citation/text-range :citation/source-id :citation/date
+                     :citation/last-updated :citation/source
+                     :citation/provider-data])))
+
+    :stream/error
+    (update acc :errors conj (:error/error event))
 
     :stream/end
     ;; A terminal event without a reason must not clobber an earlier
@@ -196,10 +266,10 @@
   [events]
   (reduce reduce-event (empty-acc) events))
 
-(defn acc->response
-  "Convert an accumulator to a canonical Response map."
+(defn- response-map
   [acc provider model]
-  (let [tool-calls (->> (:tool-calls-indexed acc)
+  (let [parts (mapv #(dissoc % reasoning-index-key) (:parts acc))
+        tool-calls (->> (:tool-calls-indexed acc)
                         (sort-by key)
                         (mapv (fn [[_ tc]] (tool-call-part tc))))
         finish-reason (if (and (seq tool-calls)
@@ -209,12 +279,48 @@
                         (or (:finish-reason acc) :unknown))]
     (cond-> {:response/provider provider
              :response/model model
-             :response/parts (:parts acc)
+             :response/parts parts
              :response/finish-reason finish-reason}
       (seq tool-calls) (assoc :response/tool-calls tool-calls)
       (:usage acc) (assoc :response/usage (:usage acc))
       (:cost acc) (assoc :response/cost (:cost acc))
       (seq (:provider-data acc)) (assoc :response/provider-data (:provider-data acc)))))
+
+(defn- classify-stream-error
+  [error provider]
+  (if (and (map? error) (:error/reason error))
+    error
+    (let [message (if (map? error)
+                    (or (:error/message error)
+                        (:message error)
+                        (str error))
+                    (str error))
+          classified (errors/classify-error
+                      (if (instance? Throwable error)
+                        error
+                        (Exception. message))
+                      :status (when (map? error)
+                                (or (:status error) (:error/status error)))
+                      :body (when (map? error) error)
+                      :provider provider)]
+      (if (map? error)
+        (merge classified error)
+        classified))))
+
+(defn acc->response
+  "Convert an accumulator to a canonical Response map. A provider error event
+   makes accumulation fail while retaining both the classified error and the
+   response accumulated before the failure in ex-data."
+  [acc provider model]
+  (let [response (response-map acc provider model)]
+    (if-let [error (first (:errors acc))]
+      (throw (ex-info "Provider stream error"
+                      {:error (classify-stream-error error provider)
+                       :stream/error error
+                       :partial-response response
+                       :provider provider}
+                      (when (instance? Throwable error) error)))
+      response)))
 
 (defn events->response
   "Convenience: reduce events and convert to response in one step."

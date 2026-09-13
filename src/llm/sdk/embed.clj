@@ -60,6 +60,9 @@
       (let [parsed (et/parse-embed-response transport profile body)
             parsed (update parsed :embed/model #(or % (:embed/model request)))
             usage (:response/usage parsed)
-            cost (pricing/canonical-cost provider-id (:embed/model parsed) usage)]
+            cost (or (:response/cost parsed)
+                     (pricing/canonical-cost provider-id
+                                             (:embed/model parsed)
+                                             usage))]
         (cond-> parsed
           cost (assoc :response/cost cost))))))

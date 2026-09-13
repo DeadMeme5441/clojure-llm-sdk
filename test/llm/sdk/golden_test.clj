@@ -1,5 +1,5 @@
 (ns llm.sdk.golden-test
-  "Golden fixture tests — verify parsing against sanitized real-world responses."
+  "Golden fixture tests — verify parsing against sanitized documented-shape examples."
   (:require [clojure.test :refer [deftest is]]
             [cheshire.core :as json]
             [llm.sdk.providers.openai-chat :as openai]

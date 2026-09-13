@@ -24,8 +24,8 @@
 (def provider-id->models-dev-id
   "Map our SDK provider keywords to models.dev's provider ids.
    :codex / :codex-backend point at OpenAI's catalog (their wire endpoint
-   serves the same model set). :gemini-native uses 'google', :vertex-gemini
-   uses 'google-vertex' (separate catalog including Anthropic-on-Vertex)."
+   serves the same model set). :gemini-native uses 'google'; :vertex-gemini
+   uses only Gemini-native ids from models.dev's mixed 'google-vertex' catalog."
   {:openai "openai"
    :anthropic "anthropic"
    :gemini-native "google"
@@ -38,6 +38,7 @@
    :cerebras "cerebras"
    :together "togetherai"
    :xai "xai"
+   :zai "zai"
    :perplexity "perplexity"
    :huggingface "huggingface"
    :cohere "cohere"
@@ -74,39 +75,77 @@
       (contains? in-mods "audio") (conj :audio-input))))
 
 (defn- entry->cost
-  "Convert a models.dev cost map (already per-million USD floats) into
-   our :model/cost shape. Returns nil when the entry has no cost data."
+  "Convert a models.dev cost map into our :model/cost shape. Bundled
+   snapshots use canonical snake_case keys; live API data retains models.dev's
+   native keys. Explicit zero is a known rate and is preserved."
   [m]
   (let [c (:cost m)]
     (when (map? c)
-      (let [out (cond-> {}
-                  (:input c) (assoc :input-per-million (double (:input c)))
-                  (:output c) (assoc :output-per-million (double (:output c)))
-                  (:cache_read c) (assoc :cache-read-per-million (double (:cache_read c)))
-                  (:cache_write c) (assoc :cache-write-per-million (double (:cache_write c))))]
-        (when (seq out) out)))))
+      (letfn [(rate [& keys]
+                (some (fn [key]
+                        (when (contains? c key) (get c key)))
+                      keys))]
+        (let [rates [[:input-per-million
+                      (rate :input_per_million :input)]
+                     [:output-per-million
+                      (rate :output_per_million :output)]
+                     [:cache-read-per-million
+                      (rate :cache_read_per_million :cache_read)]
+                     [:cache-write-per-million
+                      (rate :cache_write_per_million :cache_write)]
+                     [:image-input-per-million
+                      (rate :image_input_per_million :input_image)]
+                     [:image-output-per-million
+                      (rate :image_output_per_million :output_image)]
+                     [:audio-input-per-million
+                      (rate :audio_input_per_million :input_audio)]
+                     [:audio-output-per-million
+                      (rate :audio_output_per_million :output_audio)]
+                     [:image-cache-read-per-million
+                      (rate :image_cache_read_per_million :cache_read_image)]
+                     [:audio-cache-read-per-million
+                      (rate :audio_cache_read_per_million :cache_read_audio)]
+                     [:rerank-per-search-unit
+                      (rate :rerank_per_search_unit :rerank)]]
+              out (reduce (fn [result [key value]]
+                            (if (number? value)
+                              (assoc result key (double value))
+                              result))
+                          {}
+                          rates)]
+          (when (seq out) out))))))
 
 (defn normalize-entry
   "Convert a models.dev model entry into our canonical ModelEntry. The
    returned entry's :model/provider is the SDK provider keyword we were
    queried with, NOT the models.dev provider id — that way callers who
    look up by (:codex \"gpt-5\") get :codex back, not :openai."
-  [provider-keyword model-id raw-entry ts]
-  (let [caps (entry->capabilities model-id raw-entry)
-        cost (entry->cost raw-entry)
-        limit (:limit raw-entry)
-        base {:model/id model-id
-              :model/provider provider-keyword
-              :model/source :models-dev
-              :model/source-url "https://models.dev/api.json"}]
-    (cond-> base
-      ts (assoc :model/fetched-at ts)
-      (:family raw-entry) (assoc :model/family (:family raw-entry))
-      (:name raw-entry) (assoc :model/display-name (:name raw-entry))
-      (:context limit) (assoc :model/context-length (:context limit))
-      (:output limit) (assoc :model/max-output-tokens (:output limit))
-      (seq caps) (assoc :model/capabilities caps)
-      (seq cost) (assoc :model/cost cost))))
+  ([provider-keyword model-id raw-entry ts]
+   (normalize-entry provider-keyword model-id raw-entry ts {}))
+  ([provider-keyword model-id raw-entry ts
+    {:keys [source-url source-revision]}]
+   (let [caps (entry->capabilities model-id raw-entry)
+         cost (entry->cost raw-entry)
+         limit (:limit raw-entry)
+         status (:status raw-entry)
+         base {:model/id model-id
+               :model/provider provider-keyword
+               :model/source :models-dev
+               :model/source-url (or source-url "https://models.dev/api.json")}]
+     (cond-> base
+       ts (assoc :model/fetched-at ts)
+       source-revision (assoc :model/source-revision source-revision)
+       (:family raw-entry) (assoc :model/family (:family raw-entry))
+       (:name raw-entry) (assoc :model/display-name (:name raw-entry))
+       (:release_date raw-entry)
+       (assoc :model/release-date (:release_date raw-entry))
+       (:last_updated raw-entry)
+       (assoc :model/last-updated (:last_updated raw-entry))
+       status (assoc :model/status (keyword status))
+       (:context limit) (assoc :model/context-length (:context limit))
+       (:output limit) (assoc :model/max-output-tokens (:output limit))
+       (seq caps) (assoc :model/capabilities caps)
+       (seq cost) (assoc :model/cost cost)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cache
@@ -164,9 +203,13 @@
 (defn- load-bundled-snapshot []
   (try
     (when-let [r (io/resource "models-dev-snapshot.json")]
-      {:data (json/parse-string (slurp r) true)
-       :fetched-at-ms 0
-       :source :bundled})
+      (let [snapshot (json/parse-string (slurp r) true)
+            meta (:_meta snapshot)]
+        {:data (or (:providers snapshot) snapshot)
+         :fetched-at-ms 0
+         :source :bundled
+         :source-url (:source_url meta)
+         :source-revision (:source_revision meta)}))
     (catch Exception _ nil)))
 
 (defn- fetch-network []
@@ -247,10 +290,18 @@
                 models-map)))))
 
 (defn- provider-models-map
-  "Return the models.dev :models sub-map for a provider keyword, or nil."
+  "Return the applicable models.dev :models sub-map for a provider keyword.
+   google-vertex also advertises third-party MaaS publishers, but this SDK's
+   :vertex-gemini transport addresses publishers/google/models only."
   [data provider-id]
   (when-let [mdev (provider-id->models-dev-id provider-id)]
-    (some-> data (get (keyword mdev)) :models)))
+    (let [models (some-> data (get (keyword mdev)) :models)]
+      (if (= provider-id :vertex-gemini)
+        (into {}
+              (filter (fn [[model-id _]]
+                        (str/starts-with? (full-key-name model-id) "gemini-")))
+              models)
+        models))))
 
 (defn- ms->inst [ms]
   (when (and ms (pos? ms))
@@ -261,21 +312,28 @@
    :model/source :models-dev. Returns nil when the provider has no
    mapping or models.dev doesn't know the model."
   [provider-id model-id]
-  (let [{:keys [data fetched-at-ms]} (or (fetch-all) {})]
+  (let [{:keys [data fetched-at-ms source-url source-revision]}
+        (or (fetch-all) {})]
     (when-let [models-map (provider-models-map data provider-id)]
       (when-let [raw (find-model-entry models-map model-id)]
-        (normalize-entry provider-id model-id raw (ms->inst fetched-at-ms))))))
+        (normalize-entry provider-id model-id raw (ms->inst fetched-at-ms)
+                         {:source-url source-url
+                          :source-revision source-revision})))))
 
 (defn list-models
   "Return normalized ModelEntry maps for every model models.dev knows
    under our SDK provider keyword. Empty vector when the provider has
    no mapping or the registry is empty."
   [provider-id]
-  (let [{:keys [data fetched-at-ms]} (or (fetch-all) {})
+  (let [{:keys [data fetched-at-ms source-url source-revision]}
+        (or (fetch-all) {})
         ts (ms->inst fetched-at-ms)]
     (->> (provider-models-map data provider-id)
          (mapv (fn [[k v]]
-                 (normalize-entry provider-id (full-key-name k) v ts))))))
+                 (normalize-entry
+                  provider-id (full-key-name k) v ts
+                  {:source-url source-url
+                   :source-revision source-revision}))))))
 
 (defn known-providers
   "Return the set of SDK provider keywords for which models.dev has

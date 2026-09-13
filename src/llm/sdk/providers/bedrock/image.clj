@@ -12,20 +12,18 @@
             [llm.sdk.errors :as errors]
             [llm.sdk.providers.bedrock.converse :as bedrock]))
 
-(defn- aws-region []
-  (or (System/getenv "AWS_REGION")
-      (System/getenv "AWS_DEFAULT_REGION")
-      "us-east-1"))
-
-(defn- bedrock-base-url [] (str "https://bedrock-runtime." (aws-region) ".amazonaws.com"))
+(defn- unsupported-option! [model option value]
+  (throw (ex-info "Invalid Bedrock image option"
+                  {:provider :bedrock
+                   :model model
+                   :error/type :request/invalid-image-option
+                   :option option
+                   :value value})))
 
 (defn- titan? [model] (str/starts-with? (str model) "amazon.titan-image"))
 (defn- nova-canvas? [model] (str/starts-with? (str model) "amazon.nova-canvas"))
 (defn- legacy-stability? [model]
   (str/starts-with? (str model) "stability.stable-diffusion-xl"))
-(defn- modern-stability? [model]
-  (and (str/starts-with? (str model) "stability.")
-       (not (legacy-stability? model))))
 
 (defn- stable-image-core? [model]
   (str/starts-with? (str model) "stability.stable-image-core"))
@@ -35,6 +33,11 @@
 
 (defn- sd3-5-large? [model]
   (str/starts-with? (str model) "stability.sd3-5-large"))
+
+(defn- modern-stability? [model]
+  (or (stable-image-core? model)
+      (stable-image-ultra? model)
+      (sd3-5-large? model)))
 
 ;; ---------------------------------------------------------------------------
 ;; Body shapes per model family
@@ -77,7 +80,7 @@
     (:standard :low :medium :auto) "standard"
     nil))
 
-(defn- task-image-body [request cfg-default]
+(defn- task-image-body [request cfg-default include-style?]
   (let [[w h] (or (parse-size (:image/size request)) [1024 1024])
         opts (bedrock-options request)
         quality (or (:quality opts) (quality-value (:image/quality request)))]
@@ -85,7 +88,7 @@
      :textToImageParams
      (cond-> {:text (:image/prompt request)}
        (:negative-prompt opts) (assoc :negativeText (:negative-prompt opts))
-       (:style opts) (assoc :style (:style opts)))
+       (and include-style? (:style opts)) (assoc :style (:style opts)))
      :imageGenerationConfig
      (cond-> {:numberOfImages (or (:image/n request) 1)
               :width w
@@ -94,11 +97,14 @@
        (:seed opts) (assoc :seed (:seed opts))
        quality (assoc :quality quality))}))
 
-(defn- titan-body [request]
-  (task-image-body request 8.0))
+(defn- titan-body [model request]
+  (let [opts (bedrock-options request)]
+    (when (contains? opts :style)
+      (unsupported-option! model :style (:style opts)))
+    (task-image-body request 8.0 false)))
 
 (defn- nova-canvas-body [request]
-  (task-image-body request 6.5))
+  (task-image-body request 6.5 true))
 
 (defn- legacy-stability-body [request]
   (let [[w h] (or (parse-size (:image/size request)) [1024 1024])
@@ -118,12 +124,7 @@
     :else value))
 
 (defn- invalid-stability-option! [model option value]
-  (throw (ex-info "Invalid Bedrock Stability image option"
-                  {:provider :bedrock
-                   :model model
-                   :error/type :request/invalid-image-option
-                   :option option
-                   :value value})))
+  (unsupported-option! model option value))
 
 (defn- stability-output-formats [model]
   (cond
@@ -166,7 +167,11 @@
     (let [strength (:strength opts)]
       (when-not (and (number? strength) (<= 0 strength 1))
         (invalid-stability-option! model :strength strength))))
-  (if (stable-image-core? model)
+  (when (and (some? (:image/n request))
+             (not= 1 (:image/n request)))
+    (invalid-stability-option! model :image/n (:image/n request)))
+  (cond
+    (stable-image-core? model)
     (cond
       (contains? opts :mode)
       (invalid-stability-option! model :mode (:mode opts))
@@ -176,6 +181,20 @@
 
       (contains? opts :strength)
       (invalid-stability-option! model :strength (:strength opts)))
+
+    (stable-image-ultra? model)
+    (do
+      (when (and (contains? opts :mode)
+                 (not= "text-to-image" mode))
+        (invalid-stability-option! model :mode (:mode opts)))
+      (when (and image (= "text-to-image" mode))
+        (invalid-stability-option! model :mode (:mode opts)))
+      (when (and (contains? opts :strength) (not image))
+        (invalid-stability-option! model :strength (:strength opts)))
+      (when (and aspect-ratio image)
+        (invalid-stability-option! model :aspect-ratio aspect-ratio)))
+
+    (sd3-5-large? model)
     (do
       (when (and (contains? opts :mode)
                  (not (contains? stability-generation-modes mode)))
@@ -199,8 +218,10 @@
                              option-name)
         output-format (some-> (:output-format opts) option-name)
         image (:image opts)
-        mode (some-> (or (:mode opts) (when image "image-to-image"))
-                     option-name)]
+        requested-mode (some-> (:mode opts) option-name)
+        mode (if (sd3-5-large? model)
+               (or requested-mode (when image "image-to-image"))
+               requested-mode)]
     (validate-modern-stability-options!
      model request opts aspect-ratio output-format image mode)
     (cond-> {:prompt (:image/prompt request)}
@@ -213,11 +234,24 @@
       mode (assoc :mode mode))))
 
 (defn build-image-request-bedrock
-  [_profile request]
-  (let [canonical (or (:image/model request) "amazon.titan-image-generator-v2:0")
+  [profile request]
+  (let [canonical (:image/model request)
+        _ (when (str/blank? canonical)
+            (throw
+             (ex-info
+              (str "Bedrock image generation requires an explicit :image/model; "
+                   "amazon.titan-image-generator-v2:0 reached end of life "
+                   "on June 30, 2026")
+              {:provider :bedrock
+               :error/type :request/missing-model
+               :migration/models
+               ["amazon.nova-canvas-v1:0"
+                "stability.stable-image-core-v1:1"
+                "stability.stable-image-ultra-v1:1"
+                "stability.sd3-5-large-v1:0"]})))
         model (bedrock/resolve-model-id canonical)
         body (cond
-               (titan? model) (titan-body request)
+               (titan? model) (titan-body model request)
                (nova-canvas? model) (nova-canvas-body request)
                (legacy-stability? model) (legacy-stability-body request)
                (modern-stability? model) (modern-stability-body model request)
@@ -225,13 +259,15 @@
                (throw (ex-info "Unsupported Bedrock image model family"
                                {:provider :bedrock
                                 :model model
-                                :error/type :request/unsupported-model})))]
+                                :error/type :request/unsupported-model})))
+        {:keys [base-url region]}
+        (bedrock/runtime-routing profile (bedrock-options request))]
     {:method :post
-     :url (str (bedrock-base-url) "/model/" model "/invoke")
+     :url (str base-url "/model/" model "/invoke")
      :headers {"Content-Type" "application/json"
                "Accept" "application/json"}
      :llm.sdk.providers.bedrock/aws-service "bedrock"
-     :llm.sdk.providers.bedrock/aws-region (aws-region)
+     :llm.sdk.providers.bedrock/aws-region region
      :body body}))
 
 ;; ---------------------------------------------------------------------------
@@ -239,7 +275,11 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- images-parse [raw]
-  (mapv (fn [b64] {:image/b64 b64}) (:images raw)))
+  (into []
+        (keep (fn [b64]
+                (when (string? b64)
+                  {:image/b64 b64})))
+        (:images raw)))
 
 (defn- artifacts-parse [raw]
   (into []
@@ -248,15 +288,63 @@
                   {:image/b64 b64})))
         (:artifacts raw)))
 
+(defn- image-response-error [raw images]
+  (let [native-error (:error raw)
+        legacy-reasons (->> (:artifacts raw)
+                            (keep :finishReason)
+                            (remove #{"SUCCESS"})
+                            vec)
+        modern-reasons (->> (:finish_reasons raw)
+                            (remove nil?)
+                            vec)
+        finish-reasons (into legacy-reasons modern-reasons)
+        filter? (or (some? native-error)
+                    (some #(str/includes?
+                            (str/upper-case (str %))
+                            "FILTER")
+                          finish-reasons))
+        failure? (or (some? native-error)
+                     (seq finish-reasons)
+                     (empty? images))]
+    (when failure?
+      (let [message (cond
+                      (string? native-error) native-error
+                      (some? native-error) (str native-error)
+                      (seq finish-reasons) (str/join "; " finish-reasons)
+                      :else "Bedrock returned no generated images")
+            classification
+            (if filter?
+              {:error/reason :invalid-request
+               :error/retryable false
+               :error/should-fallback false
+               :error/message message}
+              {:error/reason :provider-bug
+               :error/retryable true
+               :error/message message})]
+        {:classification classification
+         :finish-reasons finish-reasons}))))
+
 (defn parse-image-response-bedrock
   [_profile raw]
-  {:image/provider :bedrock
-   :image/model nil
-   :image/images (cond
-                   (:artifacts raw) (artifacts-parse raw)
-                   (:images raw) (images-parse raw)
-                   :else [])
-   :image/raw raw})
+  (let [images (cond
+                 (:artifacts raw) (artifacts-parse raw)
+                 (:images raw) (images-parse raw)
+                 :else [])
+        failure (image-response-error raw images)]
+    (when failure
+      (throw
+       (ex-info "Bedrock image generation failed"
+                {:provider :bedrock
+                 :error/type :provider/image-generation-failed
+                 :error (:classification failure)
+                 :finish-reasons (:finish-reasons failure)
+                 :image/images images
+                 :image/raw raw
+                 :body raw})))
+    {:image/provider :bedrock
+     :image/model nil
+     :image/images images
+     :image/raw raw}))
 
 (defn parse-image-error-bedrock
   [_profile status body]

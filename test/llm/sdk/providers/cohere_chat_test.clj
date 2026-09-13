@@ -22,6 +22,31 @@
     (is (= 0.3 (get-in built [:body :temperature])))
     (is (= 200 (get-in built [:body :max_tokens])))))
 
+(deftest test-build-request-honors-runtime-base-url
+  (let [t (cohere/make-transport)
+        profile (provider/apply-runtime-config
+                 (provider/get-provider :cohere)
+                 {:base-url "https://private.cohere.test/"})
+        built (transport/build-request
+               t profile
+               {:request/model "command-r"
+                :request/messages [{:message/role :user
+                                    :message/content "hi"}]})]
+    (is (= "https://private.cohere.test/v2/chat" (:url built)))))
+
+(deftest test-build-request-maps-developer-role-to-system
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        built (transport/build-request
+               t profile
+               {:request/model "command-r"
+                :request/messages [{:message/role :developer
+                                    :message/content "Follow policy."}
+                                   {:message/role :user
+                                    :message/content "hi"}]})]
+    (is (= {:role "system" :content "Follow policy."}
+           (get-in built [:body :messages 0])))))
+
 (deftest test-build-request-tools
   (let [t (cohere/make-transport)
         profile (provider/get-provider :cohere)
@@ -168,6 +193,51 @@
       (is (= "tool" (:role (msgs 2))))
       (is (= "tc_1" (:tool_call_id (msgs 2)))))))
 
+(deftest test-build-request-preserves-reasoning-and-deduplicates-tool-calls
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        tool-call {:part/type :tool-call
+                   :tool-call/id "tc_1"
+                   :tool-call/name "lookup"
+                   :tool-call/arguments "{\"q\":\"x\"}"}
+        built (transport/build-request
+               t profile
+               {:request/model "command-a-reasoning-08-2025"
+                :request/messages
+                [{:message/role :assistant
+                  :message/content
+                  [{:part/type :reasoning
+                    :reasoning/text "I should inspect the evidence."}
+                   tool-call]
+                  :message/tool-calls [tool-call]}]})
+        assistant (get-in built [:body :messages 0])]
+    (is (= [{:type "thinking"
+             :thinking "I should inspect the evidence."}]
+           (:content assistant)))
+    (is (= [{:id "tc_1"
+             :type "function"
+             :function {:name "lookup"
+                        :arguments "{\"q\":\"x\"}"}}]
+           (:tool_calls assistant)))))
+
+(deftest test-build-request-rejects-unsupported-typed-content
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)]
+    (try
+      (transport/build-request
+       t profile
+       {:request/model "command-r"
+        :request/messages
+        [{:message/role :user
+          :message/content [{:part/type :input-audio
+                             :audio/data "AAAA"
+                             :audio/format :wav}]}]})
+      (is false "expected unsupported typed content rejection")
+      (catch clojure.lang.ExceptionInfo e
+        (is (= :provider/unsupported-content-part
+               (:error/type (ex-data e))))
+        (is (= :input-audio (:part/type (ex-data e))))))))
+
 (deftest test-parse-response-with-citations
   (let [t (cohere/make-transport)
         profile (provider/get-provider :cohere)
@@ -202,19 +272,31 @@
 (deftest test-parse-response-tool-calls
   (let [t (cohere/make-transport)
         profile (provider/get-provider :cohere)
+        native-tool-call {:id "tc_a"
+                          :type "function"
+                          :generation_id "native-call-state"
+                          :function {:name "lookup"
+                                     :arguments "{\"q\":\"x\"}"}}
         raw {:id "resp"
              :model "command-r"
              :finish_reason "TOOL_CALL"
              :message {:role "assistant"
                        :content []
-                       :tool_calls [{:id "tc_a"
-                                     :type "function"
-                                     :function {:name "lookup"
-                                                :arguments "{\"q\":\"x\"}"}}]}}
-        parsed (transport/parse-response t profile raw)]
+                       :tool_calls [native-tool-call]}}
+        parsed (transport/parse-response t profile raw)
+        tool-call (first (:response/tool-calls parsed))
+        replayed (transport/build-request
+                  t profile
+                  {:request/model "command-r"
+                   :request/messages [{:message/role :assistant
+                                       :message/content [tool-call]}]})]
     (is (= :tool-calls (:response/finish-reason parsed)))
     (is (= 1 (count (:response/tool-calls parsed))))
-    (is (= "tc_a" (:tool-call/id (first (:response/tool-calls parsed)))))))
+    (is (= "tc_a" (:tool-call/id tool-call)))
+    (is (= "{\"q\":\"x\"}" (:tool-call/arguments tool-call)))
+    (is (= native-tool-call (:tool-call/provider-data tool-call)))
+    (is (= native-tool-call
+           (get-in replayed [:body :messages 0 :tool_calls 0])))))
 
 (deftest test-parse-response-thinking-content
   (let [t (cohere/make-transport)
@@ -249,12 +331,57 @@
         line (str "data: "
                   (json/generate-string
                    {:type "content-delta"
+                    :index 2
                     :delta {:message
                             {:content {:type "thinking"
                                        :thinking "Checking"}}}}))
         ev (transport/parse-stream-event t profile line)]
     (is (= :stream/reasoning-delta (:event/type ev)))
+    (is (= 2 (:event/index ev)))
     (is (= "Checking" (:event/delta ev)))))
+
+(deftest test-stream-tool-call-start-preserves-native-state
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        native-tool-call {:id "tc_stream"
+                          :type "function"
+                          :generation_id "native-call-state"
+                          :function {:name "lookup"
+                                     :arguments ""}}
+        line (str "data: "
+                  (json/generate-string
+                   {:type "tool-call-start"
+                    :index 3
+                    :delta {:message {:tool_calls native-tool-call}}}))
+        ev (transport/parse-stream-event t profile line)]
+    (is (= :stream/tool-call-start (:event/type ev)))
+    (is (= 3 (:tool-call/index ev)))
+    (is (= "tc_stream" (:tool-call/id ev)))
+    (is (= "lookup" (:tool-call/name ev)))
+    (is (= native-tool-call (:tool-call/provider-data ev)))))
+
+(deftest test-stream-citation-preserves-nested-document-identity
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        citation {:start 4
+                  :end 12
+                  :text "evidence"
+                  :content_index 0
+                  :type "TEXT_CONTENT"
+                  :sources [{:type "document"
+                             :id "doc_42"
+                             :document {:url "https://example.com/source"
+                                        :title "Source"}}]}
+        line (str "data: "
+                  (json/generate-string
+                   {:type "citation-start"
+                    :delta {:message {:citations citation}}}))
+        ev (transport/parse-stream-event t profile line)]
+    (is (= :stream/citation (:event/type ev)))
+    (is (= "https://example.com/source" (:citation/url ev)))
+    (is (= "doc_42" (:citation/source-id ev)))
+    (is (= [4 12] (:citation/text-range ev)))
+    (is (= citation (:citation/provider-data ev)))))
 
 (deftest test-stream-message-end-emits-usage-then-end
   (let [t (cohere/make-transport)

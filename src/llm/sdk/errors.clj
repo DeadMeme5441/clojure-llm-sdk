@@ -71,14 +71,61 @@
 ;; Extractors
 ;; ---------------------------------------------------------------------------
 
+(defn- map-value
+  [m k]
+  (when (map? m)
+    (or (get m k)
+        (get m (name k)))))
+
+(defn- detail->msg
+  [detail]
+  (cond
+    (string? detail) detail
+    (map? detail) (some-> (or (map-value detail :message)
+                              (map-value detail :msg))
+                          str)
+    (sequential? detail) (->> detail
+                              (keep detail->msg)
+                              (remove str/blank?)
+                              (str/join "; "))
+    :else nil))
+
 (defn- error-body->msg [body]
   (cond
     (string? body) body
     (map? body)
-    (or (some-> body :error :message str)
-        (some-> body :message str)
+    (or (some-> (map-value body :error)
+                (map-value :message)
+                str)
+        (some-> (map-value body :message) str)
+        (detail->msg (map-value body :detail))
         "")
     :else ""))
+
+(defn- with-provider-message
+  [classification body]
+  (let [message (error-body->msg body)]
+    (cond-> classification
+      (not (str/blank? message)) (assoc :error/message message))))
+
+(defn- status-code
+  [value]
+  (cond
+    (integer? value) value
+    (string? value) (try
+                      (Long/parseLong value)
+                      (catch NumberFormatException _ nil))
+    :else nil))
+
+(defn- bedrock-original-status
+  [body]
+  (status-code
+   (or (map-value body :originalStatusCode)
+       (map-value body :original_status_code)
+       (some-> (map-value body :error)
+               (map-value :originalStatusCode))
+       (some-> (map-value body :error)
+               (map-value :original_status_code)))))
 
 (defn- matches-any? [text patterns]
   (let [t (str/lower-case (or text ""))]
@@ -96,12 +143,13 @@
      :provider   Provider keyword
      :model      Model string
      :error-type Exception type name string"
-  [e & {:keys [status body error-type]}]
+  [e & {:keys [status body error-type provider]}]
   (let [msg (str/lower-case (str e " " (error-body->msg body)))
         type-name (or error-type (type e))]
 
     ;; 1. Provider-specific highest-priority patterns
-    (cond
+    (with-provider-message
+      (cond
       (and (= status 400)
            (str/includes? msg "signature")
            (str/includes? msg "thinking"))
@@ -174,6 +222,46 @@
         {:error/reason :unknown
          :error/retryable true})
 
+      (= status 408)
+      {:error/reason :timeout
+       :error/retryable true
+       :error/message "Request timed out"}
+
+      (= status 524)
+      {:error/reason :timeout
+       :error/retryable true
+       :error/message "Request timed out"}
+
+      (= status 422)
+      {:error/reason :invalid-request
+       :error/retryable false
+       :error/message "Validation failed"
+       :error/should-fallback true}
+
+      (and (= provider :bedrock) (= status 424))
+      (let [original-status (bedrock-original-status body)]
+        (cond
+          (#{408 504 524} original-status)
+          {:error/reason :timeout
+           :error/retryable true
+           :error/message "Model request timed out"}
+
+          (= original-status 429)
+          {:error/reason :rate-limit
+           :error/retryable true
+           :error/message "Model rate limited"}
+
+          (and original-status (<= 400 original-status 499))
+          {:error/reason :invalid-request
+           :error/retryable false
+           :error/message "Model rejected request"
+           :error/should-fallback true}
+
+          :else
+          {:error/reason :provider-bug
+           :error/retryable true
+           :error/message "Model processing failed"}))
+
       (= status 413)
       {:error/reason :invalid-request
        :error/retryable true
@@ -205,6 +293,12 @@
          :error/retryable false
          :error/message "Bad request"
          :error/should-fallback true})
+
+      (and (integer? status) (<= 400 status 499))
+      {:error/reason :invalid-request
+       :error/retryable false
+       :error/message "Client request failed"
+       :error/should-fallback true}
 
       (#{500 502} status)
       {:error/reason :server
@@ -255,7 +349,8 @@
       :else
       {:error/reason :unknown
        :error/retryable true
-       :error/message "Unclassified error"})))
+       :error/message "Unclassified error"})
+     body)))
 
 (defn classify-api-error
   "Classify a provider HTTP API error with a consistent exception label."

@@ -1,36 +1,54 @@
 #!/usr/bin/env python3
-"""Build resources/litellm-snapshot.json from LiteLLM's pricing data.
+"""Build the bundled LiteLLM and models.dev catalog snapshots.
 
-Reads LiteLLM's model_prices_and_context_window.json, keeps only the
-providers we have SDK adapters for, and normalises to a leaner shape
-the Clojure side can load without further parsing.
+The default inputs are immutable public revisions:
 
-Source (only this one file is needed — no full LiteLLM checkout):
-  https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+* LiteLLM model pricing:
+  https://github.com/BerriAI/litellm/blob/b1a61f510c90ce7e4533e89247c941fa201ada4f/model_prices_and_context_window.json
+* models.dev catalog:
+  https://github.com/anomalyco/models.dev/tree/a2a673950c6e09af0dbcb4744116401fc1ee0048
 
-By default the script fetches that file directly over HTTPS, so a
-plain refresh needs nothing on disk:
+Only providers backed by SDK adapters are retained. The models.dev snapshot is
+built directly from the pinned repository archive rather than the mutable
+models.dev API response.
 
-  python3 scripts/build_litellm_snapshot.py
+LiteLLM may be overridden with argv[1], LITELLM_SOURCE, or LITELLM_REPO. The
+override may be a URL, pricing JSON path, or directory containing
+model_prices_and_context_window.json. MODELS_DEV_SOURCE may similarly point to
+a models.dev repository archive or checkout.
 
-To pin or work offline, pass an override as argv[1] or via the
-LITELLM_SOURCE / LITELLM_REPO env var. The override may be any of:
-  - an http(s) URL to a model_prices_and_context_window.json
-  - a path to a model_prices_and_context_window.json file
-  - a directory containing that file (e.g. a local LiteLLM checkout)
-
-Output:
+Outputs:
   resources/litellm-snapshot.json
+  resources/models-dev-snapshot.json
 """
+import copy
+import io
 import json
 import os
 import sys
+import tarfile
+import tempfile
+import tomllib
 import urllib.request
 from pathlib import Path
 
+LITELLM_REVISION = "b1a61f510c90ce7e4533e89247c941fa201ada4f"
 DEFAULT_SOURCE_URL = (
-    "https://raw.githubusercontent.com/BerriAI/litellm/main/"
-    "model_prices_and_context_window.json"
+    "https://raw.githubusercontent.com/BerriAI/litellm/"
+    f"{LITELLM_REVISION}/model_prices_and_context_window.json"
+)
+LITELLM_BLOB_URL = (
+    "https://github.com/BerriAI/litellm/blob/"
+    f"{LITELLM_REVISION}/model_prices_and_context_window.json"
+)
+MODELS_DEV_REVISION = "a2a673950c6e09af0dbcb4744116401fc1ee0048"
+MODELS_DEV_SOURCE_URL = (
+    "https://github.com/anomalyco/models.dev/archive/"
+    f"{MODELS_DEV_REVISION}.tar.gz"
+)
+MODELS_DEV_TREE_URL = (
+    "https://github.com/anomalyco/models.dev/tree/"
+    f"{MODELS_DEV_REVISION}"
 )
 PRICING_FILENAME = "model_prices_and_context_window.json"
 
@@ -50,6 +68,7 @@ PROVIDER_MAP = {
     "cerebras": "cerebras",
     "together_ai": "together",
     "xai": "xai",
+    "zai": "zai",
     "perplexity": "perplexity",
     "cohere": "cohere",
     "cohere_chat": "cohere",
@@ -58,6 +77,51 @@ PROVIDER_MAP = {
     "bedrock": "bedrock",
     "bedrock_converse": "bedrock",
     "huggingface": "huggingface",
+}
+
+# models.dev provider ids corresponding to registered SDK providers. Aliases
+# such as :codex reuse "openai" and therefore do not duplicate snapshot data.
+MODELS_DEV_PROVIDER_IDS = {
+    "amazon-bedrock",
+    "anthropic",
+    "cerebras",
+    "cohere",
+    "deepseek",
+    "google",
+    "google-vertex",
+    "groq",
+    "huggingface",
+    "kimi-for-coding",
+    "mistral",
+    "openai",
+    "openrouter",
+    "perplexity",
+    "togetherai",
+    "xai",
+    "zai",
+}
+
+# The :vertex-gemini transport always addresses publishers/google/models.
+# models.dev's google-vertex catalog also contains Anthropic and other MaaS
+# publishers whose wire protocols this adapter does not implement.
+MODELS_DEV_MODEL_PREFIXES = {"google-vertex": ("gemini-",)}
+
+LITELLM_KEY_PREFIXES = {
+    "cohere_chat": {"cohere", "cohere_chat"},
+    "text-completion-deepseek": {"deepseek", "text-completion-deepseek"},
+    "text-completion-openai": {"openai", "text-completion-openai"},
+    "together_ai": {"together", "together_ai"},
+}
+
+# A slash left after stripping the LiteLLM provider prefix is a valid native id
+# only for adapters whose wire model ids are themselves namespaced.
+NAMESPACED_MODEL_PROVIDERS = {
+    "groq",
+    "bedrock",
+    "huggingface",
+    "openrouter",
+    "perplexity",
+    "together",
 }
 
 # --- mode → capabilities (will be merged with supports_* flags) ---
@@ -99,22 +163,21 @@ def strip_model_prefix(key: str, litellm_provider: str) -> str:
       mistral/codestral-2405 → codestral-2405
       gemini/gemini-2.5-pro → gemini-2.5-pro
       openrouter/anthropic/claude-3-haiku → anthropic/claude-3-haiku
-        (OpenRouter model ids ARE namespaced — keep the inner path)
+      perplexity/openai/gpt-5.6-sol → openai/gpt-5.6-sol
+        (these providers use namespaced native model ids)
       bedrock_converse keys stay as-is (region-prefix carries meaning).
     """
     if litellm_provider in ("bedrock", "bedrock_converse"):
         return key
-    if "/" in key:
-        head, _, tail = key.partition("/")
-        return tail
-    return key
+    if "/" not in key:
+        return key
+    head, _, tail = key.partition("/")
+    prefixes = LITELLM_KEY_PREFIXES.get(
+        litellm_provider, {litellm_provider}
+    )
+    return tail if head in prefixes else key
 
 
-# Providers where LiteLLM stores routing fictions (e.g.
-# 'perplexity/anthropic/claude-opus' isn't a real wire model id on
-# api.perplexity.ai). When the stripped id still contains a '/',
-# the entry is a routing curio rather than a real model — skip it.
-ROUTING_LITERAL_PROVIDERS = {"perplexity"}
 
 
 def per_million(val):
@@ -161,32 +224,39 @@ def normalize_entry(key: str, raw: dict):
     # The SDK's image adapter now uses Gemini image-generation models.
     if sdk_provider == "gemini-native" and model_id.startswith("imagen-"):
         return None
-    if (sdk_provider in ROUTING_LITERAL_PROVIDERS) and ("/" in model_id):
-        return None  # skip routing-curio entries
+    if sdk_provider not in NAMESPACED_MODEL_PROVIDERS and "/" in model_id:
+        return None
 
     cost = {}
     if (v := per_million(raw.get("input_cost_per_token"))) is not None:
         cost["input_per_million"] = v
     if (v := per_million(raw.get("output_cost_per_token"))) is not None:
         cost["output_per_million"] = v
-    # LiteLLM uses different field names across providers; capture the
-    # common ones.
+    # LiteLLM uses different field names across providers; only explicitly
+    # typed rates are promoted. In particular, a generic/text cache rate is
+    # never reused as an image or audio cache rate.
     for src_key, dst_key in [
         ("cache_read_input_token_cost", "cache_read_per_million"),
         ("input_cost_per_token_cached", "cache_read_per_million"),
         ("cache_creation_input_token_cost", "cache_write_per_million"),
+        ("input_cost_per_image_token", "image_input_per_million"),
+        ("output_cost_per_image_token", "image_output_per_million"),
+        ("input_cost_per_audio_token", "audio_input_per_million"),
+        ("output_cost_per_audio_token", "audio_output_per_million"),
+        ("cache_read_input_image_token_cost", "image_cache_read_per_million"),
+        ("cache_read_input_audio_token_cost", "audio_cache_read_per_million"),
     ]:
         if (v := per_million(raw.get(src_key))) is not None:
             cost.setdefault(dst_key, v)
-    request_cost = sum(
+    request_parts = [
         n for n in [
             numeric(raw.get("input_cost_per_request")),
             numeric(raw.get("output_cost_per_request")),
         ]
         if n is not None
-    )
-    if request_cost:
-        cost["request_cost"] = request_cost
+    ]
+    if request_parts:
+        cost["request_cost"] = sum(request_parts)
     if (v := first_numeric(raw.get("output_cost_per_image"),
                            raw.get("input_cost_per_image"))) is not None:
         cost["image_per_image"] = v
@@ -202,6 +272,9 @@ def normalize_entry(key: str, raw: dict):
         if (v := first_numeric(raw.get("input_cost_per_character"),
                                raw.get("output_cost_per_character"))) is not None:
             cost["tts_per_million_chars"] = v * 1_000_000.0
+    if mode == "rerank":
+        if (v := numeric(raw.get("input_cost_per_query"))) is not None:
+            cost["rerank_per_search_unit"] = v
 
     out = {
         "id": model_id,
@@ -225,6 +298,8 @@ def normalize_entry(key: str, raw: dict):
         out["cost"] = cost
     if (mode := raw.get("mode")):
         out["mode"] = mode
+    if (deprecation_date := raw.get("deprecation_date")):
+        out["deprecation_date"] = deprecation_date
 
     # Skip entries with no useful data (no context, no cost, no caps).
     if (out.keys() <= {"id", "provider"}):
@@ -233,32 +308,168 @@ def normalize_entry(key: str, raw: dict):
     return out
 
 
-def load_source(override):
-    """Load LiteLLM's pricing JSON from the override or the default URL.
+def fetch_bytes(url):
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "clojure-llm-sdk-catalog-refresh"}
+    )
+    with urllib.request.urlopen(request) as response:
+        return response.read()
 
-    `override` (argv/env) may be a URL, a path to the JSON file, or a
-    directory holding it. When falsy, fetch DEFAULT_SOURCE_URL over HTTPS.
-    Returns the parsed dict.
-    """
+
+def load_source(override):
+    """Load LiteLLM's pricing JSON from a URL, file, checkout, or the pin."""
     if not override:
         print(f"fetching {DEFAULT_SOURCE_URL}", file=sys.stderr)
-        with urllib.request.urlopen(DEFAULT_SOURCE_URL) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        return json.loads(fetch_bytes(DEFAULT_SOURCE_URL).decode("utf-8"))
 
     if override.startswith(("http://", "https://")):
         print(f"fetching {override}", file=sys.stderr)
-        with urllib.request.urlopen(override) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        return json.loads(fetch_bytes(override).decode("utf-8"))
 
     path = Path(override)
     if path.is_dir():
         path = path / PRICING_FILENAME
     if not path.exists():
-        print(f"source not found: {path}", file=sys.stderr)
-        sys.exit(1)
+        raise FileNotFoundError(f"LiteLLM source not found: {path}")
     print(f"reading {path}", file=sys.stderr)
-    with path.open() as f:
-        return json.load(f)
+    with path.open() as source:
+        return json.load(source)
+
+
+def deep_merge(base, overrides):
+    out = copy.deepcopy(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def omit_path(value, dotted_path):
+    parts = dotted_path.split(".")
+    current = value
+    for part in parts[:-1]:
+        current = current.get(part)
+        if not isinstance(current, dict):
+            return
+    current.pop(parts[-1], None)
+
+
+def load_toml_tree(root):
+    base_models = {}
+    models_root = root / "models"
+    for path in models_root.rglob("*.toml"):
+        model_id = path.relative_to(models_root).with_suffix("").as_posix()
+        with path.open("rb") as source:
+            base_models[model_id] = tomllib.load(source)
+
+    providers = {}
+    for provider_id in sorted(MODELS_DEV_PROVIDER_IDS):
+        provider_root = root / "providers" / provider_id
+        provider_file = provider_root / "provider.toml"
+        models_root = provider_root / "models"
+        if not provider_file.exists() or not models_root.exists():
+            continue
+        with provider_file.open("rb") as source:
+            provider = tomllib.load(source)
+        provider["id"] = provider_id
+        provider["models"] = {}
+
+        prefixes = MODELS_DEV_MODEL_PREFIXES.get(provider_id)
+        for path in sorted(models_root.rglob("*.toml")):
+            model_id = path.relative_to(models_root).with_suffix("").as_posix()
+            if prefixes and not model_id.startswith(prefixes):
+                continue
+            with path.open("rb") as source:
+                authored = tomllib.load(source)
+            base_model = authored.pop("base_model", None)
+            omit = authored.pop("base_model_omit", [])
+            if base_model:
+                if base_model not in base_models:
+                    raise ValueError(
+                        f"{provider_id}/{model_id} has unknown base_model {base_model}"
+                    )
+                authored = deep_merge(base_models[base_model], authored)
+                for dotted_path in omit:
+                    omit_path(authored, dotted_path)
+            authored["id"] = model_id
+            provider["models"][model_id] = normalize_models_dev_entry(authored)
+        if provider["models"]:
+            providers[provider_id] = provider
+    return providers
+
+
+def load_models_dev_source(override):
+    if override and Path(override).is_dir():
+        print(f"reading {override}", file=sys.stderr)
+        return load_toml_tree(Path(override))
+
+    source = override or MODELS_DEV_SOURCE_URL
+    print(f"fetching {source}", file=sys.stderr)
+    if source.startswith(("http://", "https://")):
+        archive = fetch_bytes(source)
+    else:
+        archive = Path(source).read_bytes()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:*") as bundle:
+            bundle.extractall(temp_dir, filter="data")
+        roots = [path for path in Path(temp_dir).iterdir() if path.is_dir()]
+        if len(roots) != 1:
+            raise ValueError("models.dev archive must contain one repository root")
+        return load_toml_tree(roots[0])
+
+
+def normalize_models_dev_entry(entry):
+    out = copy.deepcopy(entry)
+    raw_cost = out.get("cost")
+    if not isinstance(raw_cost, dict):
+        return out
+    cost = copy.deepcopy(raw_cost)
+    for source_key, dest_key in [
+        ("input", "input_per_million"),
+        ("output", "output_per_million"),
+        ("cache_read", "cache_read_per_million"),
+        ("cache_write", "cache_write_per_million"),
+        ("input_image", "image_input_per_million"),
+        ("output_image", "image_output_per_million"),
+        ("input_audio", "audio_input_per_million"),
+        ("output_audio", "audio_output_per_million"),
+        ("cache_read_image", "image_cache_read_per_million"),
+        ("cache_read_audio", "audio_cache_read_per_million"),
+        ("rerank", "rerank_per_search_unit"),
+    ]:
+        if source_key in cost:
+            cost[dest_key] = cost.pop(source_key)
+    out["cost"] = cost
+    return out
+
+
+def write_snapshot(filename, source_url, revision, providers):
+    destination = (
+        Path(__file__).resolve().parent.parent / "resources" / filename
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = {
+        "_meta": {
+            "source_revision": revision,
+            "source_url": source_url,
+        },
+        "providers": providers,
+    }
+    with destination.open("w") as output:
+        json.dump(snapshot, output, separators=(",", ":"), sort_keys=True)
+    sizes = {
+        provider: len(value.get("models", value))
+        for provider, value in providers.items()
+    }
+    total = sum(sizes.values())
+    print(
+        f"wrote resources/{filename} — "
+        f"{total} entries across {len(providers)} providers"
+    )
+    for provider, count in sorted(sizes.items(), key=lambda item: -item[1]):
+        print(f"  {provider}: {count}")
 
 
 def main():
@@ -267,12 +478,10 @@ def main():
     )
     data = load_source(override)
 
-    out = {}  # {sdk-provider: {model-id: entry}}
+    providers = {}
     skipped = 0
     for key, raw in data.items():
-        if not isinstance(raw, dict):
-            continue
-        if key == "sample_spec":
+        if not isinstance(raw, dict) or key == "sample_spec":
             continue
         normalized = normalize_entry(key, raw)
         if normalized is None:
@@ -280,18 +489,23 @@ def main():
             continue
         provider = normalized.pop("provider")
         model_id = normalized.pop("id")
-        out.setdefault(provider, {})[model_id] = normalized
+        providers.setdefault(provider, {})[model_id] = normalized
 
-    dest = Path(__file__).resolve().parent.parent / "resources" / "litellm-snapshot.json"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with dest.open("w") as f:
-        json.dump(out, f, separators=(",", ":"), sort_keys=True)
-    sizes = {p: len(m) for p, m in out.items()}
-    total = sum(sizes.values())
-    print(f"wrote resources/litellm-snapshot.json — {total} entries across {len(out)} providers")
-    for p, c in sorted(sizes.items(), key=lambda kv: -kv[1]):
-        print(f"  {p}: {c}")
+    write_snapshot(
+        "litellm-snapshot.json",
+        LITELLM_BLOB_URL,
+        LITELLM_REVISION,
+        providers,
+    )
     print(f"skipped (not in PROVIDER_MAP or empty): {skipped}")
+
+    models_dev = load_models_dev_source(os.environ.get("MODELS_DEV_SOURCE"))
+    write_snapshot(
+        "models-dev-snapshot.json",
+        MODELS_DEV_TREE_URL,
+        MODELS_DEV_REVISION,
+        models_dev,
+    )
 
 
 if __name__ == "__main__":

@@ -32,9 +32,9 @@ Chat responses use one canonical shape:
                   {:part/type :citation
                    :citation/url "https://example.com"}]
  :response/finish-reason :stop
- :response/usage {...}
- :response/cost {...}
- :response/cache {...}
+ :response/usage {...}                 ; optional and sparse, including unit-only usage
+ :response/cost {...}                  ; optional; provider-reported cost wins
+ :response/cache {...}                 ; canonical hit/miss/unknown when stamped
  :response/provider-data {...}
  :response/raw {...}}
 ```
@@ -64,17 +64,24 @@ Provider implementations live under provider-family namespaces. These namespaces
 | Family | Owner namespaces |
 |---|---|
 | OpenAI | `llm.sdk.providers.openai.chat`, `.embeddings`, `.moderation`, `.image`, `.speak`, `.transcribe`, `.audio` |
-| Anthropic | `llm.sdk.providers.anthropic.chat` |
-| Gemini / Vertex | `llm.sdk.providers.gemini.native`, `.vertex`, `.imagen` |
+| Anthropic | `llm.sdk.providers.anthropic.chat`, `.vertex` |
+| Gemini / Vertex | `llm.sdk.providers.gemini.native`, `.embeddings`, `.vertex`, `.imagen` |
 | Cohere | `llm.sdk.providers.cohere.chat`, `.embeddings`, `.rerank` |
-| Bedrock | `llm.sdk.providers.bedrock.converse`, `.image` |
+| Bedrock | `llm.sdk.providers.bedrock.converse`, `.image`, `.rerank` |
 | Codex | `llm.sdk.providers.codex.responses` |
-| Local / Aggregators | `llm.sdk.providers.ollama.native`, `llm.sdk.providers.openrouter.chat`, `llm.sdk.providers.perplexity.chat`, `llm.sdk.providers.openai_compat.aliases` |
-| Other modalities | `llm.sdk.providers.voyage.rerank`, `llm.sdk.providers.elevenlabs.tts`, `llm.sdk.providers.fake.chat` |
+| Z.AI | `llm.sdk.providers.zai.chat` |
+| Local / Aggregators | `llm.sdk.providers.ollama.native`, `llm.sdk.providers.openrouter.chat`, `.embeddings`, `.image`, `llm.sdk.providers.perplexity.chat`, `llm.sdk.providers.openai-compat.aliases` |
+| Other modalities | `llm.sdk.providers.voyage.embeddings`, `.rerank`, `llm.sdk.providers.jina.embeddings`, `llm.sdk.providers.elevenlabs.tts`, `llm.sdk.providers.fake.chat` |
 
 The older flat namespaces, such as `llm.sdk.providers.openai-chat` and `llm.sdk.providers.anthropic`, are compatibility shims. New SDK code should depend on the family owner namespaces directly.
 
 Provider registry and auth implementation live in `llm.sdk.provider.registry`, `llm.sdk.provider.auth`, and `llm.sdk.provider.builtins`. Cache implementation lives in `llm.sdk.cache.markers`, `llm.sdk.cache.policy`, and `llm.sdk.cache.request`. The aggregate namespaces `llm.sdk.provider` and `llm.sdk.cache` remain public compatibility surfaces.
+
+Profile capabilities answer whether a transport can express a surface; model
+capabilities answer whether a particular model is cataloged for that surface.
+Neither implies live entitlement, regional availability, or that a provider
+currently accepts a model id. Callers should keep transport selection and
+model selection distinct.
 
 ## Provider Profiles
 
@@ -95,9 +102,20 @@ Provider profiles are registered by `llm.sdk.provider.builtins` and carry:
 
 OpenAI-compatible providers reuse the OpenAI Chat Completions transport owned by `llm.sdk.providers.openai.chat`. Providers with native shapes, such as Anthropic, Gemini, Cohere, Bedrock, and Ollama, use dedicated transports in their own family namespaces.
 
+Perplexity is not an OpenAI-compatible alias: `:perplexity` owns the native
+Agent API request/output and streaming lifecycle. Z.AI similarly owns its
+validated native options and finish-reason handling while reusing the shared
+OpenAI chat codec where the wire shape is compatible.
+
 ## Provider-Specific Replay State
 
-Provider replay state must survive canonicalization. The SDK preserves it in `:response/provider-data` and, when needed, accepts it again through `:message/provider-data`.
+Provider replay state must survive canonicalization. The SDK preserves
+response-wide state in `:response/provider-data` and, when needed, accepts it
+again through `:message/provider-data`. Replay-significant data attached to a
+specific item stays with that canonical item: reasoning signatures remain on
+reasoning parts, and custom or provider-native tool metadata remains in
+`:tool-call/provider-data`. Citation source metadata remains on citation
+parts.
 
 Examples:
 
@@ -108,6 +126,9 @@ Examples:
 - Tool-call ids and provider-native call metadata
 
 This is why the SDK does not reduce every provider response to plain text.
+Callers replaying an assistant response must carry the relevant canonical part
+metadata and `:response/provider-data` forward; dropping opaque metadata can
+make an otherwise identical-looking follow-up invalid to the provider.
 
 ## Streaming
 
@@ -117,17 +138,41 @@ Streaming providers emit different wire formats, but the SDK normalizes them int
 |---|---|
 | `:stream/start` | Request began. |
 | `:stream/content-delta` | Text delta. |
-| `:stream/reasoning-delta` | Reasoning or thinking delta. |
-| `:stream/tool-call-start` | Tool call began. |
+| `:stream/reasoning-delta` | Reasoning or thinking delta; optional `:event/index` selects a block and optional `:reasoning/signature` is replay-significant. |
+| `:stream/tool-call-start` | Tool call began; may include `:tool-call/provider-data`. |
 | `:stream/tool-call-delta` | Tool call arguments delta. |
 | `:stream/tool-call-end` | Tool call completed. |
-| `:stream/citation` | Citation surfaced mid-stream. |
-| `:stream/usage` | Usage data. |
+| `:stream/citation` | Citation surfaced mid-stream; a source id or provider metadata may stand in for a URL. |
+| `:stream/usage` | Sparse cumulative usage update. |
 | `:stream/provider-state` | Provider replay state. |
-| `:stream/error` | Provider stream error. |
-| `:stream/end` | Stream finished. |
+| `:stream/error` | Provider stream error value. |
+| `:stream/end` | Sole terminal event, emitted after trailing usage and metadata. |
 
 The stream reducer builds a final canonical response from those events.
+Reasoning deltas with the same index update the same reasoning part, tool
+metadata is retained on the accumulated tool call, and provider-state maps are
+merged into `:response/provider-data`.
+
+Stream usage updates are cumulative snapshots, not deltas: a newly reported
+counter replaces that counter, while omitted counters retain their previous
+values. All counters are optional, including input/output tokens. A
+provider-reported token total remains authoritative. Separately counted
+cache-read and cache-write tokens are excluded from canonical uncached input,
+and reasoning may overlap output, so those values are not blindly added to a
+derived total.
+
+Without `:on-event`, `sdk/complete` exposes the events as a lazy sequence, so
+`:stream/error` remains observable data when the sequence is realized. With
+`:on-event`, the SDK consumes and accumulates the sequence. Accumulation fails
+with `ExceptionInfo` when an error event occurred; its `ex-data` includes the
+classified error, original stream error, provider, and the canonical
+`:partial-response` accumulated from the event sequence. The terminal
+`:stream/end` is normalized to occur exactly once and only after trailing
+usage or provider metadata has been consumed.
+
+If a usage event carries provider-reported cost, the reducer retains it on the
+aggregate response. Later registry estimation runs only when no
+`:response/cost` already exists.
 
 ## Retry And Fallbacks
 

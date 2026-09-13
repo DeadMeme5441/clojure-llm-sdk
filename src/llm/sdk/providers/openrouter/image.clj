@@ -1,6 +1,7 @@
 (ns llm.sdk.providers.openrouter.image
   "OpenRouter image generation transport for the native POST /images API."
-  (:require [llm.sdk.errors :as errors]
+  (:require [clojure.string :as str]
+            [llm.sdk.errors :as errors]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.image :as it]
             [llm.sdk.usage :as usage]))
@@ -13,6 +14,11 @@
 
 (defn build-image-request-openrouter
   [profile request]
+  (when (str/blank? (:image/model request))
+    (throw
+     (ex-info "OpenRouter native image generation requires an explicit :image/model"
+              {:provider :openrouter
+               :error/type :request/missing-model})))
   (let [quality (case (:image/quality request)
                   :standard "auto"
                   "standard" "auto"

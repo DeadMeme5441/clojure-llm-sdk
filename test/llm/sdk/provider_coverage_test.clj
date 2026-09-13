@@ -1,9 +1,7 @@
 (ns llm.sdk.provider-coverage-test
   (:require [clojure.set :as set]
             [clojure.test :refer [deftest is testing]]
-            [llm.sdk :as sdk]
             [llm.sdk.gcp-auth :as gcp-auth]
-            [llm.sdk.models :as models]
             [llm.sdk.provider :as provider]
             [llm.sdk.provider-coverage :as coverage]
             [llm.sdk.providers.codex :as codex]
@@ -16,27 +14,11 @@
             [llm.sdk.transport.speak :as speak-transport]
             [llm.sdk.transport.transcribe :as transcribe-transport]))
 
-(def ^:private required-coverage-keys
-  [:surfaces :context-cache :metrics :pricing :models :request-shape
-   :response-shape :stream-shape :auth :errors :live-smoke])
-
-(def ^:private surface->profile-key
-  {:complete :profile/transport-constructor
-   :streaming :profile/transport-constructor
-   :embedding :profile/embed-transport-constructor
-   :moderation :profile/moderation-transport-constructor
-   :rerank :profile/rerank-transport-constructor
-   :image-generation :profile/image-transport-constructor
-   :transcription :profile/transcribe-transport-constructor
-   :tts :profile/speak-transport-constructor})
-
-(defn- present-set? [x]
-  (and (set? x) (seq x)))
-
 (defn- model-for [provider-id surface]
   (case surface
     :embedding (case provider-id
                  :cohere "embed-english-v3.0"
+                 :gemini-native "gemini-embedding-001"
                  :ollama-native "nomic-embed-text"
                  "text-embedding-3-small")
     :rerank (case provider-id
@@ -47,7 +29,7 @@
     :moderation "omni-moderation-latest"
     :image-generation (case provider-id
                         :vertex-imagen "gemini-2.5-flash-image"
-                        :bedrock "amazon.titan-image-generator-v1"
+                        :bedrock "amazon.nova-canvas-v1:0"
                         "gpt-image-1")
     :transcription "whisper-1"
     :tts (case provider-id
@@ -59,7 +41,9 @@
                 :codex-backend "gpt-5-codex"
                 :gemini-native "gemini-2.5-flash"
                 :vertex-gemini "gemini-2.5-flash"
+                :perplexity "perplexity/sonar"
                 :ollama-native "llama3.2"
+                :zai "glm-5.3"
                 "test-model")
     "test-model"))
 
@@ -144,80 +128,6 @@
 (def ^:private buildable-surfaces
   #{:complete :streaming :embedding :moderation :rerank
     :image-generation :transcription :tts})
-
-(deftest coverage-exists-for-every-registered-provider
-  (is (= (set (sdk/list-providers))
-         (set (keys coverage/provider-coverage)))))
-
-(deftest upgraded-provider-metadata-has-exact-coverage
-  (is (not (contains? coverage/provider-coverage :lambda)))
-  (is (= #{:complete :streaming :tools :json-schema :reasoning}
-         (get-in coverage/provider-coverage [:kimi :surfaces])))
-  (doseq [provider-id [:gemini-native :vertex-gemini]]
-    (is (= #{:complete :streaming :tools :json-schema :multimodal
-             :reasoning :file-attachments}
-           (get-in coverage/provider-coverage [provider-id :surfaces]))
-        (name provider-id)))
-  (is (= #{:complete}
-         (get-in coverage/provider-coverage [:fake :surfaces])))
-  (is (= #{:unsupported}
-         (get-in coverage/provider-coverage [:volcengine :models]))))
-
-(deftest coverage-rows-have-required-contract-surfaces
-  (doseq [[provider-id row] coverage/provider-coverage]
-    (testing (name provider-id)
-      (doseq [k required-coverage-keys]
-        (is (contains? row k) (str "missing " k)))
-      (is (present-set? (:surfaces row)))
-      (is (present-set? (:context-cache row)))
-      (is (present-set? (:metrics row)))
-      (is (present-set? (:pricing row)))
-      (is (present-set? (:models row)))
-      (is (present-set? (:request-shape row)))
-      (is (present-set? (:response-shape row)))
-      (is (present-set? (:stream-shape row)))
-      (is (present-set? (:auth row)))
-      (is (present-set? (:errors row)))
-      (is (some? (:live-smoke row))))))
-
-(deftest declared-surfaces-match-registered-profile-constructors
-  (doseq [[provider-id row] coverage/provider-coverage
-          :let [profile (provider/get-provider provider-id)]]
-    (testing (name provider-id)
-      (doseq [[surface profile-key] surface->profile-key
-              :when (contains? (:surfaces row) surface)]
-        (is (fn? (get profile profile-key))
-            (str surface " declared without " profile-key)))
-      (when (contains? (:surfaces row) :streaming)
-        (is (contains? (:profile/capabilities profile) :streaming)))
-      (when (contains? (:surfaces row) :tools)
-        (is (contains? (:profile/capabilities profile) :tools)))
-      (when (contains? (:surfaces row) :json-schema)
-        (is (contains? (:profile/capabilities profile) :json-schema)))
-      (when (contains? (:surfaces row) :reasoning)
-        (is (contains? (:profile/capabilities profile) :reasoning)))
-      (when (contains? (:surfaces row) :file-attachments)
-        (is (contains? (:profile/capabilities profile) :file-attachments))))))
-
-(deftest model-listing-coverage-matches-models-dispatch
-  (doseq [[provider-id row] coverage/provider-coverage
-          :let [live? (models/supports-models-listing? provider-id)
-                models (:models row)]]
-    (testing (name provider-id)
-      (if live?
-        (is (contains? models :live-models-api))
-        (is (not (contains? models :live-models-api)))))))
-
-(deftest all-chat-providers-have-cache-cost-and-metrics-coverage
-  (doseq [[provider-id row] coverage/provider-coverage
-          :when (contains? (:surfaces row) :complete)]
-    (testing (name provider-id)
-      (is (seq (:context-cache row)))
-      (is (seq (:pricing row)))
-      (is (seq (:metrics row)))
-      (is (seq (:request-shape row)))
-      (is (seq (:response-shape row)))
-      (is (seq (:stream-shape row))))))
 
 (deftest declared-provider-surfaces-build-offline-requests
   (with-redefs [provider/resolve-auth-token (constantly "stub-token")

@@ -18,17 +18,25 @@
     (is (string? (get-in built [:headers "HTTP-Referer"])))
     (is (string? (get-in built [:headers "X-OpenRouter-Title"])))))
 
-(deftest test-build-request-provider-preferences
+(deftest test-build-request-provider-routing-stays-top-level-and-authoritative
   (let [t (openrouter/make-transport)
         profile (provider/get-provider :openrouter)
         req {:request/model "anthropic/claude-sonnet-4"
              :request/messages [{:message/role :user :message/content "Hi"}]
              :request/provider-options
-             {:provider {:order ["together" "fireworks"]}}}
-        built (transport/build-request t profile req)]
-    (is (= ["together" "fireworks"]
-           (get-in built [:body :provider :order])))
-    (is (not (contains? (:body built) :extra_body)))))
+             {:provider {:order ["together" "fireworks"]
+                         :allow_fallbacks false
+                         :require_parameters true}
+              :extra_body {"provider" {:order ["openai"]}
+                           "service_tier" "priority"}}}
+        body (:body (transport/build-request t profile req))]
+    (is (= {:order ["together" "fireworks"]
+            :allow_fallbacks false
+            :require_parameters true}
+           (:provider body)))
+    (is (= "priority" (:service_tier body)))
+    (is (not (contains? body :extra_body)))
+    (is (not (contains? body "provider")))))
 
 (deftest test-build-request-pareto-router
   (let [t (openrouter/make-transport)
@@ -64,7 +72,8 @@
              :request/metadata {:session "abc"}
              :request/provider-options
              {:metadata-level :enabled
-              :extra_body {:plugins [{:id "response-healing"}]}}}
+              :extra_body {:plugins [{:id "response-healing"}]
+                           :service_tier "priority"}}}
         built (transport/build-request t profile req)
         body (:body built)]
     (is (= 100 (:max_completion_tokens body)))
@@ -72,12 +81,28 @@
     (is (true? (:stream body)))
     (is (= {:session "abc"} (:metadata body)))
     (is (= [{:id "response-healing"}] (:plugins body)))
+    (is (= "priority" (:service_tier body)))
     (is (= "enabled"
            (get-in built [:headers "X-OpenRouter-Metadata"])))))
 
-(deftest test-parse-response-delegate
+(deftest test-parse-response-preserves-routing-cache-write-and-authoritative-billing
   (let [t (openrouter/make-transport)
         profile (provider/get-provider :openrouter)
+        routing {:attempt 1
+                 :requested "anthropic/claude-sonnet-4"
+                 :strategy "direct"
+                 :region "iad"
+                 :summary "available=2, selected=Anthropic"
+                 :is_byok false
+                 :endpoints
+                 {:total 2
+                  :available
+                  [{:model "anthropic/claude-sonnet-4"
+                    :provider "Anthropic"
+                    :selected true}
+                   {:model "anthropic/claude-sonnet-4"
+                    :provider "Google"
+                    :selected false}]}}
         raw {:id "chatcmpl-or-1"
              :model "anthropic/claude-sonnet-4"
              :choices [{:message {:content "Hello from OpenRouter!"
@@ -87,12 +112,17 @@
                                     :index 0}]}
                         :finish_reason "stop"
                         :native_finish_reason "end_turn"}]
-             :openrouter_metadata {:attempt 1}
+             :openrouter_metadata routing
              :service_tier "default"
              :usage {:prompt_tokens 10
                      :completion_tokens 5
                      :total_tokens 15
+                     :prompt_tokens_details
+                     {:cached_tokens 2
+                      :cache_write_tokens 4}
                      :cost 0.00014
+                     :cost_details
+                     {:upstream_inference_cost 0.00012}
                      :is_byok false
                      :server_tool_use_details {:web_search 2}}}
         resp (transport/parse-response t profile raw)]
@@ -101,10 +131,18 @@
            (:response/parts resp)))
     (is (= "end_turn"
            (get-in resp [:response/provider-data :native_finish_reason])))
-    (is (= {:attempt 1}
+    (is (= routing
            (get-in resp [:response/provider-data :openrouter_metadata])))
+    (is (= 4 (get-in resp [:response/usage :usage/input-tokens])))
+    (is (= 2 (get-in resp
+                     [:response/usage :usage/cached-input-tokens])))
+    (is (= 4 (get-in resp
+                     [:response/usage :usage/cache-write-tokens])))
     (is (= 0.00014 (get-in resp [:response/cost :cost/usd])))
     (is (false? (get-in resp [:response/cost :cost/estimated?])))
+    (is (= {:upstream_inference_cost 0.00012}
+           (get-in resp [:response/cost :cost/breakdown :cost_details])))
+    (is (false? (get-in resp [:response/cost :cost/breakdown :is_byok])))
     (is (= [{:type "reasoning.summary"
              :summary "Checked primary sources"
              :index 0}]
@@ -113,6 +151,46 @@
            (get-in resp
                    [:response/cost :cost/breakdown
                     :server_tool_use_details])))))
+
+(deftest test-replays-exact-reasoning-details-and-tool-call-on-follow-up
+  (let [t (openrouter/make-transport)
+        profile (provider/get-provider :openrouter)
+        reasoning-details
+        [{:type "reasoning.encrypted"
+          :data "opaque-reasoning"
+          :id "reasoning-1"
+          :index 0}]
+        wire-tool-call
+        {:id "call_weather"
+         :type "function"
+         :function {:name "weather"
+                    :arguments "{\"city\":\"Paris\"}"}
+         :extra_content
+         {:google {:thought_signature "opaque-tool-signature"}}}
+        response
+        (transport/parse-response
+         t profile
+         {:id "chatcmpl-or-replay"
+          :model "google/gemini-2.5-pro"
+          :choices [{:message {:content "I'll check."
+                               :reasoning_details reasoning-details
+                               :tool_calls [wire-tool-call]}
+                     :finish_reason "tool_calls"}]})
+        request
+        {:request/model "google/gemini-2.5-pro"
+         :request/messages
+         [{:message/role :assistant
+           :message/content (:response/parts response)
+           :message/tool-calls (:response/tool-calls response)
+           :message/provider-data (:response/provider-data response)}
+          {:message/role :tool
+           :message/tool-call-id "call_weather"
+           :message/content "{\"temperature\":18}"}]}
+        assistant-message
+        (get-in (transport/build-request t profile request)
+                [:body :messages 0])]
+    (is (= reasoning-details (:reasoning_details assistant-message)))
+    (is (= [wire-tool-call] (:tool_calls assistant-message)))))
 
 (deftest test-parse-image-response-preserves-media-type-and-cost-details
   (let [profile (provider/get-provider :openrouter)

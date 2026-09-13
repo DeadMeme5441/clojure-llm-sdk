@@ -32,18 +32,31 @@
     (is (= 1.25 (get-in built [:body :speed])))
     (is (= "Speak warmly." (get-in built [:body :instructions])))))
 
-(deftest test-openai-build-request-current-custom-voice-and-sse-format
+(deftest test-openai-build-request-custom-voice-and-buffered-audio
   (let [t (openai-spk/make-transport)
         profile (provider/get-provider :openai)
         built (st/build-speak-request
                t profile
                {:speak/model "gpt-4o-mini-tts"
                 :speak/input "Hi"
-                :speak/provider-options
-                {:voice {:id "voice_1234"}
-                 :stream_format "sse"}})]
+                :speak/voice {:id "voice_1234"}
+                :speak/provider-options {:stream_format "audio"}})]
     (is (= {:id "voice_1234"} (get-in built [:body :voice])))
-    (is (= "sse" (get-in built [:body :stream_format])))))
+    (is (= "audio" (get-in built [:body :stream_format])))))
+
+(deftest test-openai-buffered-speech-rejects-sse
+  (let [t (openai-spk/make-transport)
+        profile (provider/get-provider :openai)
+        error (try
+                (st/build-speak-request
+                 t profile
+                 {:speak/model "gpt-4o-mini-tts"
+                  :speak/input "Hi"
+                  :speak/provider-options {:stream_format "sse"}})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (= :unsupported-parameter (:error/type (ex-data error))))
+    (is (re-find #"buffered" (ex-message error)))))
 
 (deftest test-openai-current-speech-stream-events
   (let [profile (provider/get-provider :openai)
@@ -64,10 +77,12 @@
         profile (provider/get-provider :elevenlabs)
         built (st/build-speak-request t profile
                                       {:speak/model "eleven_multilingual_v2"
-                                       :speak/voice "21m00Tcm4TlvDq8ikWAM"
+                                       :speak/voice {:id "voice/id +?"}
                                        :speak/input "hi"
                                        :speak/format :mp3})]
-    (is (.contains ^String (:url built) "/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM"))
+    (is (.contains
+         ^String (:url built)
+         "/v1/text-to-speech/voice%2Fid%20%2B%3F"))
     (is (.contains ^String (:url built) "output_format=mp3_44100_128"))
     (is (= "eleven_multilingual_v2" (get-in built [:body :model_id])))
     (is (= "hi" (get-in built [:body :text])))))
@@ -114,13 +129,20 @@
                 :speak/voice "voice-id"
                 :speak/input "hello"
                 :speak/format :mp3
-                :speak/provider-options {:output_format "ulaw_8000"}})]
-    (is (.contains ^String (:url built) "output_format=ulaw_8000"))))
+                :speak/provider-options {:output_format "wav_48000"}})]
+    (is (.contains ^String (:url built) "output_format=wav_48000"))))
 
-(deftest test-elevenlabs-rejects-canonical-formats-the-api-does-not-support
+(deftest test-elevenlabs-canonical-wav-and-unsupported-formats
   (let [t (eleven/make-transport)
-        profile (provider/get-provider :elevenlabs)]
-    (doseq [format [:aac :flac :wav]]
+        profile (provider/get-provider :elevenlabs)
+        wav (st/build-speak-request
+             t profile
+             {:speak/model "eleven_multilingual_v2"
+              :speak/voice "voice-id"
+              :speak/input "hello"
+              :speak/format :wav})]
+    (is (.contains ^String (:url wav) "output_format=wav_44100"))
+    (doseq [format [:aac :flac]]
       (let [error (try
                     (st/build-speak-request
                      t profile
@@ -130,9 +152,8 @@
                       :speak/format format})
                     nil
                     (catch clojure.lang.ExceptionInfo e e))]
-        (is (some? error))
         (is (= format (:format (ex-data error))))
-        (is (= #{:mp3 :opus :pcm}
+        (is (= #{:mp3 :opus :pcm :wav}
                (:supported-formats (ex-data error))))))))
 
 (deftest test-elevenlabs-requires-voice
@@ -141,6 +162,18 @@
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"voice"
           (st/build-speak-request t profile
                                   {:speak/model "x" :speak/input "y"})))))
+
+(deftest test-elevenlabs-preserves-422-validation-detail
+  (let [t (eleven/make-transport)
+        profile (provider/get-provider :elevenlabs)
+        error (st/parse-speak-error
+               t profile 422
+               {:detail [{:loc ["body" "text"]
+                          :msg "Field required"
+                          :type "missing"}]})]
+    (is (= :invalid-request (:error/reason error)))
+    (is (false? (:error/retryable error)))
+    (is (= "Field required" (:error/message error)))))
 
 (deftest test-parse-response-content-type
   (let [t (openai-spk/make-transport)

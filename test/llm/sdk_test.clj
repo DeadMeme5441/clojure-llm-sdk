@@ -96,13 +96,62 @@
     (is (= "ok" (get-in response [:response/parts 0 :text])))
     (is (= :stop (:response/finish-reason response)))))
 
+(deftest complete-streaming-defers-terminal-until-usage-trailer
+  (let [{:keys [events response]}
+        (run-codex-stream
+         (str "data: {\"type\":\"response.output_text.delta\","
+              "\"delta\":\"ok\"}\n\n"
+              "data: {\"type\":\"response.completed\","
+              "\"response\":{\"id\":\"resp_live\","
+              "\"model\":\"gpt-5.3-codex\","
+              "\"status\":\"completed\"}}\n\n"
+              "data: {\"type\":\"response.usage\","
+              "\"usage\":{\"input_tokens\":25,\"output_tokens\":15,"
+              "\"total_tokens\":40}}\n\n"))]
+    (is (= [:stream/start :stream/content-delta :stream/usage :stream/end]
+           (mapv :event/type events)))
+    (is (= :stop (:event/finish-reason (last events))))
+    (is (= {:usage/input-tokens 25
+            :usage/output-tokens 15
+            :usage/total-tokens 40}
+           (select-keys (:response/usage response)
+                        [:usage/input-tokens
+                         :usage/output-tokens
+                         :usage/total-tokens])))))
+
 (deftest complete-streaming-appends-fallback-end
   (let [{:keys [events response]}
         (run-codex-stream
          "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")]
     (is (= 1 (count (filter #(= :stream/end (:event/type %)) events))))
     (is (= :stream/end (:event/type (last events))))
+    (is (= :incomplete (:event/finish-reason (last events))))
+    (is (= :incomplete (:response/finish-reason response)))
     (is (= "ok" (get-in response [:response/parts 0 :text])))))
+
+(deftest complete-streaming-exposes-error-events-to-lazy-consumers
+  (with-redefs [http/sse-response
+                (fn [_]
+                  {:status 200
+                   :headers {}
+                   :body (sse-body
+                          (str "data: {\"type\":\"response.error\","
+                               "\"error\":{\"message\":\"provider failed\"}}"
+                               "\n\n"))})]
+    (let [events
+          (vec
+           (sdk/complete
+            :codex
+            {:request/model "gpt-5.3-codex"
+             :request/messages [{:message/role :user
+                                 :message/content "reply"}]}
+            :stream? true
+            :config {:api-key "test-key"}))]
+      (is (= [:stream/start :stream/error :stream/end]
+             (mapv :event/type events)))
+      (is (= "provider failed"
+             (get-in events [1 :error/error :error/message])))
+      (is (= :incomplete (:event/finish-reason (last events)))))))
 
 
 ;; ---------------------------------------------------------------------------

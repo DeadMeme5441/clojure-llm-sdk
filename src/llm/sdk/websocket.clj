@@ -60,6 +60,13 @@
       (when (and (known-keys? item #{:type :id :status :call_id :name :arguments})
                  (every? string? ((juxt :call_id :name :arguments) item)))
         (dissoc item :id :status))
+      "custom_tool_call"
+      (when (and (known-keys?
+                  item
+                  #{:type :id :status :call_id :name :input
+                    :async :caller :namespace})
+                 (every? string? ((juxt :call_id :name :input) item)))
+        (dissoc item :id :status))
       "reasoning"
       (when (and (known-keys? item #{:type :id :status :summary :content :encrypted_content})
                  (vector? (:summary item))
@@ -148,16 +155,17 @@
             (discard! conn (failure :close false "Idle WebSocket expired" nil {}))))))))
 
 (defonce ^:private reaper
-  (let [executor (ScheduledThreadPoolExecutor.
-                  1 (reify ThreadFactory
-                      (newThread [_ runnable]
-                        (doto (Thread. runnable "llm-websocket-reaper")
-                          (.setDaemon true)))))]
-    (.setRemoveOnCancelPolicy executor true)
-    (.scheduleWithFixedDelay executor
-                             ^Runnable (fn [] (try (sweep!) (catch Exception _)))
-                             100 100 TimeUnit/MILLISECONDS)
-    executor))
+  (delay
+    (let [executor (ScheduledThreadPoolExecutor.
+                    1 (reify ThreadFactory
+                        (newThread [_ runnable]
+                          (doto (Thread. runnable "llm-websocket-reaper")
+                            (.setDaemon true)))))]
+      (.setRemoveOnCancelPolicy executor true)
+      (.scheduleWithFixedDelay executor
+                               ^Runnable (fn [] (try (sweep!) (catch Exception _)))
+                               100 100 TimeUnit/MILLISECONDS)
+      executor)))
 
 (defn close-connections!
   "Abort all active and idle WebSockets. Future requests can open new connections."
@@ -397,6 +405,7 @@
         connect-ms (long (or connect-timeout-ms 30000))
         _ (when (or (not (pos? timeout-ms)) (not (pos? connect-ms)))
             (throw (failure :configuration false "WebSocket timeouts must be positive" nil {})))
+        _reaper @reaper
         client (or http-client http/*http-client* @default-client)
         url (websocket-url url)
         headers (into {} (map (fn [[k v]] [(str/lower-case (name k)) v])) headers)

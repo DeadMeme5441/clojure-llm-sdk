@@ -1,5 +1,6 @@
 (ns llm.sdk.providers.vertex-imagen-test
   (:require [clojure.test :refer [deftest is testing]]
+            [llm.sdk.gcp-auth :as gcp-auth]
             [llm.sdk.provider :as provider]
             [llm.sdk.schema :as schema]
             [llm.sdk.transport :as transport]
@@ -36,20 +37,23 @@
     (doseq [env-name ["GOOGLE_CLOUD_PROJECT" "GOOGLE_CLOUD_LOCATION"]]
       (is (contains? (set (:profile/env-var-names profile)) env-name)))))
 
-(deftest test-discontinued-imagen-model-is-rejected-with-replacement
+(deftest test-discontinued-imagen-endpoint-families-are-rejected
   (let [t (imagen/make-transport)
-        profile (provider/get-provider :vertex-imagen)
-        error (try
-                (it/build-image-request
-                 t profile
-                 {:image/model "imagen-4.0-generate-001"
-                  :image/prompt "x"})
-                nil
-                (catch clojure.lang.ExceptionInfo e e))]
-    (is (= :vertex-imagen/discontinued-model
-           (:error/type (ex-data error))))
-    (is (= "gemini-2.5-flash-image"
-           (:replacement (ex-data error))))))
+        profile (provider/get-provider :vertex-imagen)]
+    (doseq [model ["imagen-4.0-generate-001"
+                   "imagegeneration@006"
+                   "imagetext@001"]]
+      (let [error (try
+                    (it/build-image-request
+                     t profile
+                     {:image/model model
+                      :image/prompt "x"})
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :vertex-imagen/discontinued-model
+               (:error/type (ex-data error))))
+        (is (= "gemini-2.5-flash-image"
+               (:replacement (ex-data error))))))))
 
 (deftest test-build-request-image-config-and-provider-options
   (let [t (imagen/make-transport)
@@ -81,23 +85,58 @@
     (is (= "BLOCK_MEDIUM_AND_ABOVE"
            (get-in built [:body :safetySettings 0 :threshold])))))
 
-(deftest test-build-request-picks-nearest-supported-aspect-ratio
+(deftest test-build-request-picks-model-supported-aspect-ratio
   (let [t (imagen/make-transport)
         profile (provider/get-provider :vertex-imagen)
         build-ratio
-        (fn [size]
+        (fn [model size]
           (get-in
            (it/build-image-request
             t profile
-            {:image/prompt "x"
+            {:image/model model
+             :image/prompt "x"
              :image/size size
              :image/provider-options
              {:vertex {:project "p" :location "global"
                        :access-token "tok"}}})
            [:body :generationConfig :imageConfig :aspectRatio]))]
-    (is (= "1:1" (build-ratio "1024x1024")))
-    (is (= "9:16" (build-ratio "576x1024")))
-    (is (= "4:3" (build-ratio "1024x768")))))
+    (is (= "1:1" (build-ratio "gemini-2.5-flash-image" "1024x1024")))
+    (is (= "9:16" (build-ratio "gemini-2.5-flash-image" "576x1024")))
+    (is (= "4:3" (build-ratio "gemini-2.5-flash-image" "1024x768")))
+    (is (= "9:21"
+           (build-ratio "gemini-3.1-flash-image" "900x2100")))))
+
+(deftest test-build-request-validates-model-options
+  (let [t (imagen/make-transport)
+        profile (provider/get-provider :vertex-imagen)
+        unexpected-auth
+        (fn [& _]
+          (throw (ex-info "Unexpected auth resolution"
+                          {:error/type ::unexpected-auth})))
+        build-error
+        (fn [request]
+          (try
+            (it/build-image-request t profile
+                                    (merge {:image/prompt "x"} request))
+            nil
+            (catch clojure.lang.ExceptionInfo e e)))]
+    (with-redefs [gcp-auth/resolve-project unexpected-auth
+                  gcp-auth/resolve-access-token unexpected-auth]
+      (is (= :request/unsupported-model
+             (:error/type
+              (ex-data (build-error {:image/model "gemini-3.1-flash"})))))
+      (is (= :provider/unsupported-option
+             (:error/type
+              (ex-data
+               (build-error
+                {:image/model "gemini-2.5-flash-image"
+                 :image/provider-options {:gemini {:image-size "2K"}}})))))
+      (is (= :provider/unsupported-option
+             (:error/type
+              (ex-data
+               (build-error
+                {:image/model "gemini-3.1-flash-image"
+                 :image/quality :high}))))))))
 
 (deftest test-parse-gemini-image-response
   (let [t (imagen/make-transport)
@@ -125,3 +164,21 @@
     (is (schema/validate-image-gen-response parsed))
     (is (= 2 (get-in parsed [:response/usage :usage/reasoning-tokens])))
     (is (= raw (:image/raw parsed)))))
+
+(deftest test-filtered-response-is-not-success
+  (let [t (imagen/make-transport)
+        profile (provider/get-provider :vertex-imagen)
+        raw {:promptFeedback {:blockReason "SAFETY"}
+             :candidates [{:finishReason "IMAGE_SAFETY"}]
+             :usageMetadata {:promptTokenCount 4
+                             :totalTokenCount 4}}
+        error (try
+                (it/parse-image-response t profile raw)
+                nil
+                (catch clojure.lang.ExceptionInfo e e))
+        data (ex-data error)]
+    (is (= :provider/invalid-image-response (:error/type data)))
+    (is (= {:blockReason "SAFETY"} (:prompt-feedback data)))
+    (is (= ["IMAGE_SAFETY"] (:finish-reasons data)))
+    (is (= 4 (get-in data
+                     [:response :response/usage :usage/total-tokens])))))

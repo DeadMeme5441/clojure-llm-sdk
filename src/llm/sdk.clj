@@ -45,6 +45,8 @@
             [llm.sdk.providers.anthropic.chat]
             [llm.sdk.providers.anthropic.vertex]
             [llm.sdk.providers.gemini.native]
+            [llm.sdk.providers.gemini.embeddings]
+            [llm.sdk.providers.zai.chat]
             [llm.sdk.providers.gemini.vertex]
             [llm.sdk.providers.gemini.imagen]
             [llm.sdk.providers.codex.responses]
@@ -322,20 +324,51 @@
                               e)))))))))
 
 (defn- ensure-terminal-end
-  "Pass stream events through and append one terminal event only when the
-   provider stream did not emit one."
+  "Move provider end markers behind any trailing metadata and emit exactly one
+   SDK terminal event. EOF without a provider end is classified as incomplete
+   so an unexpectedly truncated stream is observable."
   [events]
-  (letfn [(step [remaining terminal-seen?]
+  (letfn [(step [remaining terminal-seen? finish-reason]
             (lazy-seq
              (if-let [remaining (seq remaining)]
                (let [event (first remaining)]
-                 (cons event
-                       (step (rest remaining)
-                             (or terminal-seen?
-                                 (= :stream/end (:event/type event))))))
-               (when-not terminal-seen?
-                 (list (stream/end-event))))))]
-    (step events false)))
+                 (if (= :stream/end (:event/type event))
+                   (step (rest remaining)
+                         true
+                         (or (:event/finish-reason event) finish-reason))
+                   (cons event
+                         (step (rest remaining)
+                               terminal-seen?
+                               finish-reason))))
+               (list (stream/end-event
+                      :finish-reason
+                      (if terminal-seen?
+                        (or finish-reason :unknown)
+                        :incomplete))))))]
+    (step events false nil)))
+
+(defn- close-quietly!
+  [closeable]
+  (when (instance? java.io.Closeable closeable)
+    (try
+      (.close ^java.io.Closeable closeable)
+      (catch Throwable _))))
+
+(defn- stop-at-provider-end
+  "The Codex backend's SSE response end is also its transport terminator. Stop
+   reading there so a server that keeps the HTTP connection alive cannot stall
+   SDK terminal delivery. Other protocols must remain open for usage trailers."
+  [events closeable]
+  (letfn [(step [remaining]
+            (lazy-seq
+             (when-let [remaining (seq remaining)]
+               (let [event (first remaining)]
+                 (if (= :stream/end (:event/type event))
+                   (do
+                     (close-quietly! closeable)
+                     (list event))
+                   (cons event (step (rest remaining))))))))]
+    (step events)))
 
 
 (defn complete
@@ -408,6 +441,10 @@
                                                   :provider provider-id}))))
                            ev-seq (http/line-seq-closeable body)]
                        (parse-stream-lines transport profile ev-seq)))
+            events (if (and (= :codex-backend provider-id)
+                            (= :sse (:transport req)))
+                     (stop-at-provider-end events (:body response))
+                     events)
             parsed-events (concat [(stream/start-event)]
                                   (ensure-terminal-end events))]
         (if on-event

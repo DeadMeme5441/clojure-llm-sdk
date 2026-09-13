@@ -198,6 +198,12 @@
 ;; Message conversion
 ;; ---------------------------------------------------------------------------
 
+(defn- unsupported-content-part! [part]
+  (throw (ex-info "OpenAI Responses does not support this content part"
+                  {:error/type :provider/unsupported-content-part
+                   :provider :codex
+                   :part/type (:part/type part)})))
+
 (defn- content->input-items [content]
   (cond
     (string? content)
@@ -218,84 +224,176 @@
                         file-id (assoc :file_id file-id)
                         file-url (assoc :file_url file-url)
                         (:file/name part) (assoc :filename (:file/name part))))
-              {:type "input_text" :text (str part)}))
+              (unsupported-content-part! part)))
           content)
 
-    :else [{:type "input_text" :text (str content)}]))
+    :else
+    (throw (ex-info "Unsupported message content for OpenAI Responses"
+                    {:error/type :provider/unsupported-content
+                     :provider :codex
+                     :content content}))))
 
-(defn- replay-provider-items [provider-data item-key]
-  (let [stored (or (get provider-data item-key)
-                   (some #(when (map? %) (get % item-key))
-                         (vals provider-data)))]
+(defn- provider-items [provider-data item-key]
+  (or (get provider-data item-key)
+      (some #(when (map? %) (get % item-key))
+            (vals provider-data))))
+
+(defn- indexed-provider-items [provider-data item-key]
+  (let [stored (provider-items provider-data item-key)]
     (cond
       (map? stored) (->> stored
-                         (sort-by (comp str key))
-                         (mapv val))
-      (sequential? stored) stored
-      :else nil)))
+                         (sort-by (fn [[idx]]
+                                    (if (number? idx)
+                                      [0 idx]
+                                      [1 (str idx)])))
+                         (mapv (fn [[idx item]] [idx item])))
+      (sequential? stored) (mapv vector (range) stored)
+      :else [])))
 
-(defn- message->responses-input [msg]
+(defn- tool-call-key [tc]
+  [(:tool-call/id tc) (:tool-call/name tc) (:tool-call/arguments tc)])
+
+(defn- message-tool-calls [msg]
+  (let [calls (concat (or (t/extract-tool-calls-from-parts
+                           (:message/content msg))
+                          [])
+                      (or (:message/tool-calls msg) []))]
+    (:calls
+     (reduce
+      (fn [{:keys [positions] :as acc} tc]
+        (let [k (tool-call-key tc)]
+          (if-let [pos (get positions k)]
+            (update-in acc [:calls pos :tool-call/provider-data]
+                       merge (:tool-call/provider-data tc))
+            (-> acc
+                (update :calls conj tc)
+                (assoc-in [:positions k] (count (:calls acc)))))))
+      {:calls [] :positions {}}
+      calls))))
+
+(defn- response-call-type [tc]
+  (let [provider-data (:tool-call/provider-data tc)
+        wire-type (or (:wire_type provider-data)
+                      (get-in provider-data [:response_item :type]))]
+    (if (contains? #{"custom" "custom_tool_call"} wire-type)
+      "custom_tool_call"
+      "function_call")))
+
+(defn- tool-call->response-item [tc]
+  (let [item-type (response-call-type tc)
+        provider-data (:tool-call/provider-data tc)
+        native-item (:response_item provider-data)
+        argument-key (if (= "custom_tool_call" item-type) :input :arguments)]
+    (merge native-item
+           {:type item-type
+            :call_id (:tool-call/id tc)
+            :name (:tool-call/name tc)
+            argument-key (or (:tool-call/arguments tc) "")})))
+
+(defn- replayable-message-items [msg]
+  (let [phase (or (:message/phase msg)
+                  (get-in msg [:message/provider-data :phase]))
+        entries (indexed-provider-items (:message/provider-data msg)
+                                        :codex_message_items)
+        content (:message/content msg)
+        content-text (when (seq content) (t/content->string content))
+        replay-text (->> entries
+                         (map second)
+                         (mapcat :content)
+                         (keep #(when (= "output_text" (:type %)) (:text %)))
+                         (apply str))
+        replay? (and (seq entries)
+                     (or (nil? content-text) (= content-text replay-text))
+                     (or (nil? phase)
+                         (every? #(= (if (keyword? phase)
+                                       (str/replace (name phase) "-" "_")
+                                       phase)
+                                     (:phase (second %)))
+                                 entries)))]
+    (if replay?
+      entries
+      (when (seq content-text)
+        [[(ffirst entries)
+          (cond-> {:type "message" :role "assistant"
+                   :status "completed"
+                   :content [{:type "output_text" :text content-text}]}
+            phase
+            (assoc :phase (if (keyword? phase)
+                            (str/replace (name phase) "-" "_")
+                            phase)))]]))))
+
+(defn- ordered-response-items [entries]
+  (let [entries (map-indexed (fn [ordinal [idx item]]
+                               {:index idx :ordinal ordinal :item item})
+                             entries)]
+    (if (every? #(number? (:index %)) entries)
+      (mapv :item (sort-by (juxt :index :ordinal) entries))
+      (mapv :item entries))))
+
+(defn- validate-assistant-content! [content reasoning-entries]
+  (when (sequential? content)
+    (doseq [part content]
+      (case (:part/type part)
+        :text nil
+        :tool-call nil
+        :reasoning
+        (when-not (seq reasoning-entries)
+          (throw (ex-info
+                  "OpenAI Responses reasoning replay requires provider metadata"
+                  {:error/type :provider/missing-replay-state
+                   :provider :codex
+                   :part/type :reasoning})))
+        (unsupported-content-part! part)))))
+
+(defn- assistant->responses-input [msg]
+  (let [reasoning-entries (indexed-provider-items
+                           (:message/provider-data msg)
+                           :codex_reasoning_items)
+        _ (validate-assistant-content! (:message/content msg)
+                                       reasoning-entries)
+        message-entries (or (replayable-message-items msg) [])
+        calls (message-tool-calls msg)
+        call-entries (mapv (fn [tc]
+                             [(get-in tc [:tool-call/provider-data :output_index])
+                              (tool-call->response-item tc)])
+                           calls)
+        items (ordered-response-items
+               (concat reasoning-entries message-entries call-entries))]
+    (if (seq items)
+      items
+      {:role "assistant" :content ""})))
+
+(defn- tool-output [content]
+  (cond
+    (string? content) content
+    (sequential? content) (content->input-items content)
+    (nil? content) ""
+    :else (throw (ex-info "Unsupported tool output for OpenAI Responses"
+                          {:provider :codex :content content}))))
+
+(defn- tool-result->responses-input [msg calls-by-id]
+  (let [call-id (:message/tool-call-id msg)
+        prior-call (get calls-by-id call-id)
+        item-type (if (= "custom_tool_call" (some-> prior-call response-call-type))
+                    "custom_tool_call_output"
+                    "function_call_output")]
+    (when-not (and (string? call-id) (seq (str/trim call-id)))
+      (throw (ex-info "OpenAI Responses tool results require a tool call ID"
+                      {:provider :codex :message/role :tool})))
+    {:type item-type
+     :call_id call-id
+     :output (tool-output (:message/content msg))}))
+
+(defn- message->responses-input [msg calls-by-id]
   (case (:message/role msg)
     :user
     {:role "user" :content (content->input-items (:message/content msg))}
 
     :assistant
-    (let [phase (or (:message/phase msg)
-                    (get-in msg [:message/provider-data :phase]))
-          message-items (replay-provider-items (:message/provider-data msg)
-                                               :codex_message_items)
-          content (:message/content msg)
-          content-text (when (seq content) (t/content->string content))
-          replay-text (->> message-items
-                           (mapcat :content)
-                           (keep #(when (= "output_text" (:type %)) (:text %)))
-                           (apply str))
-          replay-messages? (and (seq message-items)
-                                (or (nil? content-text) (= content-text replay-text))
-                                (or (nil? phase)
-                                    (every? #(= (if (keyword? phase)
-                                                  (str/replace (name phase) "-" "_")
-                                                  phase)
-                                                (:phase %))
-                                            message-items)))
-          items (concat
-                 ;; Replay encrypted reasoning items from previous turns
-                 (when-let [reasoning (replay-provider-items
-                                       (:message/provider-data msg)
-                                       :codex_reasoning_items)]
-                   (mapv #(dissoc % :id) reasoning))
-                 ;; Replay exact assistant message items from previous turns
-                 (when replay-messages? message-items)
-                 ;; Current turn content
-                 (when (and content-text (not replay-messages?))
-                   [(cond-> {:type "message" :role "assistant"
-                             :status "completed"
-                             :content [{:type "output_text"
-                                        :text content-text}]}
-                      phase
-                      (assoc :phase (if (keyword? phase)
-                                      (str/replace (name phase) "-" "_")
-                                      phase)))])
-                 ;; Replay tool calls as function_call input items so the
-                 ;; matching function_call_output (from a later :tool
-                 ;; message) can be linked. Required by the Responses
-                 ;; API on multi-turn conversations that lack
-                 ;; previous_response_id continuity.
-                 (when-let [tcs (seq (:message/tool-calls msg))]
-                   (mapv (fn [tc]
-                           {:type "function_call"
-                            :call_id (:tool-call/id tc)
-                            :name    (:tool-call/name tc)
-                            :arguments (or (:tool-call/arguments tc) "")})
-                         tcs)))]
-      (if (seq items)
-        items
-        {:role "assistant" :content ""}))
+    (assistant->responses-input msg)
 
     :tool
-    {:type "function_call_output"
-     :call_id (or (:message/tool-call-id msg) "call_0")
-     :output (t/content->string (:message/content msg))}
+    (tool-result->responses-input msg calls-by-id)
 
     :system
     {:role "system" :content (content->input-items (:message/content msg))}
@@ -303,27 +401,57 @@
     :developer
     {:role "developer" :content (content->input-items (:message/content msg))}
 
-    ;; Unknown roles remain user input rather than producing an invalid role.
     {:role "user" :content (content->input-items (:message/content msg))}))
 
 (defn- messages->responses-input [messages]
-  (into []
-        (mapcat (fn [msg]
-                  (let [converted (message->responses-input msg)]
-                    (if (sequential? converted) converted [converted]))))
-        messages))
+  (:items
+   (reduce
+    (fn [{:keys [calls-by-id] :as acc} msg]
+      (let [converted (message->responses-input msg calls-by-id)
+            items (if (sequential? converted) converted [converted])
+            calls (when (= :assistant (:message/role msg))
+                    (message-tool-calls msg))]
+        (cond-> (update acc :items into items)
+          (seq calls)
+          (update :calls-by-id into
+                  (keep (fn [tc]
+                          (when-let [id (:tool-call/id tc)]
+                            [id tc])))
+                  calls))))
+    {:items [] :calls-by-id {}}
+    messages)))
 
 ;; ---------------------------------------------------------------------------
 ;; Tool conversion
 ;; ---------------------------------------------------------------------------
 
+(defn- custom-tool-format->codex [format]
+  (case (:type format)
+    :grammar (let [{:keys [definition syntax]} (:grammar format)]
+               {:type "grammar"
+                :definition definition
+                :syntax (name syntax)})
+    :text {:type "text"}
+    nil))
+
 (defn- tool->codex [tool]
-  (let [fn-data (:function tool)]
-    (cond-> {:type "function"
-             :name (:name fn-data)
-             :description (or (:description fn-data) "")
-             :parameters (or (:parameters fn-data) {:type "object"})}
-      (contains? fn-data :strict) (assoc :strict (:strict fn-data)))))
+  (case (:type tool)
+    :custom
+    (let [{:keys [name description format]} (:custom tool)]
+      (cond-> {:type "custom" :name name}
+        description (assoc :description description)
+        format (assoc :format (custom-tool-format->codex format))))
+
+    :function
+    (let [fn-data (:function tool)]
+      (cond-> {:type "function"
+               :name (:name fn-data)
+               :description (or (:description fn-data) "")
+               :parameters (or (:parameters fn-data) {:type "object"})}
+        (contains? fn-data :strict) (assoc :strict (:strict fn-data))))
+
+    (throw (ex-info "Unsupported OpenAI Responses tool type"
+                    {:provider :codex :tool/type (:type tool)}))))
 
 (defn- tool-choice->codex [choice]
   (case choice
@@ -331,8 +459,12 @@
     :none "none"
     :required "required"
     (when (map? choice)
-      {:type "function"
-       :name (get-in choice [:function :name])})))
+      (case (:type choice)
+        :custom {:type "custom"
+                 :name (get-in choice [:custom :name])}
+        :function {:type "function"
+                   :name (get-in choice [:function :name])}
+        nil))))
 
 (defn- response-format->codex [fmt]
   {:format
@@ -464,7 +596,7 @@
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
 
-(defn- parse-output-item [item]
+(defn- parse-output-item [output-index item]
   (let [item-type (:type item)
         item-status (some-> (:status item) str str/lower-case str/trim)
         incomplete? (contains? #{"queued" "in_progress" "incomplete"} item-status)]
@@ -472,52 +604,91 @@
       "message"
       (let [texts (keep #(when (= (:type %) "output_text") (:text %))
                         (:content item))]
-        {:text (str/join "" texts)
-         :message-item (cond-> (select-keys item [:id :role :status :phase :content])
-                         (:text texts) (assoc :extracted_text (str/join "" texts)))})
+        {:output-index output-index
+         :text (str/join "" texts)
+         :message-item (select-keys item [:id :type :role :status :phase :content])})
 
       "reasoning"
       (let [encrypted (:encrypted_content item)
             summary-text (->> (:summary item)
                               (keep #(when (= "summary_text" (:type %)) (:text %)))
                               (str/join ""))]
-        {:reasoning (cond
+        {:output-index output-index
+         :reasoning (cond
                       (seq summary-text) summary-text
                       (and (string? encrypted) (seq encrypted)) encrypted)
-         :reasoning-details (select-keys item
-                                        [:id :type :encrypted_content :summary :content :status])})
+         :reasoning-details (select-keys
+                             item
+                             [:id :type :encrypted_content :summary :content :status])})
 
       "function_call"
-      ;; Skip incomplete function_calls — they lack arguments
       (when-not incomplete?
         (let [fn-name (or (:name item) "")
               arguments (:arguments item "{}")
-              arguments-str (if (string? arguments) arguments (json/generate-string arguments))
+              arguments-str (if (string? arguments)
+                              arguments
+                              (json/generate-string arguments))
               raw-call-id (:call_id item)
               raw-item-id (:id item)
-              call-id (if (and (string? raw-call-id) (seq (str/trim raw-call-id)))
+              call-id (if (and (string? raw-call-id)
+                               (seq (str/trim raw-call-id)))
                         (str/trim raw-call-id)
-                        (deterministic-call-id fn-name arguments-str
-                                               (count (filter #(= (:type %) "function_call")
-                                                              [item]))))
-              response-item-id (derive-responses-function-call-id call-id raw-item-id)]
-          {:tool-call {:id call-id
+                        (deterministic-call-id fn-name arguments-str output-index))
+              response-item-id (derive-responses-function-call-id
+                                call-id raw-item-id)]
+          {:output-index output-index
+           :raw-item item
+           :tool-call {:id call-id
                        :name fn-name
                        :arguments arguments-str}
-           :response-item-id response-item-id}))
+           :response-item-id response-item-id
+           :wire-type "function_call"}))
 
       "custom_tool_call"
       (when-not incomplete?
         (let [tool-input (or (:input item) "")
               call-id (or (:call_id item) (:id item)
-                          (deterministic-call-id (:name item) tool-input 0))]
-          {:tool-call {:id call-id
+                          (deterministic-call-id (:name item)
+                                                 tool-input
+                                                 output-index))]
+          {:output-index output-index
+           :raw-item item
+           :tool-call {:id call-id
                        :name (or (:name item) "")
                        :arguments tool-input}
            :response-item-id (:id item)
            :wire-type "custom_tool_call"}))
 
       nil)))
+
+(defn- call-provider-data
+  [item output-index response-item-id wire-type]
+  (cond-> {:wire_type wire-type
+           :output_index output-index
+           :response_item (select-keys
+                           item
+                           [:type :id :call_id :name :async :caller :namespace])}
+    response-item-id (assoc :response_item_id response-item-id)))
+(defn- parsed-tool-call [parsed]
+  (when-let [tc (:tool-call parsed)]
+    {:part/type :tool-call
+     :tool-call/id (:id tc)
+     :tool-call/name (:name tc)
+     :tool-call/arguments (:arguments tc)
+     :tool-call/provider-data
+     (call-provider-data (:raw-item parsed)
+                         (:output-index parsed)
+                         (:response-item-id parsed)
+                         (:wire-type parsed))}))
+
+(defn- parsed-parts [parsed]
+  (into []
+        (keep identity)
+        [(when (contains? parsed :text)
+           {:part/type :text :text (:text parsed)})
+         (when-let [reasoning (:reasoning parsed)]
+           {:part/type :reasoning :reasoning/text reasoning})
+         (parsed-tool-call parsed)]))
 
 ;; SSE helpers (must be defined before parse-response-codex)
 
@@ -581,49 +752,74 @@
                          (string? (:output_text raw))
                          (seq (str/trim (:output_text raw))))
                   [{:type "message" :role "assistant" :status "completed"
-                    :content [{:type "output_text" :text (str/trim (:output_text raw))}]}]
+                    :content [{:type "output_text"
+                               :text (str/trim (:output_text raw))}]}]
                   items)
-          parsed (keep parse-output-item items)
-          text-parts (keep :text parsed)
-          reasoning-parts (keep :reasoning parsed)
-          reasoning-details (keep :reasoning-details parsed)
-          message-items (keep :message-item parsed)
-          tool-calls (vec (keep #(when-let [tc (:tool-call %)]
-                                   {:part/type :tool-call
-                                    :tool-call/id (:id tc)
-                                    :tool-call/name (:name tc)
-                                    :tool-call/arguments (:arguments tc)
-                                    :tool-call/provider-data
-                                    (cond-> {}
-                                      (:response-item-id %) (assoc :response_item_id (:response-item-id %))
-                                      (:wire-type %) (assoc :wire_type (:wire-type %)))})
-                                parsed))
-          status (:status raw)
-          finish-reason (if (seq tool-calls)
+          parsed (into []
+                       (keep identity)
+                       (map-indexed parse-output-item items))
+          reasoning-details
+          (into {}
+                (keep (fn [{:keys [output-index reasoning-details]}]
+                        (when reasoning-details
+                          [output-index reasoning-details])))
+                parsed)
+          message-items
+          (into {}
+                (keep (fn [{:keys [output-index message-item]}]
+                        (when message-item
+                          [output-index message-item])))
+                parsed)
+          tool-calls (into [] (keep parsed-tool-call) parsed)
+          parts (into [] (mapcat parsed-parts) parsed)
+          status (some-> (:status raw) name str/lower-case)
+          finish-reason (if (and (= "completed" status) (seq tool-calls))
                           :tool-calls
                           (get status-map status :unknown))
           provider-data (cond-> {}
-                          (seq reasoning-details) (assoc :codex_reasoning_items reasoning-details)
-                          (seq message-items) (assoc :codex_message_items message-items)
+                          (seq reasoning-details)
+                          (assoc :codex_reasoning_items reasoning-details)
+                          (seq message-items)
+                          (assoc :codex_message_items message-items)
                           (:error raw) (assoc :error (:error raw))
-                          (:incomplete_details raw) (assoc :incomplete_details (:incomplete_details raw))
+                          (:incomplete_details raw)
+                          (assoc :incomplete_details (:incomplete_details raw))
                           (:moderation raw) (assoc :moderation (:moderation raw))
-                          (:service_tier raw) (assoc :service_tier (:service_tier raw))
-                          (:conversation raw) (assoc :conversation (:conversation raw)))]
-      (cond-> {:response/id (:id raw)
-               :response/provider provider-id
-               :response/model (:model raw)
-               :response/parts (into []
-                                      (concat
-                                       (map #(hash-map :part/type :text :text %) text-parts)
-                                       (map #(hash-map :part/type :reasoning :reasoning/text %) reasoning-parts)
-                                       tool-calls))
-               :response/finish-reason finish-reason
-               :response/raw raw}
-        (seq tool-calls) (assoc :response/tool-calls tool-calls)
-        (:usage raw) (assoc :response/usage
+                          (:service_tier raw)
+                          (assoc :service_tier (:service_tier raw))
+                          (:conversation raw) (assoc :conversation (:conversation raw)))
+          response (cond-> {:response/id (:id raw)
+                            :response/provider provider-id
+                            :response/model (:model raw)
+                            :response/parts parts
+                            :response/finish-reason finish-reason
+                            :response/raw raw}
+                     (seq tool-calls)
+                     (assoc :response/tool-calls tool-calls)
+                     (:usage raw)
+                     (assoc :response/usage
                             (usage/normalize-usage :codex (:usage raw)))
-        (seq provider-data) (assoc :response/provider-data provider-data))))))
+                     (seq provider-data)
+                     (assoc :response/provider-data provider-data))]
+      (if (contains? #{"failed" "cancelled"} status)
+        (let [error (or (:error raw)
+                        {:message (str "Response generation " status)
+                         :status status})]
+          (try
+            (stream/events->response
+             [(stream/error-event
+               {:error/type :provider
+                :error/message (or (:message error)
+                                   "Response generation failed")
+                :error/raw raw})]
+             provider-id
+             (:model raw))
+            (catch clojure.lang.ExceptionInfo e
+              (throw (ex-info (.getMessage e)
+                              (assoc (ex-data e)
+                                     :partial-response response)
+                              e)))))
+        response)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing
@@ -658,12 +854,22 @@
           {(stream-index data) (:item data)}})
 
         (= t "response.output_item.added")
-        (let [item (:item data)]
-          (when (contains? #{"function_call" "custom_tool_call"} (:type item))
-            (stream/tool-call-start (stream-index data)
-                                    (or (:call_id item) (:id item)
-                                        (str "tool_call_" (stream-index data)))
-                                    (or (:name item) ""))))
+        (let [item (:item data)
+              idx (stream-index data)
+              item-type (:type item)]
+          (when (contains? #{"function_call" "custom_tool_call"} item-type)
+            (let [call-id (or (:call_id item) (:id item)
+                              (str "tool_call_" idx))
+                  response-item-id
+                  (if (= "function_call" item-type)
+                    (derive-responses-function-call-id call-id (:id item))
+                    (:id item))]
+              (stream/tool-call-start
+               idx
+               call-id
+               (or (:name item) "")
+               :provider-data
+               (call-provider-data item idx response-item-id item-type)))))
 
         (= t "response.function_call_arguments.delta")
         (stream/tool-call-delta (stream-index data) (:delta data))
@@ -695,14 +901,17 @@
         (response-completion-events data :incomplete)
 
         (= t "response.failed")
-        (maybe-many
-         (concat
-          [(when-let [error (get-in data [:response :error])]
-             (stream/error-event {:error/type :provider
-                                  :error/message (or (:message error)
-                                                     "Response generation failed")
-                                  :error/raw error}))]
-          (event->seq (response-completion-events data :unknown))))
+        (let [error (or (get-in data [:response :error])
+                        (:error data)
+                        {:message "Response generation failed"})]
+          (maybe-many
+           (concat
+            [(stream/error-event
+              {:error/type :provider
+               :error/message (or (:message error)
+                                  "Response generation failed")
+               :error/raw error})]
+            (event->seq (response-completion-events data :unknown)))))
 
         ;; Preserve current lifecycle, content-part, annotation, refusal, and
         ;; tool events that have no canonical stream equivalent.

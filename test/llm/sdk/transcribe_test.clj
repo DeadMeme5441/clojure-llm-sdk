@@ -42,6 +42,22 @@
     (is (bytes? (:content file-part)))
     (is (= "fake.wav" (:file-name file-part)))))
 
+(deftest test-openai-build-request-keywords-and-languages
+  (let [t (openai-tx/make-transport)
+        profile (provider/get-provider :openai)
+        built (tt/build-transcribe-request
+               t profile
+               {:transcribe/file (.getBytes "fake audio")
+                :transcribe/filename "context.wav"
+                :transcribe/model "gpt-transcribe"
+                :transcribe/keywords ["AC-42" "billing"]
+                :transcribe/languages ["en" "fr"]})
+        values (fn [field]
+                 (mapv :content
+                       (filter #(= field (:name %)) (:multipart built))))]
+    (is (= ["AC-42" "billing"] (values "keywords[]")))
+    (is (= ["en" "fr"] (values "languages[]")))))
+
 (deftest test-openai-build-request-current-diarization-fields
   (let [t (openai-tx/make-transport)
         profile (provider/get-provider :openai)
@@ -86,19 +102,32 @@
     (let [t (ctor)
           tmp (java.io.File/createTempFile "speech" ".wav")
           _ (spit tmp "x")
-          built (tt/build-transcribe-request t profile
-                                             {:transcribe/file tmp
-                                              :transcribe/model "whisper-large-v3"})]
+          request {:transcribe/file tmp
+                   :transcribe/model "whisper-large-v3"}
+          built (tt/build-transcribe-request t profile request)]
       (is (.endsWith ^String (:url built) "/audio/transcriptions"))
       (is (.startsWith ^String (:url built) "https://api.groq.com/openai/v1"))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"not supported by groq"
+           (tt/build-transcribe-request
+            t profile (assoc request :transcribe/include [:logprobs]))))
       (.delete tmp))))
 
 (deftest test-parse-response-json
   (let [t (openai-tx/make-transport)
         profile (provider/get-provider :openai)
-        raw {:text "Hello there."}
-        parsed (tt/parse-transcribe-response t profile raw)]
+        raw {:text "Hello there."
+             :usage {:type "duration" :seconds 12}}
+        parsed (tt/parse-transcribe-response t profile raw)
+        top-level-duration
+        (tt/parse-transcribe-response t profile
+                                      {:text "Hello there." :duration 12})]
     (is (= "Hello there." (:transcription/text parsed)))
+    (is (= 12 (:transcription/duration-seconds parsed)))
+    (is (= 12 (get-in parsed [:response/usage
+                              :usage/duration-seconds])))
+    (is (= 12 (:transcription/duration-seconds top-level-duration)))
     (is (schema/validate-transcribe-response parsed))))
 
 (deftest test-parse-response-verbose-json

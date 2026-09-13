@@ -16,16 +16,27 @@
 
 (defn- ->int [x] (cond (int? x) x (number? x) (int x) :else 0))
 
+(defn- present-int [m k]
+  (let [value (get m k)]
+    (when (number? value)
+      (int value))))
+
 (defn- normalize-cohere-rerank-usage [raw]
   (when-let [meta (:meta raw)]
     (let [tokens (:tokens meta)
-          input (->int (:input_tokens tokens))
-          output (->int (:output_tokens tokens))]
-      {:usage/input-tokens input
-       :usage/output-tokens output
-       :usage/total-tokens (+ input output)
-       :usage/request-count 1
-       :usage/provider-raw meta})))
+          billed (:billed_units meta)
+          input (present-int tokens :input_tokens)
+          output (present-int tokens :output_tokens)
+          search-units (present-int billed :search_units)]
+      (when (or (some? input) (some? output) (some? search-units))
+        (cond-> {:usage/request-count 1
+                 :usage/provider-raw meta}
+          (some? input) (assoc :usage/input-tokens input)
+          (some? output) (assoc :usage/output-tokens output)
+          (and (some? input) (some? output))
+          (assoc :usage/total-tokens (+ input output))
+          (some? search-units)
+          (assoc :usage/search-units search-units))))))
 
 (defn- normalize-jina-rerank-usage [raw]
   (let [total (->int (get-in raw [:usage :total_tokens]))]
@@ -51,14 +62,27 @@
             (str/ends-with? base "/v2") (str base "/rerank")
             :else (str base "/rerank")))
       (str base "/rerank"))))
+(defn- validate-documents! [provider-id documents]
+  (when (= :cohere provider-id)
+    (doseq [[index document] (map-indexed vector documents)]
+      (when-not (string? document)
+        (throw
+         (ex-info
+          "Cohere rerank documents must be strings"
+          {:error/type :request/invalid-rerank-document
+           :provider provider-id
+           :document/index index
+           :document/value document}))))))
+
 
 (defn build-rerank-request-cohere-shape
   [profile request]
   (let [provider-id (:profile/id profile)
+        documents (:rerank/documents request)
         opts (:rerank/provider-options request)
         body (cond-> {:model (:rerank/model request)
                       :query (:rerank/query request)
-                      :documents (:rerank/documents request)}
+                      :documents documents}
                (:rerank/top-n request)
                (assoc :top_n (:rerank/top-n request))
                (and (= :jina provider-id)
@@ -74,7 +98,8 @@
                (and (= :jina provider-id) (contains? opts :return-embeddings))
                (assoc :return_embeddings (:return-embeddings opts)))
         extra (:extra_body opts)
-        body (if (seq extra) (merge body extra) body)]
+        body (if (seq extra) (merge body extra) body)
+        _ (validate-documents! provider-id (:documents body))]
     {:method :post
      :url (rerank-url profile)
      :headers (provider/default-headers profile
@@ -96,13 +121,24 @@
   (when (and (sequential? embedding)
              (every? number? embedding))
     (vec embedding)))
+(defn- required-score [provider-id result]
+  (let [score (:relevance_score result)]
+    (when-not (number? score)
+      (throw
+       (ex-info
+        "Rerank response result is missing a numeric relevance score"
+        {:error/type :response/missing-rerank-score
+         :provider provider-id
+         :result/index (:index result)})))
+    (double score)))
+
 
 (defn- result->canonical [provider-id r]
   (let [document (result-document provider-id (:document r))
         embedding (when (= :jina provider-id)
                     (numeric-embedding (:embedding r)))]
     (cond-> {:rerank/index (:index r)
-             :rerank/score (double (or (:relevance_score r) 0.0))}
+             :rerank/score (required-score provider-id r)}
       document (assoc :rerank/document document)
       embedding (assoc :rerank/embedding embedding))))
 

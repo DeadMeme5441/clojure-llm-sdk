@@ -22,7 +22,7 @@ Common request keys:
 |---|---|
 | `:request/model` | Provider model id. |
 | `:request/messages` | Ordered messages with `:message/role` and `:message/content`. |
-| `:request/tools` | Function tool definitions. |
+| `:request/tools` | Function or custom tool definitions. Custom tools are supported by OpenAI/Codex and by explicitly opted-in OpenAI-compatible aliases. |
 | `:request/tool-choice` | Provider-neutral tool choice when supported. |
 | `:request/temperature`, `:request/top-p` | Sampling controls. |
 | `:request/max-tokens` | Output token limit. |
@@ -41,7 +41,7 @@ Options:
 | `:retry {...}` | Merge caller policy into the default retry policy. |
 | `:config {...}` | Per-call runtime configuration for auth, base URL, headers, HTTP client, and timeouts. |
 
-`sdk/complete` validates the request, applies provider supported-parameter rules, builds the provider request, parses the response, and stamps cost/cache data from usage.
+`sdk/complete` validates the request, applies provider supported-parameter rules, builds the provider request, and parses the response. It preserves an adapter-supplied `:response/cost` (including provider-reported cost); only when cost is absent does the SDK estimate it from canonical usage and known pricing. Cache status is stamped from reported cache usage.
 
 Message content can be a string or a vector of canonical parts. File/document
 attachments use `:part/type :file`:
@@ -79,6 +79,41 @@ Runtime config is profile-local for that call and does not mutate the provider r
            :timeout-ms 60000})
 ```
 
+### Streaming chat
+
+With `:stream? true` and no `:on-event`, `sdk/complete` returns a lazy sequence
+of canonical events. Realize or reduce it to perform the stream read:
+
+| Event | Significant fields |
+|---|---|
+| `:stream/reasoning-delta` | Optional `:event/delta`, `:event/index`, `:event/encrypted`, and `:reasoning/signature`. Indexed updates accumulate into separate signed reasoning parts. |
+| `:stream/tool-call-start` | `:tool-call/index`, id, name, and optional `:tool-call/provider-data`, including custom or provider-native tool identity that must survive on the accumulated tool-call part. |
+| `:stream/usage` | `:usage`, a sparse cumulative map whose fields are all optional in an individual event. |
+| `:stream/citation` | URL is optional when `:citation/source-id` or `:citation/provider-data` identifies the source; title, snippet, text range, dates, and source metadata may also be present. |
+| `:stream/provider-state` | Provider-keyed replay data merged into the aggregate `:response/provider-data`. |
+| `:stream/error` | Error value under `:error/error`. In the lazy interface this remains an event; consuming it alone does not throw. |
+| `:stream/end` | Exactly one terminal event, delivered after trailing usage and provider metadata. |
+
+Usage events are cumulative snapshots, never additive deltas. A reported
+counter replaces the prior value for that key, while omitted keys retain their
+latest values. Every usage counter is optional, and a provider may report only
+a subset. A provider-reported `:usage/total-tokens` is authoritative.
+Cache-read and cache-write tokens are separate from canonical uncached input,
+and reasoning tokens may overlap output, so none of those counters is blindly
+added to a derived token total.
+
+With `:on-event`, the callback sees every event and `sdk/complete` then returns
+the accumulated canonical response. If any `:stream/error` was accumulated,
+that final accumulation throws `ExceptionInfo`. Its `ex-data` includes
+`:error`, `:stream/error`, `:provider`, and `:partial-response`; the partial
+response contains the canonical content, tool calls, usage, and provider
+replay state accumulated from the event sequence.
+
+To replay prior assistant output, preserve reasoning signatures, encrypted
+reasoning, custom/provider-native tool-call metadata under
+`:tool-call/provider-data`, citation source metadata, and relevant
+`:response/provider-data` when constructing the next canonical message.
+
 ## Embeddings
 
 ```clojure
@@ -91,7 +126,7 @@ Runtime config is profile-local for that call and does not mutate the provider r
  :embed/dimensions 1536}
 ```
 
-The result includes `:embed/vectors`, `:embed/model`, `:embed/provider`, dimensions when known, usage when reported, and the raw provider response.
+The result includes `:embed/vectors`, `:embed/model`, `:embed/provider`, dimensions when known, usage when reported, and the raw provider response. `:gemini-native` uses `models/{model}:batchEmbedContents`; its `:embed/provider-options` supports `:task-type` and `:title`. Azure profiles registered with `register-azure-deployment!` support embeddings over both classic deployment routes and `:api-style :v1`.
 
 ## Moderation
 
@@ -120,7 +155,7 @@ The result includes provider-normalized flagged status, categories, category sco
  :rerank/return-documents true}
 ```
 
-The result includes ranked indices, scores, optional document echoes, usage when reported, and raw provider data.
+The result includes ranked indices, scores, optional document echoes, usage when reported, and raw provider data. Cohere may report a unit-only usage map containing `:usage/search-units`; input/output token counters are not invented.
 
 ## Image Generation
 
@@ -129,14 +164,14 @@ The result includes ranked indices, scores, optional document echoes, usage when
 ```
 
 ```clojure
-{:image/model "dall-e-3"
+{:image/model "gpt-image-1.5"
  :image/prompt "a product photo of a brass desk lamp"
  :image/size "1024x1024"
- :image/quality :hd
+ :image/quality :high
  :image/n 1}
 ```
 
-Images may return URLs or base64 JSON depending on provider and request options.
+Images may return URLs or base64 JSON depending on provider and request options. OpenAI, OpenRouter, and Bedrock require an explicit `:image/model`; the SDK does not select a billable default for them. A serializer accepting an id does not establish current provider availability, regional enablement, or account access.
 
 ## Audio Transcription
 
@@ -151,7 +186,7 @@ Images may return URLs or base64 JSON depending on provider and request options.
  :transcribe/response-format :verbose_json}
 ```
 
-The result includes text, optional language/duration/segments/words, and raw response data.
+The result includes text, optional language/duration/segments/words, and raw response data. When a provider reports duration as its billing unit, the canonical response carries both `:transcription/duration-seconds` and unit-only usage under `:response/usage :usage/duration-seconds`; token counters remain absent unless reported.
 
 ## Text To Speech
 
@@ -206,3 +241,8 @@ See [model-registry.md](model-registry.md) for the registry precedence rules and
 ```
 
 `sdk/complete` calls these internally for chat responses. They are also public for after-the-fact attribution.
+
+An existing `:response/cost` from an adapter is authoritative and is never
+replaced by registry estimation. Missing usage or missing rates remain unknown;
+the SDK does not manufacture token counts, substitute text rates for another
+modality, or turn an unknown billable dimension into zero cost.

@@ -48,6 +48,22 @@
     (is (nil? (get-in built [:body :return_documents]))
         "Cohere v2 does not accept return_documents")))
 
+(deftest test-cohere-rejects-structured-documents
+  (let [t (ckr/make-transport)
+        profile (provider/get-provider :cohere)
+        error (try
+                (rt/build-rerank-request
+                 t profile
+                 {:rerank/model "rerank-v4.0-pro"
+                  :rerank/query "q"
+                  :rerank/documents ["plain" {:text "structured"}]})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (= :request/invalid-rerank-document
+           (:error/type (ex-data error))))
+    (is (= :cohere (:provider (ex-data error))))
+    (is (= 1 (:document/index (ex-data error))))))
+
 (deftest test-build-request-extra-body-merges
   (let [t (ckr/make-transport)
         profile (provider/get-provider :cohere)
@@ -87,13 +103,18 @@
         results (:rerank/results resp)]
     (is (= :cohere (:rerank/provider resp)))
     (is (= 3 (count results)))
-    (testing "scores preserved, document texts extracted from {:text ...} wrapper"
+    (testing "scores and returned documents are preserved exactly"
       (is (= 0.9523 (:rerank/score (first results))))
       (is (= "Clojure is a Lisp dialect for the JVM."
              (:rerank/document (first results))))
       (is (= 2 (:rerank/index (first results)))))
-    (testing "Cohere billed_units surfaces in usage"
-      (is (= 1 (get-in resp [:response/usage :usage/request-count]))))))
+    (testing "search-unit billing is exposed without invented token counts"
+      (is (= 1 (get-in resp [:response/usage :usage/search-units])))
+      (is (not (contains? (:response/usage resp) :usage/input-tokens)))
+      (is (not (contains? (:response/usage resp) :usage/output-tokens)))
+      (is (not (contains? (:response/usage resp) :usage/total-tokens)))
+      (is (= (:meta raw)
+             (get-in resp [:response/usage :usage/provider-raw]))))))
 
 (deftest test-parse-cohere-v2-usage
   (let [t (ckr/make-transport)
@@ -107,6 +128,19 @@
     (is (= "rerank-1" (:rerank/id resp)))
     (is (= 14 (get-in resp [:response/usage :usage/input-tokens])))
     (is (= 1 (get-in resp [:response/usage :usage/request-count])))))
+
+(deftest test-missing-native-score-is-rejected
+  (let [t (ckr/make-transport)
+        profile (provider/get-provider :cohere)
+        error (try
+                (rt/parse-rerank-response
+                 t profile
+                 {:results [{:index 0}]
+                  :meta {:billed_units {:search_units 1}}})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (= :response/missing-rerank-score
+           (:error/type (ex-data error))))))
 
 (deftest test-parse-response-document-as-string
   (testing "document field already as a string also works"
@@ -148,20 +182,24 @@
     (testing "Jina total_tokens surfaces in usage"
       (is (= 25 (get-in resp [:response/usage :usage/total-tokens]))))))
 
-(deftest test-jina-request-current-options
+(deftest test-jina-request-current-options-and-structured-documents
   (let [t (ckr/make-transport)
         profile (provider/get-provider :jina)
+        documents ["plain"
+                   {:text "match" :metadata {:source "fixture"}}
+                   {:image "https://example.test/image.png"}]
         built (with-redefs [provider/resolve-auth-token (constantly "stub")]
                 (rt/build-rerank-request
                  t profile
                  {:rerank/model "jina-reranker-v3"
                   :rerank/query "q"
-                  :rerank/documents ["a"]
+                  :rerank/documents documents
                   :rerank/return-documents true
                   :rerank/provider-options {:truncation true
                                             :max-doc-length 4096
                                             :return-embeddings true}}))]
     (is (= "https://api.jina.ai/v1/rerank" (:url built)))
+    (is (= documents (get-in built [:body :documents])))
     (is (true? (get-in built [:body :return_documents])))
     (is (not (contains? (:body built) :truncation))
         "Jina rerank does not document a truncation request field")

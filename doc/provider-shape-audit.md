@@ -23,9 +23,10 @@ Coverage markers:
 | Vertex Gemini | `:vertex-gemini` | Vertex REST wrapper over Gemini | `request-golden`, `response-fixture`, `stream-fixture`, `live-smoke` | Region/global URL routing, ADC headers, and provider id preservation are critical. |
 | Vertex Anthropic | `:vertex-anthropic` | Anthropic Messages over Vertex (`rawPredict`/`streamRawPredict`) | `request-golden`, `response-fixture`, `stream-fixture`, `live-smoke` | Model moves to URL path, `anthropic_version` in body, GCP OAuth replaces `x-api-key`, region/global routing; reuses native Anthropic body/parse. |
 | OpenRouter | `:openrouter` | OpenAI-wire custom wrapper | `request-golden`, `response-fixture`, `stream-fixture`, `live-smoke` | Provider routing, plugins, reasoning, envelope cache, embeddings, and provider-specific usage need fixtures. |
+| Azure OpenAI deployment | caller-defined | OpenAI Chat Completions with classic deployment or v1 routing | `request-golden`, `response-fixture`, `stream-fixture` | Classic routes by URL deployment and API version; v1 routes under `/openai/v1` and binds the deployment as the body model. |
 | Codex Responses | `:codex` | OpenAI Responses | `request-golden`, `response-fixture`, `stream-fixture`, `live-smoke` | Encrypted reasoning/provider replay state must stay intact. |
 | Codex Backend | `:codex-backend` | ChatGPT Codex backend | `request-golden`, `response-fixture`, `stream-fixture`, `live-smoke` | SSE-first non-streaming behavior, auth headers, and backend usage parsing are load-bearing. |
-| Perplexity | `:perplexity` | OpenAI-wire custom wrapper | `request-golden`, `response-fixture`, `stream-fixture`, `live-smoke` | Citation/search result extraction and final stream chunk flattening are critical. |
+| Perplexity | `:perplexity` | Native Agent `POST /v1/agent` | `request-golden`, `response-fixture`, `stream-fixture`, `live-smoke` | Canonical messages become Agent input items; typed message/search output, URL annotations, usage, and Responses-style SSE events must stay pinned. |
 | Cohere | `:cohere` | Native Cohere chat | `request-golden`, `response-fixture`, `stream-fixture`, `live-smoke` | Documents, citations, tool calls, and v2 response variants need pinned fixtures. |
 | Bedrock | `:bedrock` | AWS Bedrock Converse | `request-golden`, `response-fixture`, `stream-fixture` | Live proof depends on AWS env; eventstream and cachePoint fixtures are mandatory. |
 | Ollama Native | `:ollama-native` | Ollama `/api/chat` | `request-golden`, `response-fixture`, `stream-fixture` | Local runtime live smoke is optional; NDJSON stream shape must be pinned. |
@@ -38,6 +39,7 @@ Coverage markers:
 | Cerebras | `:cerebras` | OpenAI-compatible alias | `request-golden`, `response-fixture`, `live-smoke` | Model names and reasoning fields. |
 | Together | `:together` | OpenAI-compatible alias | `request-golden`, `response-fixture`, `live-smoke` | Chat and embedding model/provider ids. |
 | xAI | `:xai` | OpenAI-compatible alias | `request-golden`, `response-fixture`, `live-smoke` | Reasoning/cache routing fields. |
+| Z.AI | `:zai` | OpenAI-compatible GLM chat completions | `request-golden`, `response-fixture`, `stream-fixture` | Reasoning replay, automatic-only tool choice, image-part serialization, cached-token usage, provider id, and structured errors must stay pinned; broader file/video support is not implied. |
 | HuggingFace Router | `:huggingface` | OpenAI-compatible alias | `request-golden`, `response-fixture`, `live-smoke` | Router model ids and tool support are model-dependent. |
 | Aggregator aliases | `:sambanova`, `:deepinfra`, `:nebius`, `:hyperbolic`, `:novita`, `:friendliai`, `:featherless`, `:cloudflare`, `:dashscope`, `:volcengine` | OpenAI-compatible aliases | `request-golden` | Mostly unchecked live behavior; keep claims conservative. |
 
@@ -46,6 +48,8 @@ Coverage markers:
 | Provider | ID | Adapter family | Coverage | High-risk gaps |
 |---|---:|---|---|---|
 | OpenAI | `:openai` | OpenAI `/embeddings` | `request-golden`, `response-fixture`, `live-smoke` | Dimensions override and multi-input ordering. |
+| Gemini Native | `:gemini-native` | Gemini `batchEmbedContents` | `request-golden`, `response-fixture` | Per-input request order, dimensions/task/title options, requested model preservation, and absent usage must stay explicit. |
+| Azure OpenAI deployment | caller-defined | OpenAI embeddings with classic deployment or v1 routing | `request-golden`, `response-fixture` | The chat registration helper must install the embedding constructor; v1 binds the deployment as body model without an API-version query. |
 | Cohere | `:cohere` | Cohere `/embed` | `request-golden`, `response-fixture`, `live-smoke` | v3 input type and embedding type variants. |
 | Voyage | `:voyage` | OpenAI-compatible embeddings | `request-golden`, `response-fixture`, `live-smoke` | Input type/provider-options behavior. |
 | Mistral | `:mistral` | OpenAI-compatible embeddings | `request-golden`, `live-smoke` | Add fixture response coverage. |
@@ -64,14 +68,15 @@ Coverage markers:
 | Rerank | Voyage | `:voyage` | `request-golden`, `response-fixture`, `live-smoke` | Score/document response variants. |
 | Rerank | Jina | `:jina` | `request-golden`, `response-fixture`, `live-smoke` | Provider id tagging and document return shape. |
 | Rerank | Bedrock | `:bedrock` | `request-golden`, `response-fixture` | Bedrock Agent Runtime `/rerank` requires SigV4 and model ARN routing. |
-| Image | OpenAI | `:openai` | `request-golden`, `response-fixture` | gpt-image-1 usage and b64-only behavior need live proof. |
-| Image | OpenRouter | `:openrouter` | `request-golden`, `response-fixture` | Native `/images` parameters, usage, media type, and provider-reported cost must stay pinned. |
-| Image | Vertex Gemini | `:vertex-imagen` | `request-golden`, `response-fixture` | Compatibility id now targets `gemini-2.5-flash-image` over Vertex `generateContent`; discontinued `imagen-*` models fail explicitly. |
-| Image | Bedrock | `:bedrock` | `request-golden`, `response-fixture` | Titan, Nova Canvas, legacy Stability SDXL, and current Stability Core/Ultra/SD3.5 use distinct request families. |
+| Image | OpenAI | `:openai` | `request-golden`, `response-fixture` | Every request must name `:image/model`; supported `gpt-image-*` option families and b64 responses must stay pinned. |
+| Image | OpenRouter | `:openrouter` | `request-golden`, `response-fixture` | Every request must name an OpenRouter image model; native `/images` parameters, usage, media type, and provider-reported cost must stay pinned. |
+| Image | Vertex Gemini | `:vertex-imagen` | `request-golden`, `response-fixture` | Requested Gemini image models route over Vertex `generateContent`; discontinued `imagen-*` models fail explicitly. |
+| Image | Bedrock | `:bedrock` | `request-golden`, `response-fixture` | Every request must name `:image/model`; the selected Amazon or Stability id controls the native request family, including legacy compatibility shapes. |
 | Transcription | OpenAI | `:openai` | `request-golden`, `response-fixture` | Multipart boundary and verbose JSON variants. |
 | Transcription | Groq | `:groq` | `request-golden`, `response-fixture` | Groq endpoint/base URL and model aliases. |
 | TTS | OpenAI | `:openai` | `request-golden`, `response-fixture` | Raw byte response headers. |
 | TTS | ElevenLabs | `:elevenlabs` | `request-golden`, `response-fixture` | Voice id URL path and output_format query. |
+
 
 ## File Attachments
 
@@ -127,14 +132,18 @@ spec snapshots and used to create or validate fixtures.
 The provider-family rewrite includes a direct implementation read across the
 provider owners, not only a metadata coverage pass:
 
-- OpenAI-compatible, OpenRouter, Perplexity, Cohere, Bedrock, Gemini, Anthropic,
-  Codex, and Ollama chat builders were checked for request shape, stream event
-  flattening, usage normalization, cache handling, and error classification.
+- OpenAI-compatible, OpenRouter, Perplexity Agent, Cohere, Bedrock, Gemini,
+  Z.AI, caller-registered Azure deployment, Anthropic, Codex, and Ollama chat
+  builders were checked for request shape, typed response/stream flattening,
+  usage normalization, cache handling, and error classification.
+- Gemini native and Azure deployment embedding builders were checked for
+  endpoint routing, model placement, auth preservation, input ordering, usage,
+  and structured errors.
 - Provider-native cache logic stays provider-specific: Anthropic uses native
   `cache_control`, OpenRouter uses envelope markers where upstream Claude/Qwen
   cache semantics apply, Gemini accepts explicit `cachedContent`, Bedrock uses
-  Converse `cachePoint`, and unsupported providers explicitly report no cache
-  strategy.
+  Converse `cachePoint`, Z.AI normalizes provider-reported cached input tokens,
+  and unsupported providers explicitly report no cache strategy.
 - Cost attribution is wired in the public drivers for chat, embeddings, rerank,
   image generation, transcription, and TTS. Unknown pricing remains explicit and
   is not treated as zero.

@@ -1,4 +1,4 @@
-# LiteLLM Parity
+# Python LiteLLM Design Survey
 
 `clojure-llm-sdk` is inspired by LiteLLM's broad provider coverage, but it is intentionally scoped as a Clojure library rather than a proxy server.
 
@@ -12,19 +12,36 @@ The goal is to provide the provider-abstraction pieces that applications need di
 - streaming normalization
 - provider-specific replay state preservation
 
+## Comparison Baselines
+
+Python LiteLLM supplies design ideas, provider vocabulary, and one upstream
+pricing source; it is not a provider-count target. The separate Clojure library
+[`unravel-team/litellm-clj` at `14bcdd949c0207d6c4988a3db887a1a7fa1c5522`](https://github.com/unravel-team/litellm-clj/commit/14bcdd949c0207d6c4988a3db887a1a7fa1c5522)
+was used only for a scoped implementation comparison. That comparison led to
+three constructor-backed additions here: `:zai` chat, embeddings on
+`:gemini-native`, and embeddings on caller-registered Azure deployment
+profiles. It does not make `litellm-clj` a dependency or imply that every model
+is currently available to every account.
+
+The detailed, constructor-backed mapping and its explicit exclusions live in
+[the provider parity ledger](litellm-provider-parity.md). Most verification is
+offline request/response fixture coverage; current account access and model
+availability require opt-in live checks and are not inferred from a registry
+entry.
+
 ## What This SDK Covers
 
 | Area | Coverage |
 |---|---|
-| Chat completions | OpenAI, Anthropic, Gemini, Vertex, OpenRouter, Codex, DeepSeek, Kimi, Kimi Code, Mistral, Groq, Cerebras, Together, xAI, HuggingFace Router, Perplexity, Bedrock, Ollama, and aggregator aliases. |
-| Embeddings | OpenAI, Cohere, Voyage, Mistral, Together, Jina, Ollama. |
+| Chat completions | OpenAI, Anthropic, Gemini, Vertex, Z.AI, OpenRouter, Codex, DeepSeek, Kimi, Kimi Code, Mistral, Groq, Cerebras, Together, xAI, HuggingFace Router, Perplexity, Bedrock, Ollama, and aggregator aliases. |
+| Embeddings | OpenAI, Gemini Native, OpenRouter, caller-registered Azure deployments, Cohere, Voyage, Mistral, Together, Jina, Nebius, and Ollama. |
 | Moderation | OpenAI. |
 | Rerank | Cohere, Voyage, Jina. |
-| Image generation | OpenAI, Vertex Gemini image generation (`:vertex-imagen`), Bedrock image models. |
+| Image generation | OpenAI, OpenRouter, Vertex Gemini image generation (`:vertex-imagen`), and Bedrock image models. |
 | Audio transcription | OpenAI Whisper, Groq Whisper. |
 | Text-to-speech | OpenAI TTS, ElevenLabs. |
-| Model metadata | Live provider catalogs, LiteLLM-derived snapshot, models.dev snapshot, and caller overrides. |
-| Cost estimation | Registry-backed cost calculation with explicit unknowns. |
+| Model metadata | Bundled LiteLLM and models.dev snapshots, supported live provider catalogs, and caller overrides; a catalog entry is not an availability claim. |
+| Cost estimation | Registry-backed calculation for reported billable dimensions, with missing usage or rates left explicitly unknown. |
 | Context caching | Provider-native cache markers and cache telemetry normalization. |
 | Streaming | Canonical stream event taxonomy and final response reduction. |
 | Fallbacks | Sequential caller-provided fallback list. |

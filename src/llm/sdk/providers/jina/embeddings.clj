@@ -37,7 +37,23 @@
                       (:return-tokenized-input opts)))
         body (if-let [extra (:extra_body opts)]
                (merge body extra)
-               body)]
+               body)
+        multivector? (true? (:return_multivector body))
+        tokenized? (true? (:return_tokenized_input body))
+        dimensions (:dimensions body)
+        invalid-data {:provider :jina
+                      :error/type :request/invalid-embedding-options
+                      :return-tokenized-input tokenized?
+                      :return-multivector multivector?
+                      :dimensions dimensions}]
+    (when (and tokenized? (not multivector?))
+      (throw (ex-info
+              "Jina return_tokenized_input requires return_multivector"
+              invalid-data)))
+    (when (and multivector? dimensions)
+      (throw (ex-info
+              "Jina return_multivector cannot be combined with dimensions"
+              invalid-data)))
     {:method :post
      :url (str (:profile/base-url profile) "/embeddings")
      :headers (provider/default-headers
@@ -62,8 +78,12 @@
       (pos? video) (assoc :usage/video-tokens video))))
 
 (defn- dense-vector [embedding]
-  (when (and (sequential? embedding)
-             (every? number? embedding))
+  (cond
+    (string? embedding)
+    (et/decode-float32-base64 embedding)
+
+    (and (sequential? embedding)
+         (every? number? embedding))
     (vec embedding)))
 
 (defn- opaque-embedding? [item dense]

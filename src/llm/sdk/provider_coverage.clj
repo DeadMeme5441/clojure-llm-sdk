@@ -79,18 +79,35 @@
 
    :gemini-native
    (cov :surfaces #{:complete :streaming :tools :json-schema :multimodal
-                    :reasoning :file-attachments}
+                    :reasoning :file-attachments :embedding}
         :cache #{:implicit-provider-cache :explicit-cached-content
                  :canonical-cache-stamp}
-        :metrics #{:gemini-usage :canonical-chat-stamp}
+        :metrics #{:gemini-usage :gemini-embedding-usage
+                   :canonical-chat-stamp}
         :pricing #{:models-dev :litellm-snapshot :openrouter-live-route :user-override}
         :models #{:live-models-api :models-dev :bundled-snapshot}
-        :request #{:gemini-native-golden :gemini-file-golden}
-        :response #{:gemini-native-fixture}
+        :request #{:gemini-native-golden :gemini-file-golden
+                   :gemini-embedding-golden}
+        :response #{:gemini-native-fixture :gemini-embedding-fixture}
         :stream #{:gemini-sse-fixture}
         :auth #{:api-key-header :runtime-override}
         :errors #{:shared-classifier}
         :live-smoke :env-gated)
+
+   :zai
+   (cov :surfaces #{:complete :streaming :tools :reasoning :multimodal}
+        :cache #{:implicit-provider-cache :canonical-cache-stamp}
+        :metrics #{:openai-usage :implicit-cache-usage
+                   :canonical-chat-stamp}
+        :pricing #{:unknown :user-override}
+        :models #{:documented-static-catalog}
+        :request #{:zai-chat-completions-golden}
+        :response #{:zai-chat-completions-fixture}
+        :stream #{:openai-sse-fixture}
+        :auth #{:bearer}
+        :errors #{:shared-classifier}
+        :live-smoke :env-gated
+        :notes "No verified models endpoint; model IDs come from Z.AI's documented static catalog.")
 
    :vertex-gemini
    (cov :surfaces #{:complete :streaming :tools :json-schema :multimodal
@@ -171,14 +188,15 @@
         :live-smoke :env-gated)
 
    :perplexity
-   (cov :surfaces #{:complete :streaming :json-schema :reasoning :web-search :citations}
+   (cov :surfaces #{:complete :streaming :tools :json-schema :reasoning
+                    :multimodal :web-search :citations}
         :cache #{:none :canonical-cache-stamp}
         :metrics #{:perplexity-usage :search-usage :canonical-chat-stamp}
         :pricing #{:models-dev :litellm-snapshot :openrouter-live-route :user-override}
         :models #{:snapshot-only}
-        :request #{:perplexity-golden}
-        :response #{:perplexity-citation-fixture}
-        :stream #{:perplexity-final-chunk-fixture}
+        :request #{:perplexity-agent-golden}
+        :response #{:perplexity-agent-typed-output-fixture}
+        :stream #{:perplexity-agent-responses-sse-fixture}
         :auth #{:bearer}
         :errors #{:shared-classifier}
         :live-smoke :env-gated)

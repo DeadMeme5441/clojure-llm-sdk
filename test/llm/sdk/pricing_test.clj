@@ -234,11 +234,12 @@
        (is (= :actual (:cost/status c)))
        (is (bd≈ 0.0075M (:cost/amount-usd c)))))))
 
-(deftest official-openai-image-pricing-fallback
+(deftest official-openai-image-pricing-keeps-modalities-distinct
   (let [p (pricing/get-pricing :openai "gpt-image-1-mini")]
-    (is (= :openai-pricing-page (:source p)))
     (is (= 2.0 (:input-cost-per-million p)))
-    (is (= 8.0 (:output-cost-per-million p)))))
+    (is (= 2.5 (:image-input-cost-per-million p)))
+    (is (= 8.0 (:image-output-cost-per-million p)))
+    (is (nil? (:output-cost-per-million p)))))
 
 ;; ---------------------------------------------------------------------------
 ;; resolve-billing-route — pure metadata
@@ -259,3 +260,81 @@
 (deftest resolve-billing-route-direct-by-default
   (let [r (pricing/resolve-billing-route "gpt-4o" :provider :openai)]
     (is (= :direct (:billing-route/mode r)))))
+
+(deftest modality-token-cost-does-not-double-count-totals-or-cache
+  (let [usage {:usage/input-tokens 80
+               :usage/output-tokens 50
+               :usage/cached-input-tokens 20
+               :usage/image-tokens 61
+               :usage/audio-tokens 35
+               :usage/provider-raw
+               {:input_tokens 100
+                :input_tokens_details
+                {:text_tokens 50
+                 :image_tokens 30
+                 :audio_tokens 20
+                 :cached_tokens 20
+                 :cached_tokens_details
+                 {:text_tokens 10 :image_tokens 6 :audio_tokens 4}}
+                :output_tokens 50
+                :output_tokens_details
+                {:text_tokens 10 :image_tokens 25 :audio_tokens 15}}}
+        rates (pricing/pricing-entry
+               :input 2 :output 4 :cache-read 0.2
+               :image-input 3 :image-output 6 :image-cache-read 0.3
+               :audio-input 5 :audio-output 10 :audio-cache-read 0.5)
+        result (pricing/estimate-cost usage rates)]
+    (is (= :actual (:cost/status result)))
+    (is (bd≈ 0.0005778M (:cost/amount-usd result)))))
+
+(deftest modality-token-cost-is-unknown-without-required-detail-or-rate
+  (let [ambiguous-cache
+        (pricing/estimate-cost
+         {:usage/input-tokens 80
+          :usage/output-tokens 0
+          :usage/cached-input-tokens 20
+          :usage/image-tokens 30
+          :usage/provider-raw
+          {:input_tokens 100
+           :input_tokens_details {:text_tokens 70 :image_tokens 30}}}
+         (pricing/pricing-entry
+          :input 2 :output 4 :cache-read 0.2
+          :image-input 3 :image-cache-read 0.3))
+        missing-rate
+        (pricing/image-cost
+         {:usage {:usage/input-tokens 10
+                  :usage/output-tokens 100}}
+         (pricing/pricing-entry :input 2))
+        empty-usage
+        (pricing/estimate-cost
+         {}
+         (pricing/pricing-entry :input 2 :output 4 :request-cost 0.01))]
+    (is (= :estimated (:cost/status ambiguous-cache)))
+    (is (= :estimated (:cost/status missing-rate)))
+    (is (nil? (:cost/amount-usd missing-rate)))
+    (is (= :estimated (:cost/status empty-usage)))
+    (is (nil? (:cost/amount-usd empty-usage)))))
+
+(deftest specialized-unit-accounting-uses-reported-billing-dimension
+  (let [token-transcription
+        (pricing/transcription-cost
+         {:usage {:usage/input-tokens 7
+                  :usage/output-tokens 2}}
+         (pricing/pricing-entry :audio-input 10 :output 20))
+        duration-transcription
+        (pricing/transcription-cost
+         {:usage {:usage/duration-seconds 120}}
+         (pricing/pricing-entry :transcription-per-minute 0.006))
+        rerank
+        (pricing/rerank-cost
+         {:usage/search-units 3 :usage/request-count 1}
+         (pricing/pricing-entry :rerank-per-search-unit 0.002))
+        query-count-is-not-a-search-unit
+        (pricing/rerank-cost
+         {:usage/search-queries 3 :usage/request-count 1}
+         (pricing/pricing-entry :rerank-per-search-unit 0.002))]
+    (is (bd≈ 0.00011M (:cost/amount-usd token-transcription)))
+    (is (bd≈ 0.012M (:cost/amount-usd duration-transcription)))
+    (is (bd≈ 0.006M (:cost/amount-usd rerank)))
+    (is (= :estimated (:cost/status query-count-is-not-a-search-unit)))
+    (is (nil? (:cost/amount-usd query-count-is-not-a-search-unit)))))

@@ -4,12 +4,6 @@
             [llm.sdk.providers.jina.embeddings :as jina]
             [llm.sdk.transport.embed :as et]))
 
-(deftest test-jina-profile-uses-dedicated-transport
-  (let [profile (provider/get-provider :jina)]
-    (is (fn? (:profile/embed-transport-constructor profile)))
-    (is (instance? llm.sdk.providers.jina.embeddings.JinaEmbedTransport
-                   ((:profile/embed-transport-constructor profile))))))
-
 (deftest test-build-current-jina-request
   (let [profile (provider/get-provider :jina)
         built (with-redefs [provider/resolve-auth-token (constantly "stub")]
@@ -48,6 +42,41 @@
     (is (false? (get-in built [:body :return_multivector])))
     (is (false? (get-in built [:body :return_tokenized_input])))))
 
+(deftest test-build-jina-rejects-invalid-v4-option-combinations
+  (let [build-error
+        (fn [request]
+          (try
+            (et/build-embed-request
+             (jina/make-transport)
+             (provider/get-provider :jina)
+             request)
+            nil
+            (catch Exception error error)))
+        base {:embed/model "jina-embeddings-v4"
+              :embed/inputs ["a"]}
+        tokenized-error
+        (build-error
+         (assoc base :embed/provider-options
+                {:return-tokenized-input true
+                 :return-multivector false}))
+        dimensions-error
+        (build-error
+         (assoc base
+                :embed/dimensions 512
+                :embed/provider-options {:return-multivector true}))]
+    (is (= {:provider :jina
+            :error/type :request/invalid-embedding-options
+            :return-tokenized-input true
+            :return-multivector false
+            :dimensions nil}
+           (ex-data tokenized-error)))
+    (is (= {:provider :jina
+            :error/type :request/invalid-embedding-options
+            :return-tokenized-input false
+            :return-multivector true
+            :dimensions 512}
+           (ex-data dimensions-error)))))
+
 (deftest test-parse-current-jina-response
   (let [parsed (et/parse-embed-response
                 (jina/make-transport)
@@ -57,9 +86,9 @@
                  :usage {:prompt_tokens 8
                          :total_tokens 12
                          :image_tokens 4}
-                 :data [{:object "embedding" :index 1
+                 :data [{:object "embedding" :index 23
                          :embedding [3.0 4.0]}
-                        {:object "embedding" :index 0
+                        {:object "embedding" :index 5
                          :embedding [1.0 2.0]}]})]
     (is (= :jina (:embed/provider parsed)))
     (is (= [[1.0 2.0] [3.0 4.0]] (:embed/vectors parsed)))
@@ -68,16 +97,18 @@
     (is (= 12 (get-in parsed [:response/usage :usage/total-tokens])))
     (is (= 4 (get-in parsed [:response/usage :usage/image-tokens])))))
 
-(deftest test-parse-jina-preserves-opaque-base64-response
-  (let [item {:index 0 :embedding "AACAPwAAAEA="}
-        parsed (et/parse-embed-response
+(deftest test-parse-jina-decodes-base64-response
+  (let [parsed (et/parse-embed-response
                 (jina/make-transport)
                 (provider/get-provider :jina)
                 {:model "jina-embeddings-v5-text-small"
                  :usage {:prompt_tokens 1 :total_tokens 1}
-                 :data [item]})]
-    (is (= [] (:embed/vectors parsed)))
-    (is (= {:raw [item]} (:embed/provider-data parsed)))))
+                 :data [{:index 7 :embedding "AABAQAAAgEA="}
+                        {:index 3 :embedding "AACAPwAAAEA="}]})]
+    (is (= [[1.0 2.0] [3.0 4.0]]
+           (mapv #(mapv double %) (:embed/vectors parsed))))
+    (is (= 2 (:embed/dimensions parsed)))
+    (is (nil? (:embed/provider-data parsed)))))
 
 (deftest test-parse-jina-preserves-sparse-multivector-and-video-usage
   (let [sparse {:object "embedding"

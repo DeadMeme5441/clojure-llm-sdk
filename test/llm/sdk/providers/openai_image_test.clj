@@ -14,16 +14,23 @@
 ;; Request building
 ;; ---------------------------------------------------------------------------
 
-(deftest test-build-request-defaults-and-minimal
+(deftest test-build-request-requires-explicit-current-model
   (let [t (oai-img/make-transport)
         profile (provider/get-provider :openai)
+        missing (try
+                  (it/build-image-request t profile {:image/prompt "a cat"})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))
         built (with-redefs [provider/resolve-auth-token
                             (constantly "stub")]
                 (it/build-image-request
-                 t profile {:image/prompt "a cat"}))]
+                 t profile
+                 {:image/model "gpt-image-2"
+                  :image/prompt "a cat"}))]
+    (is (= :request/missing-model (:error/type (ex-data missing))))
     (is (= "https://api.openai.com/v1/images/generations" (:url built)))
     (is (= "Bearer stub" (get-in built [:headers "Authorization"])))
-    (is (= "dall-e-3" (get-in built [:body :model])))
+    (is (= "gpt-image-2" (get-in built [:body :model])))
     (is (= "a cat" (get-in built [:body :prompt])))))
 
 (deftest test-build-request-all-options
@@ -33,19 +40,19 @@
                             (constantly "stub")]
                 (it/build-image-request
                  t profile
-                 {:image/model "gpt-image-1"
+                 {:image/model "dall-e-3"
                   :image/prompt "a cat"
-                  :image/n 2
+                  :image/n 1
                   :image/size "1024x1024"
-                  :image/quality :high
+                  :image/quality :hd
                   :image/style :vivid
                   :image/response-format :b64_json
                   :image/user "u-1"}))
         body (:body built)]
-    (is (= "gpt-image-1" (:model body)))
-    (is (= 2 (:n body)))
+    (is (= "dall-e-3" (:model body)))
+    (is (= 1 (:n body)))
     (is (= "1024x1024" (:size body)))
-    (is (= "high" (:quality body)))
+    (is (= "hd" (:quality body)))
     (is (= "vivid" (:style body)))
     (is (= "b64_json" (:response_format body)))
     (is (= "u-1" (:user body)))))
@@ -57,7 +64,8 @@
                             (constantly "stub")]
                 (it/build-image-request
                  t profile
-                 {:image/prompt "a cat"
+                 {:image/model "gpt-image-2"
+                  :image/prompt "a cat"
                   :image/provider-options
                   {:extra_body {:background "transparent"
                                 :output_format "webp"
@@ -71,6 +79,22 @@
     (is (= "low" (get-in built [:body :moderation])))
     (is (true? (get-in built [:body :stream])))
     (is (= 2 (get-in built [:body :partial_images])))))
+
+(deftest test-build-request-rejects-model-incompatible-options
+  (let [t (oai-img/make-transport)
+        profile (provider/get-provider :openai)]
+    (doseq [request [{:image/model "gpt-image-2"
+                      :image/prompt "x"
+                      :image/response-format :url}
+                     {:image/model "dall-e-3"
+                      :image/prompt "x"
+                      :image/n 2}]]
+      (let [error (try
+                    (it/build-image-request t profile request)
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :provider/unsupported-option
+               (:error/type (ex-data error))))))))
 
 (deftest test-parse-current-image-stream-events
   (let [profile (provider/get-provider :openai)
@@ -110,10 +134,12 @@
     (let [t (oai-img/make-transport)
           profile (provider/get-provider :openai)
           raw {:created 0
+               :output_format "webp"
                :data [{:b64_json "iVBORw0KGgoAAAANSUhEUgAA..."}]}
           resp (it/parse-image-response t profile raw)
           img (first (:image/images resp))]
       (is (string? (:image/b64 img)))
+      (is (= "image/webp" (:image/mime-type img)))
       (is (nil? (:image/url img))))))
 
 (deftest test-parse-response-usage
@@ -132,6 +158,19 @@
     (is (= 11 (get-in resp [:response/usage :usage/input-tokens])))
     (is (= 1056 (get-in resp [:response/usage :usage/output-tokens])))
     (is (= 1067 (get-in resp [:response/usage :usage/total-tokens])))))
+
+(deftest test-parse-empty-response-is-not-success
+  (let [t (oai-img/make-transport)
+        profile (provider/get-provider :openai)
+        error (try
+                (it/parse-image-response
+                 t profile {:data [] :error {:message "filtered"}})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (= :provider/invalid-image-response
+           (:error/type (ex-data error))))
+    (is (= {:message "filtered"}
+           (:provider/error (ex-data error))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error classification

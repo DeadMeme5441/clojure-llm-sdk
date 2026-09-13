@@ -17,10 +17,10 @@
 (defn rerank
   "Send a canonical RerankRequest, return a RerankResponse.
 
-   Required keys: :rerank/model, :rerank/query, :rerank/documents
-   (vector of strings).
+   Required keys: :rerank/model, :rerank/query, :rerank/documents.
+   Documents are strings or maps; individual providers may require strings.
    Optional: :rerank/top-n, :rerank/return-documents,
-   :rerank/provider-options."
+   :rerank/next-token, :rerank/provider-options."
   [provider-id request & {:keys [config]}]
   (let [profile (some-> (provider/get-provider provider-id)
                         (provider/apply-runtime-config config))
@@ -60,7 +60,8 @@
       ;; the surface always carries the model that was actually used.
       (let [parsed (rt/parse-rerank-response transport profile body)
             parsed (update parsed :rerank/model #(or % (:rerank/model request)))
-            parsed (if (:rerank/return-documents request)
+            parsed (case (:rerank/return-documents request)
+                     true
                      (update parsed :rerank/results
                              (fn [results]
                                (mapv (fn [result]
@@ -72,8 +73,38 @@
                                            (assoc result :rerank/document document)
                                            result)))
                                      results)))
+
+                     false
+                     (update parsed :rerank/results
+                             (fn [results]
+                               (mapv #(dissoc % :rerank/document) results)))
+
                      parsed)
-            usage (:response/usage parsed)
-            cost (pricing/canonical-cost provider-id (:rerank/model parsed) usage)]
-        (cond-> parsed
-          cost (assoc :response/cost cost))))))
+            parsed
+            (if (contains? parsed :response/cost)
+              parsed
+              (let [usage (:response/usage parsed)
+                    pricing (pricing/get-pricing
+                             provider-id (:rerank/model parsed))
+                    result (when usage
+                             (pricing/rerank-cost usage pricing))
+                    cost
+                    (when result
+                      (pricing/cost-result->canonical
+                       result
+                       pricing
+                       (cond-> {}
+                         (contains? usage :usage/search-units)
+                         (assoc :search-units (:usage/search-units usage))
+                         (:rerank-cost-per-search-unit pricing)
+                         (assoc :rerank-cost-per-search-unit
+                                (:rerank-cost-per-search-unit pricing))
+                         (contains? usage :usage/input-tokens)
+                         (assoc :input-tokens
+                                (:usage/input-tokens usage))
+                         (contains? usage :usage/output-tokens)
+                         (assoc :output-tokens
+                                (:usage/output-tokens usage)))))]
+                (cond-> parsed
+                  cost (assoc :response/cost cost))))]
+        parsed))))

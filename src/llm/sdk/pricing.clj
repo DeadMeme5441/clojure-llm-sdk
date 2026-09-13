@@ -29,27 +29,40 @@
 
 (defn pricing-entry
   "Construct a pricing entry. Token costs are per-million-tokens in USD.
-   Per-modality knobs:
-     :image-cost-per-image           dollars per image returned
-     :image-cost-per-megapixel       dollars per megapixel produced
-     :transcription-cost-per-minute  dollars per minute of audio in
-     :tts-cost-per-million-chars     dollars per 1M output characters
-     :search-cost-per-call           dollars per search query (Perplexity)"
+   Modality-specific token rates are kept distinct from text rates; callers
+   must not substitute one for another.
+
+   Per-unit knobs:
+     :image-per-image              dollars per image returned
+     :image-per-megapixel          dollars per megapixel produced
+     :transcription-per-minute     dollars per minute of audio in
+     :tts-per-million-chars        dollars per 1M output characters
+     :search-per-call              dollars per search query (Perplexity)
+     :rerank-per-search-unit       dollars per billed rerank search unit"
   [& {:keys [input output cache-read cache-write request-cost
+             image-input image-output audio-input audio-output
+             image-cache-read audio-cache-read
              image-per-image image-per-megapixel
              transcription-per-minute tts-per-million-chars
-             search-per-call
+             search-per-call rerank-per-search-unit
              source source-url pricing-version]}]
   {:input-cost-per-million input
    :output-cost-per-million output
    :cache-read-cost-per-million cache-read
    :cache-write-cost-per-million cache-write
+   :image-input-cost-per-million image-input
+   :image-output-cost-per-million image-output
+   :audio-input-cost-per-million audio-input
+   :audio-output-cost-per-million audio-output
+   :image-cache-read-cost-per-million image-cache-read
+   :audio-cache-read-cost-per-million audio-cache-read
    :request-cost request-cost
    :image-cost-per-image image-per-image
    :image-cost-per-megapixel image-per-megapixel
    :transcription-cost-per-minute transcription-per-minute
    :tts-cost-per-million-chars tts-per-million-chars
    :search-cost-per-call search-per-call
+   :rerank-cost-per-search-unit rerank-per-search-unit
    :source (or source :registry)
    :source-url source-url
    :pricing-version pricing-version})
@@ -71,25 +84,42 @@
    pricing-entry. Returns nil when the model entry has no cost data."
   [model-entry]
   (when-let [c (:model/cost model-entry)]
-    (when (or (:input-per-million c)
-              (:output-per-million c)
-              (:image-per-image c)
-              (:image-per-megapixel c)
-              (:transcription-per-minute c)
-              (:tts-per-million-chars c)
-              (:search-per-call c)
-              (:request-cost c))
+    (when (some some?
+                [(:input-per-million c)
+                 (:output-per-million c)
+                 (:cache-read-per-million c)
+                 (:cache-write-per-million c)
+                 (:image-input-per-million c)
+                 (:image-output-per-million c)
+                 (:audio-input-per-million c)
+                 (:audio-output-per-million c)
+                 (:image-cache-read-per-million c)
+                 (:audio-cache-read-per-million c)
+                 (:image-per-image c)
+                 (:image-per-megapixel c)
+                 (:transcription-per-minute c)
+                 (:tts-per-million-chars c)
+                 (:search-per-call c)
+                 (:rerank-per-search-unit c)
+                 (:request-cost c)])
       (pricing-entry
        :input (:input-per-million c)
        :output (:output-per-million c)
        :cache-read (:cache-read-per-million c)
        :cache-write (:cache-write-per-million c)
+       :image-input (:image-input-per-million c)
+       :image-output (:image-output-per-million c)
+       :audio-input (:audio-input-per-million c)
+       :audio-output (:audio-output-per-million c)
+       :image-cache-read (:image-cache-read-per-million c)
+       :audio-cache-read (:audio-cache-read-per-million c)
        :request-cost (:request-cost c)
        :image-per-image (:image-per-image c)
        :image-per-megapixel (:image-per-megapixel c)
        :transcription-per-minute (:transcription-per-minute c)
        :tts-per-million-chars (:tts-per-million-chars c)
        :search-per-call (:search-per-call c)
+       :rerank-per-search-unit (:rerank-per-search-unit c)
        :source (:model/source model-entry)
        :source-url (:model/source-url model-entry)))))
 
@@ -99,23 +129,20 @@
   [provider model]
   (when (= provider :openai)
     (case model
-      ;; OpenAI pricing page, image generation models, standard tier.
-      ;; gpt-image-* pricing is token-based. We map text input to
-      ;; :input-cost-per-million and image output tokens to
-      ;; :output-cost-per-million because OpenAI returns them in the
-      ;; ordinary input/output token counters on /images/generations.
+      ;; OpenAI pricing page, image generation models, standard tier. These
+      ;; endpoints report text input, image input, and image output separately.
       "gpt-image-1-mini"
-      (pricing-entry :input 2.0 :output 8.0
+      (pricing-entry :input 2.0 :image-input 2.5 :image-output 8.0
                      :cache-read 0.20
                      :source :openai-pricing-page
                      :source-url "https://developers.openai.com/api/docs/pricing")
       "gpt-image-1.5"
-      (pricing-entry :input 5.0 :output 32.0
+      (pricing-entry :input 5.0 :image-input 8.0 :image-output 32.0
                      :cache-read 1.25
                      :source :openai-pricing-page
                      :source-url "https://developers.openai.com/api/docs/pricing")
       "gpt-image-2"
-      (pricing-entry :input 5.0 :output 30.0
+      (pricing-entry :input 5.0 :image-input 8.0 :image-output 30.0
                      :cache-read 1.25
                      :source :openai-pricing-page
                      :source-url "https://developers.openai.com/api/docs/pricing")
@@ -127,11 +154,20 @@
 
 (defn get-pricing
   "Get the pricing-entry for (provider, model), or nil when no tier of
-   the registry has cost data for the pair."
+   the registry has cost data for the pair. The small official fallback
+   supplements, but never hides, non-nil catalog rates."
   [provider model]
-  (or (official-openai-pricing provider model)
-      (some-> (registry/lookup provider model)
-              model-entry->pricing-entry)))
+  (let [fallback (official-openai-pricing provider model)
+        catalog (some-> (registry/lookup provider model)
+                        model-entry->pricing-entry)]
+    (cond
+      (and fallback catalog)
+      (merge fallback
+             (dissoc (into {} (filter (comp some? val)) catalog)
+                     :source :source-url))
+
+      catalog catalog
+      :else fallback)))
 
 (defn register-pricing
   "Register a caller-provided pricing entry as a registry override.
@@ -139,21 +175,41 @@
    tier. The entry argument can be a legacy pricing-entry map, OR a map
    with :input/:output/:cache-read/:cache-write/:request-cost shorthand."
   [provider model entry]
-  (let [norm (cond
-               (:input-cost-per-million entry) entry
-               :else
-               (pricing-entry :input (:input entry)
-                              :output (:output entry)
-                              :cache-read (:cache-read entry)
-                              :cache-write (:cache-write entry)
-                              :request-cost (:request-cost entry)
-                              :image-per-image (:image-per-image entry)
-                              :image-per-megapixel (:image-per-megapixel entry)
-                              :transcription-per-minute (:transcription-per-minute entry)
-                              :tts-per-million-chars (:tts-per-million-chars entry)
-                              :search-per-call (:search-per-call entry)
-                              :source (:source entry :user-override)
-                              :source-url (:source-url entry)))
+  (let [runtime-shape?
+        (some #(contains? entry %)
+              [:input-cost-per-million
+               :output-cost-per-million
+               :cache-read-cost-per-million
+               :cache-write-cost-per-million
+               :image-input-cost-per-million
+               :image-output-cost-per-million
+               :audio-input-cost-per-million
+               :audio-output-cost-per-million
+               :image-cache-read-cost-per-million
+               :audio-cache-read-cost-per-million
+               :rerank-cost-per-search-unit])
+        norm (if runtime-shape?
+               entry
+               (pricing-entry
+                :input (:input entry)
+                :output (:output entry)
+                :cache-read (:cache-read entry)
+                :cache-write (:cache-write entry)
+                :image-input (:image-input entry)
+                :image-output (:image-output entry)
+                :audio-input (:audio-input entry)
+                :audio-output (:audio-output entry)
+                :image-cache-read (:image-cache-read entry)
+                :audio-cache-read (:audio-cache-read entry)
+                :request-cost (:request-cost entry)
+                :image-per-image (:image-per-image entry)
+                :image-per-megapixel (:image-per-megapixel entry)
+                :transcription-per-minute (:transcription-per-minute entry)
+                :tts-per-million-chars (:tts-per-million-chars entry)
+                :search-per-call (:search-per-call entry)
+                :rerank-per-search-unit (:rerank-per-search-unit entry)
+                :source (:source entry :user-override)
+                :source-url (:source-url entry)))
         cost (cond-> {}
                (:input-cost-per-million norm)
                (assoc :input-per-million (:input-cost-per-million norm))
@@ -163,12 +219,26 @@
                (assoc :cache-read-per-million (:cache-read-cost-per-million norm))
                (:cache-write-cost-per-million norm)
                (assoc :cache-write-per-million (:cache-write-cost-per-million norm))
+               (:image-input-cost-per-million norm)
+               (assoc :image-input-per-million (:image-input-cost-per-million norm))
+               (:image-output-cost-per-million norm)
+               (assoc :image-output-per-million (:image-output-cost-per-million norm))
+               (:audio-input-cost-per-million norm)
+               (assoc :audio-input-per-million (:audio-input-cost-per-million norm))
+               (:audio-output-cost-per-million norm)
+               (assoc :audio-output-per-million (:audio-output-cost-per-million norm))
+               (:image-cache-read-cost-per-million norm)
+               (assoc :image-cache-read-per-million (:image-cache-read-cost-per-million norm))
+               (:audio-cache-read-cost-per-million norm)
+               (assoc :audio-cache-read-per-million (:audio-cache-read-cost-per-million norm))
                (:request-cost norm) (assoc :request-cost (:request-cost norm))
                (:image-cost-per-image norm) (assoc :image-per-image (:image-cost-per-image norm))
                (:image-cost-per-megapixel norm) (assoc :image-per-megapixel (:image-cost-per-megapixel norm))
                (:transcription-cost-per-minute norm) (assoc :transcription-per-minute (:transcription-cost-per-minute norm))
                (:tts-cost-per-million-chars norm) (assoc :tts-per-million-chars (:tts-cost-per-million-chars norm))
-               (:search-cost-per-call norm) (assoc :search-per-call (:search-cost-per-call norm)))]
+               (:search-cost-per-call norm) (assoc :search-per-call (:search-cost-per-call norm))
+               (:rerank-cost-per-search-unit norm)
+               (assoc :rerank-per-search-unit (:rerank-cost-per-search-unit norm)))]
     (registry/register-entry! provider model
                               (cond-> {}
                                 (seq cost) (assoc :model/cost cost)
@@ -277,11 +347,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- per-million [n cost-per-m]
-  (if (and n cost-per-m)
+  (when (and (number? n) (some? cost-per-m))
     (-> (bigdec n)
         (.multiply (bigdec cost-per-m))
-        (.movePointLeft 6))
-    0M))
+        (.movePointLeft 6))))
 
 (defn- safe-bigdec [x]
   (cond
@@ -292,28 +361,240 @@
 (defn- positive-count? [x]
   (and (number? x) (pos? x)))
 
-(defn- token-pricing-present? [pricing]
-  (some some?
-        [(:input-cost-per-million pricing)
-         (:output-cost-per-million pricing)
-         (:cache-read-cost-per-million pricing)
-         (:cache-write-cost-per-million pricing)]))
+(def ^:private token-rate-keys
+  [:input-cost-per-million
+   :output-cost-per-million
+   :cache-read-cost-per-million
+   :cache-write-cost-per-million
+   :image-input-cost-per-million
+   :image-output-cost-per-million
+   :audio-input-cost-per-million
+   :audio-output-cost-per-million
+   :image-cache-read-cost-per-million
+   :audio-cache-read-cost-per-million])
 
-(defn- missing-token-rate-fields [usage pricing]
-  (when (token-pricing-present? pricing)
-    (cond-> []
-      (and (positive-count? (:usage/input-tokens usage))
-           (nil? (:input-cost-per-million pricing)))
-      (conj :input-cost-per-million)
-      (and (positive-count? (:usage/output-tokens usage))
-           (nil? (:output-cost-per-million pricing)))
-      (conj :output-cost-per-million)
-      (and (positive-count? (:usage/cached-input-tokens usage))
-           (nil? (:cache-read-cost-per-million pricing)))
-      (conj :cache-read-cost-per-million)
-      (and (positive-count? (:usage/cache-write-tokens usage))
-           (nil? (:cache-write-cost-per-million pricing)))
-      (conj :cache-write-cost-per-million))))
+(defn- token-pricing-present? [pricing]
+  (some #(some? (get pricing %)) token-rate-keys))
+
+(defn- first-detail-map [raw keys]
+  (some (fn [k]
+          (let [v (get raw k)]
+            (when (map? v) v)))
+        keys))
+
+(defn- detail-count [details k]
+  (let [v (get details k)]
+    (when (number? v) v)))
+
+(defn- modality-partition? [details]
+  (and (map? details)
+       (some #(contains? details %)
+             [:text_tokens :image_tokens :audio_tokens])))
+
+(defn- raw-token-details [usage]
+  (let [raw (:usage/provider-raw usage)
+        input (first-detail-map
+               raw
+               [:input_tokens_details :prompt_tokens_details
+                :input_token_details :prompt_token_details])
+        output (first-detail-map
+                raw
+                [:output_tokens_details :completion_tokens_details
+                 :output_token_details :completion_token_details])
+        cached (or (first-detail-map
+                    input
+                    [:cached_tokens_details :cache_read_tokens_details
+                     :cached_input_tokens_details])
+                   (first-detail-map
+                    raw
+                    [:cached_tokens_details :cache_read_tokens_details
+                     :cached_input_tokens_details]))]
+    {:input input :output output :cached cached}))
+
+(defn- aggregate-modality-count
+  [usage modality direction]
+  (let [aggregate (get usage (keyword "usage" (str (name modality) "-tokens")))
+        other-count (get usage (if (= direction :input)
+                                 :usage/output-tokens
+                                 :usage/input-tokens))]
+    (when (and (number? aggregate)
+               (number? other-count)
+               (zero? other-count))
+      aggregate)))
+
+(defn- direction-modalities
+  [usage direction total details default-modality]
+  (let [partition? (modality-partition? details)
+        image (cond
+                partition? (or (detail-count details :image_tokens) 0)
+                (= default-modality :image) total
+                default-modality 0
+                :else (aggregate-modality-count usage :image direction))
+        audio (cond
+                partition? (or (detail-count details :audio_tokens) 0)
+                (= default-modality :audio) total
+                default-modality 0
+                :else (aggregate-modality-count usage :audio direction))
+        unresolved (cond-> []
+                     (and (positive-count? (:usage/image-tokens usage))
+                          (nil? image))
+                     (conj (str "missing " (name direction)
+                                " image-token detail"))
+                     (and (positive-count? (:usage/audio-tokens usage))
+                          (nil? audio))
+                     (conj (str "missing " (name direction)
+                                " audio-token detail")))
+        image (or image 0)
+        audio (or audio 0)
+        invalid? (and (= direction :output)
+                      (number? total)
+                      (> (+ image audio) total))]
+    {:image image
+     :audio audio
+     :problems (cond-> unresolved
+                 invalid?
+                 (conj (str (name direction)
+                            " modality tokens exceed total tokens")))}))
+
+(defn- token-cost-analysis
+  [usage pricing {:keys [input-modality output-modality]}]
+  (let [input-present? (contains? usage :usage/input-tokens)
+        output-present? (contains? usage :usage/output-tokens)
+        cache-read-present? (contains? usage :usage/cached-input-tokens)
+        cache-write-present? (contains? usage :usage/cache-write-tokens)
+        input (:usage/input-tokens usage)
+        output (:usage/output-tokens usage)
+        cache-read (:usage/cached-input-tokens usage)
+        cache-write (:usage/cache-write-tokens usage)
+        token-route? (or input-present? output-present?
+                         cache-read-present? cache-write-present?
+                         (contains? usage :usage/image-tokens)
+                         (contains? usage :usage/audio-tokens))
+        details (raw-token-details usage)
+        input-split (direction-modalities
+                     usage :input input (:input details) input-modality)
+        output-split (direction-modalities
+                      usage :output output (:output details) output-modality)
+        cached-details (:cached details)
+        cached-partition? (modality-partition? cached-details)
+        cached-image (cond
+                       (not (positive-count? cache-read)) 0
+                       cached-partition?
+                       (or (detail-count cached-details :image_tokens) 0)
+                       (positive-count? (:image input-split)) nil
+                       :else 0)
+        cached-audio (cond
+                       (not (positive-count? cache-read)) 0
+                       cached-partition?
+                       (or (detail-count cached-details :audio_tokens) 0)
+                       (positive-count? (:audio input-split)) nil
+                       :else 0)
+        cache-problems
+        (cond-> []
+          (and (positive-count? cache-read)
+               (or (nil? cached-image) (nil? cached-audio)))
+          (conj "missing cached-token modality detail")
+          (and (positive-count? cache-write)
+               (or (positive-count? (:image input-split))
+                   (positive-count? (:audio input-split))))
+          (conj "missing cache-write modality detail")
+          (and (number? cache-read)
+               (> (+ (or cached-image 0) (or cached-audio 0)) cache-read))
+          (conj "cached modality tokens exceed cached input tokens")
+          (and (number? cached-image)
+               (> cached-image (:image input-split)))
+          (conj "cached image tokens exceed image input tokens")
+          (and (number? cached-audio)
+               (> cached-audio (:audio input-split)))
+          (conj "cached audio tokens exceed audio input tokens")
+          (and (number? input)
+               (number? cached-image)
+               (number? cached-audio)
+               (> (+ (- (:image input-split) cached-image)
+                     (- (:audio input-split) cached-audio))
+                  input))
+          (conj "uncached modality tokens exceed input tokens"))
+        uncached-image (when (number? cached-image)
+                         (- (:image input-split) cached-image))
+        uncached-audio (when (number? cached-audio)
+                         (- (:audio input-split) cached-audio))
+        text-input (when (and (number? input)
+                              (number? uncached-image)
+                              (number? uncached-audio))
+                     (- input uncached-image uncached-audio))
+        text-output (when (number? output)
+                      (- output
+                         (:image output-split)
+                         (:audio output-split)))
+        cached-text (when (and (number? cache-read)
+                               (number? cached-image)
+                               (number? cached-audio))
+                      (- cache-read cached-image cached-audio))
+        counts {:input-tokens text-input
+                :image-input-tokens uncached-image
+                :audio-input-tokens uncached-audio
+                :output-tokens text-output
+                :image-output-tokens (:image output-split)
+                :audio-output-tokens (:audio output-split)
+                :cached-input-tokens cached-text
+                :image-cached-input-tokens cached-image
+                :audio-cached-input-tokens cached-audio
+                :cache-write-tokens cache-write}
+        rate-keys {:input-tokens :input-cost-per-million
+                   :image-input-tokens :image-input-cost-per-million
+                   :audio-input-tokens :audio-input-cost-per-million
+                   :output-tokens :output-cost-per-million
+                   :image-output-tokens :image-output-cost-per-million
+                   :audio-output-tokens :audio-output-cost-per-million
+                   :cached-input-tokens :cache-read-cost-per-million
+                   :image-cached-input-tokens
+                   :image-cache-read-cost-per-million
+                   :audio-cached-input-tokens
+                   :audio-cache-read-cost-per-million
+                   :cache-write-tokens :cache-write-cost-per-million}
+        missing-counts
+        (cond-> []
+          (and token-route?
+               (some #(some? (get pricing %))
+                     [:input-cost-per-million
+                      :image-input-cost-per-million
+                      :audio-input-cost-per-million])
+               (not input-present?))
+          (conj :usage/input-tokens)
+          (and token-route?
+               (some #(some? (get pricing %))
+                     [:output-cost-per-million
+                      :image-output-cost-per-million
+                      :audio-output-cost-per-million])
+               (not output-present?))
+          (conj :usage/output-tokens))
+        missing-rates
+        (reduce-kv
+         (fn [acc count-key count]
+           (let [rate-key (get rate-keys count-key)]
+             (if (and (token-pricing-present? pricing)
+                      (positive-count? count)
+                      (nil? (get pricing rate-key)))
+               (conj acc rate-key)
+               acc)))
+         []
+         counts)
+        pieces
+        (reduce-kv
+         (fn [acc count-key count]
+           (let [rate (get pricing (get rate-keys count-key))]
+             (if-let [piece (per-million count rate)]
+               (conj acc piece)
+               acc)))
+         []
+         counts)]
+    {:token-route? token-route?
+     :counts counts
+     :pieces pieces
+     :problems (into (vec (distinct (concat (:problems input-split)
+                                             (:problems output-split)
+                                             cache-problems)))
+                     (concat missing-counts missing-rates))}))
 
 (defn- request-cost-amount [usage request-cost]
   (when (some? request-cost)
@@ -323,44 +604,34 @@
 
 (defn estimate-cost
   "Compute cost from canonical Usage and a pricing-entry. Returns a
-   cost-result map. Pure — no registry lookup."
-  [usage pricing]
-  (if-not pricing
-    (cost-result nil :unknown :none "No pricing data")
-    (let [{:keys [input-cost-per-million output-cost-per-million
-                  cache-read-cost-per-million cache-write-cost-per-million
-                  request-cost]} pricing
-          input-tokens (:usage/input-tokens usage 0)
-          output-tokens (:usage/output-tokens usage 0)
-          cache-read (:usage/cached-input-tokens usage 0)
-          cache-write (:usage/cache-write-tokens usage 0)
-          missing (missing-token-rate-fields usage pricing)
-          pieces (cond-> []
-                   (some? input-cost-per-million)
-                   (conj (per-million input-tokens input-cost-per-million))
-                   (some? output-cost-per-million)
-                   (conj (per-million output-tokens output-cost-per-million))
-                   (some? cache-read-cost-per-million)
-                   (conj (per-million cache-read cache-read-cost-per-million))
-                   (some? cache-write-cost-per-million)
-                   (conj (per-million cache-write cache-write-cost-per-million))
-                   (some? request-cost)
-                   (conj (request-cost-amount usage request-cost)))
-          amount (when (seq pieces) (reduce + 0M pieces))]
-      (cond
-        (seq missing)
-        (cost-result amount :estimated (:source pricing)
-                     "Incomplete token pricing data"
-                     :notes [(str "Missing pricing fields: "
-                                  (str/join ", " (map name missing)))])
-        (some? amount)
-        (let [request-count (or (:usage/request-count usage) 1)]
-          (cost-result amount :actual (:source pricing)
-                       (str "Usage: " input-tokens " in / " output-tokens
-                            " out / " request-count " request(s)")))
-        :else
-        (cost-result nil :estimated (:source pricing)
-                     "Incomplete pricing data")))))
+   cost-result map. Pure — no registry lookup. The optional context identifies
+   endpoint-guaranteed input/output modalities when raw usage omits a split."
+  ([usage pricing]
+   (estimate-cost usage pricing {}))
+  ([usage pricing context]
+   (if-not pricing
+     (cost-result nil :unknown :none "No pricing data")
+     (let [{:keys [token-route? pieces problems]}
+           (token-cost-analysis usage pricing context)
+           request-piece (request-cost-amount usage (:request-cost pricing))
+           pieces (cond-> pieces request-piece (conj request-piece))
+           missing-usage? (and (token-pricing-present? pricing)
+                               (not token-route?))
+           amount (when (seq pieces) (reduce + 0M pieces))
+           problems (cond-> problems
+                      missing-usage? (conj "missing token usage"))]
+       (cond
+         (seq problems)
+         (cost-result nil :estimated (:source pricing)
+                      "Incomplete token pricing data"
+                      :notes [(str "Missing or ambiguous fields: "
+                                   (str/join ", " (map name problems)))])
+         (some? amount)
+         (cost-result amount :actual (:source pricing)
+                      "Usage-based pricing")
+         :else
+         (cost-result nil :estimated (:source pricing)
+                      "Incomplete pricing data"))))))
 
 (defn estimate-cost-for-model
   "Look up pricing through the registry and estimate cost for the given
@@ -388,67 +659,110 @@
 ;; is missing, :cost/usd is the keyword :unknown.
 ;; ---------------------------------------------------------------------------
 
+(defn- canonical-token-breakdown [usage pricing context]
+  (let [{:keys [counts]} (token-cost-analysis usage pricing context)
+        count-entry
+        (fn [breakdown count-key output-key _rate-key]
+          (let [count (get counts count-key)]
+            (if (positive-count? count)
+              (assoc breakdown output-key count)
+              breakdown)))]
+    (-> (cond-> {}
+          (contains? usage :usage/input-tokens)
+          (assoc :input-tokens (:usage/input-tokens usage))
+          (contains? usage :usage/output-tokens)
+          (assoc :output-tokens (:usage/output-tokens usage))
+          (contains? usage :usage/request-count)
+          (assoc :request-count (:usage/request-count usage))
+          (contains? usage :usage/cached-input-tokens)
+          (assoc :cached-input-tokens (:usage/cached-input-tokens usage))
+          (contains? usage :usage/cache-write-tokens)
+          (assoc :cache-write-tokens (:usage/cache-write-tokens usage)))
+        (count-entry :input-tokens :text-input-tokens
+                     :input-cost-per-million)
+        (count-entry :image-input-tokens :image-input-tokens
+                     :image-input-cost-per-million)
+        (count-entry :audio-input-tokens :audio-input-tokens
+                     :audio-input-cost-per-million)
+        (count-entry :output-tokens :text-output-tokens
+                     :output-cost-per-million)
+        (count-entry :image-output-tokens :image-output-tokens
+                     :image-output-cost-per-million)
+        (count-entry :audio-output-tokens :audio-output-tokens
+                     :audio-output-cost-per-million)
+        (count-entry :cached-input-tokens :text-cached-input-tokens
+                     :cache-read-cost-per-million)
+        (count-entry :image-cached-input-tokens :image-cached-input-tokens
+                     :image-cache-read-cost-per-million)
+        (count-entry :audio-cached-input-tokens :audio-cached-input-tokens
+                     :audio-cache-read-cost-per-million)
+        (cond->
+          (:input-cost-per-million pricing)
+          (assoc :input-cost-per-million
+                 (:input-cost-per-million pricing))
+          (:output-cost-per-million pricing)
+          (assoc :output-cost-per-million
+                 (:output-cost-per-million pricing))
+          (:cache-read-cost-per-million pricing)
+          (assoc :cache-read-cost-per-million
+                 (:cache-read-cost-per-million pricing))
+          (:cache-write-cost-per-million pricing)
+          (assoc :cache-write-cost-per-million
+                 (:cache-write-cost-per-million pricing))
+          (:image-input-cost-per-million pricing)
+          (assoc :image-input-cost-per-million
+                 (:image-input-cost-per-million pricing))
+          (:image-output-cost-per-million pricing)
+          (assoc :image-output-cost-per-million
+                 (:image-output-cost-per-million pricing))
+          (:audio-input-cost-per-million pricing)
+          (assoc :audio-input-cost-per-million
+                 (:audio-input-cost-per-million pricing))
+          (:audio-output-cost-per-million pricing)
+          (assoc :audio-output-cost-per-million
+                 (:audio-output-cost-per-million pricing))
+          (:image-cache-read-cost-per-million pricing)
+          (assoc :image-cache-read-cost-per-million
+                 (:image-cache-read-cost-per-million pricing))
+          (:audio-cache-read-cost-per-million pricing)
+          (assoc :audio-cache-read-cost-per-million
+                 (:audio-cache-read-cost-per-million pricing))
+          (:request-cost pricing)
+          (assoc :request-cost (:request-cost pricing))))))
+
 (defn canonical-cost
   "Build a canonical :response/cost map for (provider, model, usage).
-   Returns nil when usage is nil — caller should not stamp cost on a
-   response that has no usage to attribute it to."
-  [provider model usage]
-  (when usage
-    (let [pricing (get-pricing provider model)
-          custom-fn (some-> (provider/get-provider provider)
-                            :profile/cost-calculator)
-          result (if custom-fn
-                   (custom-fn {:provider provider :model model
-                               :usage usage :pricing pricing})
-                   (estimate-cost usage pricing))
-          amount (:cost/amount-usd result)
-          status (:cost/status result)
-          src (:source pricing)
-          src-url (:source-url pricing)]
-      (cond
-        (and (= status :actual) (some? amount))
-        {:cost/usd amount
-         :cost/estimated? true
-         :cost/pricing-source (when src (name src))
-         :cost/source-url src-url
-         :cost/breakdown
-         (cond-> {:input-tokens (:usage/input-tokens usage 0)
-                  :output-tokens (:usage/output-tokens usage 0)}
-           (some? (:usage/request-count usage))
-           (assoc :request-count (:usage/request-count usage))
-           (some? (:usage/cached-input-tokens usage))
-           (assoc :cached-input-tokens (:usage/cached-input-tokens usage))
-           (some? (:usage/cache-write-tokens usage))
-           (assoc :cache-write-tokens (:usage/cache-write-tokens usage))
-           (:input-cost-per-million pricing)
-           (assoc :input-cost-per-million (:input-cost-per-million pricing))
-           (:output-cost-per-million pricing)
-           (assoc :output-cost-per-million (:output-cost-per-million pricing))
-           (:cache-read-cost-per-million pricing)
-           (assoc :cache-read-cost-per-million (:cache-read-cost-per-million pricing))
-           (:cache-write-cost-per-million pricing)
-           (assoc :cache-write-cost-per-million (:cache-write-cost-per-million pricing))
-           (:request-cost pricing)
-           (assoc :request-cost (:request-cost pricing))
-           (:image-cost-per-image pricing)
-           (assoc :image-cost-per-image (:image-cost-per-image pricing))
-           (:image-cost-per-megapixel pricing)
-           (assoc :image-cost-per-megapixel (:image-cost-per-megapixel pricing))
-           (:transcription-cost-per-minute pricing)
-           (assoc :transcription-cost-per-minute (:transcription-cost-per-minute pricing))
-           (:tts-cost-per-million-chars pricing)
-           (assoc :tts-cost-per-million-chars (:tts-cost-per-million-chars pricing))
-           (:search-cost-per-call pricing)
-           (assoc :search-cost-per-call (:search-cost-per-call pricing)))}
-
-        :else
-        {:cost/usd :unknown
-         :cost/estimated? true
-         :cost/pricing-source (when src (name src))
-         :cost/source-url src-url
-         :cost/reason (cond
-                        (nil? pricing) "no pricing data for model"
-                        :else (or (:cost/label result) "incomplete pricing data"))}))))
+   Returns nil when usage is nil. Optional context identifies an endpoint's
+   guaranteed input/output modalities when provider detail is absent."
+  ([provider model usage]
+   (canonical-cost provider model usage {}))
+  ([provider model usage context]
+   (when usage
+     (let [pricing (get-pricing provider model)
+           custom-fn (some-> (provider/get-provider provider)
+                             :profile/cost-calculator)
+           result (if custom-fn
+                    (custom-fn {:provider provider :model model
+                                :usage usage :pricing pricing})
+                    (estimate-cost usage pricing context))
+           amount (:cost/amount-usd result)
+           status (:cost/status result)
+           src (:source pricing)
+           src-url (:source-url pricing)]
+       (if (and (= status :actual) (some? amount))
+         {:cost/usd amount
+          :cost/estimated? true
+          :cost/pricing-source (when src (name src))
+          :cost/source-url src-url
+          :cost/breakdown (canonical-token-breakdown usage pricing context)}
+         {:cost/usd :unknown
+          :cost/estimated? true
+          :cost/pricing-source (when src (name src))
+          :cost/source-url src-url
+          :cost/reason (cond
+                         (nil? pricing) "no pricing data for model"
+                         :else (or (:cost/label result)
+                                   "incomplete pricing data"))})))))
 
 (defn cost-result->canonical
   "Convert a modality-specific cost-result into the public
@@ -496,14 +810,14 @@
       (assoc :cache/cache-write-tokens (if (number? write) write :unknown)))))
 
 (defn stamp-response-cost-and-cache
-  "Augment a parsed canonical response with :response/cost and
-   :response/cache, derived from its usage. Pure transform — does not
-   touch the wire. When the response carries no :response/usage,
-   stamps unknown cost and unknown cache (callers want consistent
-   shape; honest unknowns are still surfaced)."
+  "Preserve an existing response cost, estimating from usage only when absent.
+   Cache information is derived from usage. Pure transform — does not touch
+   the wire. Missing usage leaves an absent cost absent and stamps unknown
+   cache information."
   [response provider-id model]
   (let [usage (:response/usage response)
-        cost (canonical-cost provider-id model usage)
+        cost (or (:response/cost response)
+                 (canonical-cost provider-id model usage))
         cache (canonical-cache (or usage {}))]
     (cond-> response
       cost (assoc :response/cost cost)
@@ -514,58 +828,97 @@
 ;; ---------------------------------------------------------------------------
 
 (defn embedding-cost
-  "Cost for an embedding call. Embeddings only meter input tokens."
+  "Cost for a text embedding call. Embeddings only meter input tokens."
+  [usage pricing]
+  (let [tokens (:usage/input-tokens usage)
+        rate (:input-cost-per-million pricing)]
+    (if-let [amount (per-million tokens rate)]
+      (cost-result amount :actual (:source pricing)
+                   (str "Embedding tokens: " tokens))
+      (cost-result nil :estimated (:source pricing)
+                   "Missing embedding token usage or pricing"))))
+
+(defn image-cost
+  "Cost for an image-generation call. Token-metered endpoints use their known
+   text-input/image-output context, while flat-rate endpoints may bill per
+   image or per megapixel."
+  [{:keys [usage n-images width height]} pricing]
+  (if-not pricing
+    (cost-result nil :unknown :none "No pricing data")
+    (if (and usage
+             (some #(contains? usage %)
+                   [:usage/input-tokens :usage/output-tokens
+                    :usage/image-tokens :usage/audio-tokens]))
+      (estimate-cost usage pricing
+                     {:input-modality :text
+                      :output-modality :image})
+      (let [n (or n-images 1)
+            per-image (:image-cost-per-image pricing)
+            per-mp (:image-cost-per-megapixel pricing)
+            megapixels (when (and width height)
+                         (/ (* width height) 1000000.0))]
+        (cond
+          per-image
+          (cost-result (-> (bigdec n) (.multiply (bigdec per-image)))
+                       :actual (:source pricing)
+                       (str "Images: " n))
+
+          (and per-mp megapixels)
+          (cost-result (-> (bigdec n)
+                           (.multiply (bigdec megapixels))
+                           (.multiply (bigdec per-mp)))
+                       :actual (:source pricing)
+                       (str "Images: " n " @ "
+                            (format "%.2f" megapixels) " MP each"))
+
+          per-mp
+          (cost-result nil :estimated (:source pricing)
+                       "Missing image dimensions for per-megapixel pricing")
+
+          :else
+          (cost-result nil :estimated (:source pricing)
+                       "No image pricing for model"))))))
+
+(defn transcription-cost
+  "Cost for speech-to-text. Token-billed responses use audio-input/text-output
+   rates. Duration-billed responses use reported seconds and a per-minute rate."
+  [{:keys [usage duration-seconds]} pricing]
+  (if-not pricing
+    (cost-result nil :unknown :none "No pricing data")
+    (if (and usage
+             (some #(contains? usage %)
+                   [:usage/input-tokens :usage/output-tokens
+                    :usage/audio-tokens]))
+      (estimate-cost usage pricing
+                     {:input-modality :audio
+                      :output-modality :text})
+      (let [seconds (or (:usage/duration-seconds usage)
+                        duration-seconds)
+            per-min (:transcription-cost-per-minute pricing)]
+        (if (and (number? seconds) (some? per-min))
+          (let [minutes (/ seconds 60.0)
+                amount (-> (bigdec minutes) (.multiply (bigdec per-min)))]
+            (cost-result amount :actual (:source pricing)
+                         (str "Duration: " (format "%.2f" minutes) " min")))
+          (cost-result nil :estimated (:source pricing)
+                       "Missing duration or per-minute pricing"))))))
+
+(defn rerank-cost
+  "Cost for reranking. Provider-reported search units are an explicit billing
+   dimension and are never substituted with request or query counts."
   [usage pricing]
   (if-not pricing
     (cost-result nil :unknown :none "No pricing data")
-    (let [tokens (:usage/input-tokens usage 0)
-          amount (per-million tokens (:input-cost-per-million pricing))]
-      (cost-result amount :actual (:source pricing)
-                   (str "Embedding tokens: " tokens)))))
-
-(defn image-cost
-  "Cost for an image-generation call. Pricing may be per-image (DALL-E,
-   ElevenLabs voice clone) or per-megapixel (Imagen, Stability).
-   Args:
-     :n-images   number of images produced
-     :width      pixels (optional, used for per-megapixel pricing)
-     :height     pixels (optional, used for per-megapixel pricing)"
-  [{:keys [n-images width height]} pricing]
-  (if-not pricing
-    (cost-result nil :unknown :none "No pricing data")
-    (let [n (or n-images 1)
-          per-image (:image-cost-per-image pricing)
-          per-mp (:image-cost-per-megapixel pricing)
-          megapixels (when (and width height)
-                       (/ (* width height) 1000000.0))
-          amount (cond
-                   per-image (-> (bigdec n) (.multiply (bigdec per-image)))
-                   (and per-mp megapixels)
-                   (-> (bigdec n) (.multiply (bigdec megapixels))
-                       (.multiply (bigdec per-mp)))
-                   :else 0M)]
-      (if (or per-image per-mp)
-        (cost-result amount :actual (:source pricing)
-                     (str "Images: " n
-                          (when megapixels (str " @ " (format "%.2f" megapixels) " MP each"))))
-        (cost-result nil :estimated (:source pricing)
-                     "No image-cost pricing for model")))))
-
-(defn transcription-cost
-  "Cost for a speech-to-text call. Most providers price per-minute of
-   audio input. duration-seconds may come from response :transcription/
-   duration-seconds (verbose_json) or the caller's own metering."
-  [{:keys [duration-seconds]} pricing]
-  (if-not pricing
-    (cost-result nil :unknown :none "No pricing data")
-    (let [minutes (when duration-seconds (/ duration-seconds 60.0))
-          per-min (:transcription-cost-per-minute pricing)]
-      (if (and minutes per-min)
-        (let [amount (-> (bigdec minutes) (.multiply (bigdec per-min)))]
-          (cost-result amount :actual (:source pricing)
-                       (str "Duration: " (format "%.2f" minutes) " min")))
-        (cost-result nil :estimated (:source pricing)
-                     "Missing duration or per-minute pricing")))))
+    (if (contains? usage :usage/search-units)
+      (let [units (:usage/search-units usage)
+            rate (:rerank-cost-per-search-unit pricing)]
+        (if (and (number? units) (some? rate))
+          (cost-result (-> (bigdec units) (.multiply (bigdec rate)))
+                       :actual (:source pricing)
+                       (str "Rerank search units: " units))
+          (cost-result nil :estimated (:source pricing)
+                       "Missing rerank search-unit pricing")))
+      (estimate-cost usage pricing))))
 
 (defn tts-cost
   "Cost for a text-to-speech call. Most TTS providers (OpenAI, ElevenLabs)

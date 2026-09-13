@@ -60,13 +60,15 @@
                                  :pareto-router true}))
   (register-openai-aliases!)
   (registry/register-provider
-   (mk-provider :perplexity :perplexity-chat "https://api.perplexity.ai" :bearer
+   (mk-provider :perplexity :perplexity-agent "https://api.perplexity.ai" :bearer
                 :profile/env-var-names ["PERPLEXITY_API_KEY"]
-                :profile/capabilities #{:chat :streaming :json-schema :web-search}
+                :profile/capabilities #{:chat :streaming :tools :json-schema
+                                        :web-search :reasoning :multimodal}
                 :profile/supports-model-listing false
-                :profile/supported-params #{:request/temperature :request/top-p
-                                            :request/max-tokens :request/stop
-                                            :request/response-format}))
+                :profile/supported-params #{:request/tools :request/temperature
+                                            :request/top-p :request/max-tokens
+                                            :request/response-format
+                                            :request/reasoning}))
   (registry/register-provider
    (mk-provider :cohere :cohere-chat "https://api.cohere.com/v1" :bearer
                 :profile/env-var-names ["COHERE_API_KEY"]

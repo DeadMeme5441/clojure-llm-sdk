@@ -11,7 +11,7 @@
                t profile
                {:rerank/model "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0"
                 :rerank/query "best clojure sdk"
-                :rerank/documents ["doc one" "doc two"]
+                :rerank/documents ["doc one" {:title "Structured"}]
                 :rerank/top-n 1})
         body (:body built)]
     (is (= :post (:method built)))
@@ -25,7 +25,10 @@
                            :bedrockRerankingConfiguration
                            :numberOfResults])))
     (is (= "doc one"
-           (get-in body [:sources 0 :inlineDocumentSource :textDocument :text])))))
+           (get-in body [:sources 0 :inlineDocumentSource :textDocument :text])))
+    (is (= {:type "JSON"
+            :jsonDocument {:title "Structured"}}
+           (get-in body [:sources 1 :inlineDocumentSource])))))
 
 (deftest test-build-rerank-request-default-top-n
   (testing "numberOfResults defaults to document count"
@@ -58,7 +61,7 @@
     (is (fn? (:profile/rerank-transport-constructor profile)))
     (is (contains? (:profile/capabilities profile) :rerank))))
 
-(deftest test-build-rerank-provider-fields
+(deftest test-build-rerank-provider-fields-and-canonical-pagination
   (let [t (bedrock-rerank/make-transport)
         profile (provider/get-provider :bedrock)
         built (rt/build-rerank-request
@@ -66,10 +69,10 @@
                {:rerank/model "model-arn"
                 :rerank/query "query"
                 :rerank/documents ["one"]
+                :rerank/next-token "page-2"
                 :rerank/provider-options
                 {:bedrock
-                 {:next-token "page-2"
-                  :additional-model-request-fields
+                 {:additional-model-request-fields
                   {:max_chunks_per_doc 3}}}})]
     (is (= "page-2" (get-in built [:body :nextToken])))
     (is (= {:max_chunks_per_doc 3}
@@ -78,6 +81,23 @@
                     :bedrockRerankingConfiguration
                     :modelConfiguration
                     :additionalModelRequestFields])))))
+
+(deftest test-agent-runtime-endpoint-controls-routing-and-signing-region
+  (let [t (bedrock-rerank/make-transport)
+        profile (assoc (provider/get-provider :bedrock)
+                       :profile/base-url
+                       "https://bedrock-runtime.eu-west-1.amazonaws.com/")
+        built (rt/build-rerank-request
+               t profile
+               {:rerank/model "model-arn"
+                :rerank/query "query"
+                :rerank/documents ["one"]})]
+    (is (= "https://bedrock-agent-runtime.eu-west-1.amazonaws.com/rerank"
+           (:url built)))
+    (is (= "eu-west-1"
+           (:llm.sdk.providers.bedrock/aws-region built)))
+    (is (= "bedrock"
+           (:llm.sdk.providers.bedrock/aws-service built)))))
 
 (deftest test-parse-rerank-returned-document-and-pagination
   (let [t (bedrock-rerank/make-transport)
@@ -100,3 +120,15 @@
     (is (= {:title "Structured" :tags ["clojure" "aws"]}
            (get-in parsed [:rerank/results 1 :rerank/document])))
     (is (= "page-2" (:rerank/next-token parsed)))))
+
+(deftest test-missing-native-score-is-rejected
+  (let [t (bedrock-rerank/make-transport)
+        profile (provider/get-provider :bedrock)
+        error (try
+                (rt/parse-rerank-response
+                 t profile
+                 {:results [{:index 0}]})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (= :response/missing-rerank-score
+           (:error/type (ex-data error))))))

@@ -9,6 +9,7 @@
             [llm.sdk.schema :as schema]
             [llm.sdk.provider :as provider]
             [llm.sdk.http :as http]
+            [llm.sdk.transport.embed :as et]
             [llm.sdk.usage :as usage]))
 
 ;; ---------------------------------------------------------------------------
@@ -97,6 +98,93 @@
         (is (= 2 (:embed/dimensions resp)))
         (is (= 3 (get-in resp [:response/usage :usage/input-tokens])))
         (is (schema/validate-embed-response resp))))))
+
+(deftest test-dense-base64-decoding
+  (testing "the shared decoder reads little-endian float32 values"
+    (is (= [1.0 2.0]
+           (mapv double (et/decode-float32-base64 "AACAPwAAAEA=")))))
+  (testing "malformed encodings and partial float32 values fail"
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (et/decode-float32-base64 "not base64")))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (et/decode-float32-base64 "AA=="))))
+  (testing "OpenAI, Voyage, and Jina decode canonical base64 responses"
+    (doseq [provider-id [:openai :voyage :jina]]
+      (with-redefs [http/request
+                    (fn [_]
+                      {:status 200
+                       :body {:model "embedding-model"
+                              :data [{:index 0
+                                      :embedding "AACAPwAAAEA="}]}})]
+        (is (= [[1.0 2.0]]
+               (mapv #(mapv double %)
+                     (:embed/vectors
+                      (sdk/embed provider-id
+                                 {:embed/model "embedding-model"
+                                  :embed/inputs ["hello"]
+                                  :embed/encoding-format :base64}))))
+            (str provider-id " canonical vectors"))))))
+
+(deftest test-provider-specific-embedding-request-contracts
+  (testing "Mistral uses output_dimension"
+    (let [sent (atom nil)]
+      (with-redefs [http/request
+                    (fn [request]
+                      (reset! sent request)
+                      {:status 200
+                       :body {:model "mistral-embed"
+                              :data [{:index 0 :embedding [1.0]}]}})]
+        (sdk/embed :mistral
+                   {:embed/model "mistral-embed"
+                    :embed/inputs ["hello"]
+                    :embed/dimensions 256}))
+      (is (= 256 (get-in @sent [:body :output_dimension])))
+      (is (not (contains? (:body @sent) :dimensions)))))
+  (testing "invalid provider combinations fail before HTTP"
+    (let [calls (atom 0)
+          request! (fn [provider-id request]
+                     (try
+                       (sdk/embed provider-id request)
+                       nil
+                       (catch clojure.lang.ExceptionInfo exception
+                         exception)))]
+      (with-redefs [http/request
+                    (fn [_]
+                      (swap! calls inc)
+                      {:status 200 :body {}})]
+        (let [mistral (request!
+                       :mistral
+                       {:embed/model "mistral-embed"
+                        :embed/inputs ["hello"]
+                        :embed/user "unsupported"})
+              voyage (request!
+                      :voyage
+                      {:embed/model "voyage-4"
+                       :embed/inputs ["hello"]
+                       :embed/encoding-format :base64
+                       :embed/provider-options {:output-dtype "int8"}})
+              jina-tokenized (request!
+                              :jina
+                              {:embed/model "jina-embeddings-v4"
+                               :embed/inputs ["hello"]
+                               :embed/provider-options
+                               {:return-tokenized-input true}})
+              jina-dimensions (request!
+                               :jina
+                               {:embed/model "jina-embeddings-v4"
+                                :embed/inputs ["hello"]
+                                :embed/dimensions 256
+                                :embed/provider-options
+                                {:return-multivector true}})]
+          (is (= :provider/unsupported-option
+                 (:error/type (ex-data mistral))))
+          (is (= :request/unsupported-embedding-encoding
+                 (:error/type (ex-data voyage))))
+          (is (= :request/invalid-embedding-options
+                 (:error/type (ex-data jina-tokenized))))
+          (is (= :request/invalid-embedding-options
+                 (:error/type (ex-data jina-dimensions))))
+          (is (zero? @calls)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Usage normalization

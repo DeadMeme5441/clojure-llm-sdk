@@ -9,6 +9,7 @@
    Live smoke lives in llm.sdk.live-azure-test."
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
+            [llm.sdk.transport.embed :as et]
             [llm.sdk.transport :as transport]
             [llm.sdk.providers.openai-chat :as openai]))
 
@@ -38,6 +39,9 @@
     (is (= ["AZURE_OPENAI_API_KEY"] (:profile/env-var-names p)))
     (is (= "gpt-4o-prod" (:azure/deployment p)))
     (is (= "2024-08-01-preview" (:azure/api-version p)))
+    (is (= :classic (:azure/api-style p)))
+    (is (contains? (:profile/capabilities p) :embedding))
+    (is (fn? (:profile/embed-transport-constructor p)))
     (is (false? (:profile/supports-model-listing p))
         "Azure /models is per-deployment — disabled for catalog")
     (is (fn? (:profile/transport-constructor p)))
@@ -74,10 +78,59 @@
                  {:request/model "ignored-by-azure"
                   :request/messages [{:message/role :user
                                       :message/content "Hi"}]}))]
+    (is (= "ignored-by-azure" (get-in built [:body :model])))
     (is (= (str "https://test-resource.openai.azure.com"
                 "/openai/deployments/gpt-4o-prod/chat/completions"
                 "?api-version=2024-08-01-preview")
            (:url built)))))
+
+(deftest test-azure-embedding-construction
+  (register-test-deployment! {:id :azure-embedding-test})
+  (let [profile (provider/get-provider :azure-embedding-test)
+        t ((:profile/embed-transport-constructor profile))
+        built (with-redefs [provider/resolve-auth-token
+                            (constantly "embedding-key")]
+                (et/build-embed-request
+                 t profile
+                 {:embed/model "text-embedding-3-small"
+                  :embed/inputs ["hello"]}))]
+    (is (= (str "https://test-resource.openai.azure.com"
+                "/openai/deployments/gpt-4o-prod/embeddings"
+                "?api-version=2024-08-01-preview")
+           (:url built)))
+    (is (= "text-embedding-3-small" (get-in built [:body :model])))
+    (is (= "embedding-key" (get-in built [:headers "api-key"])))
+    (is (nil? (get-in built [:headers "Authorization"])))))
+
+(deftest test-azure-v1-chat-and-embedding-wire-shape
+  (register-test-deployment! {:id :azure-v1-test
+                              :api-style :v1
+                              :api-version nil})
+  (let [profile (provider/get-provider :azure-v1-test)
+        chat-built
+        (with-redefs [provider/resolve-auth-token (constantly "v1-key")]
+          (transport/build-request
+           (openai/make-transport)
+           profile
+           {:request/model "catalog-chat-model"
+            :request/messages [{:message/role :user
+                                :message/content "Hi"}]}))
+        embed-built
+        (with-redefs [provider/resolve-auth-token (constantly "v1-key")]
+          (et/build-embed-request
+           ((:profile/embed-transport-constructor profile))
+           profile
+           {:embed/model "catalog-embedding-model"
+            :embed/inputs ["hello"]}))]
+    (is (= :v1 (:azure/api-style profile)))
+    (is (= "https://test-resource.openai.azure.com/openai/v1/chat/completions"
+           (:url chat-built)))
+    (is (= "gpt-4o-prod" (get-in chat-built [:body :model])))
+    (is (= "v1-key" (get-in chat-built [:headers "api-key"])))
+    (is (= "https://test-resource.openai.azure.com/openai/v1/embeddings"
+           (:url embed-built)))
+    (is (= "gpt-4o-prod" (get-in embed-built [:body :model])))
+    (is (= "v1-key" (get-in embed-built [:headers "api-key"])))))
 
 (deftest test-azure-api-key-header-auth
   (register-test-deployment! {:id :azure-apikey-auth})

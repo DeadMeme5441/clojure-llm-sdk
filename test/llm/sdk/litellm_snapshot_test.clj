@@ -51,12 +51,12 @@
   (is (nil? (lsnap/lookup :openai "not-a-real-model-id-here-9999")))
   (is (nil? (lsnap/lookup :no-such-provider "x"))))
 
-(deftest test-perplexity-routing-curios-skipped
-  (testing "perplexity/anthropic/X entries are skipped by the build script"
-    (is (nil? (lsnap/lookup :perplexity "anthropic/claude-opus-4-7"))))
-  (testing "real Perplexity wire models are kept"
-    (is (some? (lsnap/lookup :perplexity "sonar-pro"))
-        "perplexity/sonar-pro should be in the snapshot")))
+(deftest test-perplexity-agent-model-is-preserved
+  (testing "Agent API entries retain their native provider-qualified model ids"
+    (let [e (lsnap/lookup :perplexity "perplexity/sonar")]
+      (is (some? e))
+      (is (= :perplexity (:model/provider e)))
+      (is (= "perplexity/sonar" (:model/id e))))))
 
 (deftest test-non-token-pricing-is-preserved
   (testing "image model pricing survives the LiteLLM snapshot"

@@ -90,12 +90,16 @@
       (assoc-in [:body :cachedContent] cached-content))))
 
 (defn parse-response-vertex
-  [_profile raw]
-  (gemini/parse-response-gemini _profile raw))
+  [profile raw]
+  (gemini/parse-response-gemini
+   (assoc profile :profile/id :vertex-gemini)
+   raw))
 
 (defn parse-stream-event-vertex
-  [_profile line]
-  (gemini/parse-stream-event-gemini _profile line))
+  [profile line]
+  (gemini/parse-stream-event-gemini
+   (assoc profile :profile/id :vertex-gemini)
+   line))
 
 (defn parse-error-vertex
   [_profile status body]
@@ -119,7 +123,7 @@
     (parse-error-vertex profile status body))
 
   (normalize-usage [_this _profile raw]
-    (usage/normalize-usage :gemini-native raw))
+    (usage/normalize-usage :vertex-gemini raw))
 
   (request-capabilities [_]
     #{:chat :streaming :tools :multimodal :reasoning :file-attachments

@@ -14,13 +14,24 @@
         voice (or (:speak/voice request) "alloy")
         input (:speak/input request)
         fmt (some-> (:speak/format request) name)
+        options (or (:speak/provider-options request) {})
+        stream-format (:stream_format options)
+        _ (when (= "sse" (if (keyword? stream-format)
+                           (name stream-format)
+                           stream-format))
+            (throw (ex-info
+                    (str "OpenAI speech SSE is incompatible with the buffered "
+                         "llm.sdk/speak transport; use stream_format \"audio\"")
+                    {:provider :openai
+                     :stream-format stream-format
+                     :error/type :unsupported-parameter})))
         body (cond-> {:model model
                       :input input
                       :voice voice}
                fmt (assoc :response_format fmt)
                (:speak/speed request) (assoc :speed (:speak/speed request))
                (:speak/instructions request) (assoc :instructions (:speak/instructions request)))
-        body (merge body (:speak/provider-options request))]
+        body (merge body options)]
     {:method :post
      :url (str (:profile/base-url profile) "/audio/speech")
      :headers (merge (provider/default-headers profile

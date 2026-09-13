@@ -1,11 +1,8 @@
 (ns llm.sdk.providers.aggregator-aliases-test
-  "Coverage for aggregator OpenAI-compatible alias profiles.
-
-   These are pure config additions — base-url + env-var + the openai-
-   chat transport. Each profile is verified to register with the right
-   URL, env-var, and a working transport-constructor; the actual chat
-   wire shape is already covered by openai_chat_test."
-  (:require [clojure.test :refer [deftest is testing]]
+  "Coverage for aggregator OpenAI-compatible alias profiles and their shared
+   raw-HTTP request contract."
+  (:require [cheshire.core :as json]
+            [clojure.test :refer [deftest is testing]]
             [llm.sdk :as sdk]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
@@ -41,6 +38,38 @@
     :env "ARK_API_KEY"
     :capabilities #{:chat :streaming :tools :json-schema}
     :model-listing? false}])
+
+(def ^:private aggregator-request-cases
+  [{:id :sambanova
+    :native-options {:seed 23}
+    :wire {:seed 23 :max_tokens 80}}
+   {:id :deepinfra
+    :native-options {:top_k 40}
+    :wire {:top_k 40 :max_tokens 80}}
+   {:id :nebius
+    :native-options {:store false}
+    :wire {:store false :max_tokens 80}}
+   {:id :hyperbolic
+    :native-options {:top_p 0.9}
+    :wire {:top_p 0.9 :max_tokens 80}}
+   {:id :novita
+    :native-options {:temperature 0.2}
+    :wire {:temperature 0.2 :max_tokens 80}}
+   {:id :friendliai
+    :native-options {:temperature 0.7}
+    :wire {:temperature 0.7 :max_tokens 80}}
+   {:id :featherless
+    :native-options {:repetition_penalty 1.1}
+    :wire {:repetition_penalty 1.1 :max_tokens 80}}
+   {:id :cloudflare
+    :native-options {}
+    :wire {:max_tokens 80}}
+   {:id :dashscope
+    :native-options {:enable_thinking true}
+    :wire {:enable_thinking true :max_tokens 80}}
+   {:id :volcengine
+    :native-options {:seed 23}
+    :wire {:seed 23 :max_tokens 80}}])
 
 (deftest test-aggregator-profiles-registered
   (doseq [{:keys [id base env capabilities model-listing?]} aggregators]
@@ -80,6 +109,44 @@
       (is (= (str base "/chat/completions") (:url built)) (str id " URL"))
       (is (= "Bearer stub" (get-in built [:headers "Authorization"]))
           (str id " auth")))))
+
+(deftest test-aggregator-documented-request-contracts
+  (is (= (conj (set (map :id aggregators)) :cloudflare)
+         (set (map :id aggregator-request-cases))))
+  (doseq [{:keys [id native-options wire]} aggregator-request-cases]
+    (let [profile (provider/get-provider id)
+          json? (contains? (:profile/capabilities profile) :json-schema)
+          request
+          (cond-> {:request/model "test-model"
+                   :request/messages
+                   [{:message/role :user :message/content "Hi"}]
+                   :request/max-tokens 80
+                   :request/tools
+                   [{:type :function
+                     :function {:name "lookup"
+                                :parameters {:type "object"}}}]
+                   :request/provider-options {:extra_body native-options}}
+            json?
+            (assoc :request/response-format {:type :json_object}))
+          body
+          (-> (transport/build-request
+               (openai/make-transport) profile request)
+              :body
+              json/generate-string
+              (json/parse-string true))]
+      (is (= "test-model" (:model body)) (str id " model"))
+      (is (= "Hi" (get-in body [:messages 0 :content]))
+          (str id " text"))
+      (is (= "function" (get-in body [:tools 0 :type]))
+          (str id " function tools"))
+      (is (not (contains? body :extra_body))
+          (str id " no SDK wrapper on wire"))
+      (doseq [[field expected] wire]
+        (is (= expected (get body field))
+            (str id " documented top-level " field)))
+      (when json?
+        (is (= "json_object" (get-in body [:response_format :type]))
+            (str id " JSON mode"))))))
 
 (deftest test-models-fetch-multimethods-registered
   (doseq [{:keys [id model-listing?]} aggregators]

@@ -1,8 +1,7 @@
 (ns llm.sdk.providers.openai.transcribe
-  "OpenAI /audio/transcriptions adapter. Wire shape is shared by Groq's
-   /openai/v1/audio/transcriptions endpoint (same field names, same
-   verbose_json output), so the same transport class powers both
-   profiles."
+  "OpenAI and Groq /audio/transcriptions adapters. The endpoints share
+   multipart mechanics, but provider-specific request policies are enforced
+   before fields are serialized."
   (:require [cheshire.core :as json]
             [clojure.java.io :as io]
             [llm.sdk.transport.transcribe :as tt]
@@ -58,6 +57,8 @@
              [{:name "response_format"
                :content (multipart-content response-format)}])
            (repeated-parts "include[]" (:include options))
+           (repeated-parts "keywords[]" (:keywords options))
+           (repeated-parts "languages[]" (:languages options))
            (repeated-parts "known_speaker_names[]"
                            (or (:known_speaker_names options)
                                (:known-speaker-names options)))
@@ -66,8 +67,62 @@
                                (:known-speaker-references options)))
            (:multipart options)))))
 
+(def ^:private groq-response-formats #{"json" "verbose_json" "text"})
+
+(def ^:private groq-unsupported-request-keys
+  [:transcribe/stream
+   :transcribe/include
+   :transcribe/keywords
+   :transcribe/languages
+   :transcribe/chunking-strategy
+   :transcribe/known-speaker-names
+   :transcribe/known-speaker-references])
+
+(def ^:private groq-provider-option-keys
+  #{:response_format :response-format})
+
+(defn- reject-option! [profile option]
+  (throw (ex-info (str "Transcription option " option
+                       " is not supported by " (name (:profile/id profile)))
+                  {:error/type :transcribe/unsupported-option
+                   :provider (:profile/id profile)
+                   :option option})))
+
+(defn- validate-request-policy! [profile request]
+  (let [provider-id (:profile/id profile)
+        options (or (:transcribe/provider-options request) {})
+        languages (or (:transcribe/languages request) (:languages options))]
+    (when (and (= :openai provider-id)
+               (seq languages)
+               (contains? request :transcribe/language))
+      (throw (ex-info "OpenAI languages[] replaces the singular language field"
+                      {:error/type :transcribe/conflicting-language-options
+                       :provider provider-id
+                       :options [:transcribe/language :transcribe/languages]})))
+    (when (= :groq provider-id)
+      (when-let [option (some #(when (contains? request %) %)
+                              groq-unsupported-request-keys)]
+        (reject-option! profile option))
+      (let [response-format (or (:transcribe/response-format request)
+                                (:response_format options)
+                                (:response-format options))]
+        (when (and response-format
+                   (not (contains? groq-response-formats
+                                   (multipart-content response-format))))
+          (reject-option! profile :transcribe/response-format)))
+      (when-let [option (first (remove groq-provider-option-keys
+                                      (keys options)))]
+        (reject-option! profile option)))))
+
+(defn- groq-provider-option-parts [options]
+  (when-let [response-format (or (:response_format options)
+                                 (:response-format options))]
+    [{:name "response_format"
+      :content (multipart-content response-format)}]))
+
 (defn build-request
   [profile request]
+  (validate-request-policy! profile request)
   (let [file (:transcribe/file request)
         fname (guess-filename file (:transcribe/filename request))
         model (:transcribe/model request)
@@ -77,6 +132,10 @@
           (assoc :stream (:transcribe/stream request))
           (:transcribe/include request)
           (assoc :include (:transcribe/include request))
+          (:transcribe/keywords request)
+          (assoc :keywords (:transcribe/keywords request))
+          (:transcribe/languages request)
+          (assoc :languages (:transcribe/languages request))
           (:transcribe/chunking-strategy request)
           (assoc :chunking-strategy (:transcribe/chunking-strategy request))
           (:transcribe/known-speaker-names request)
@@ -112,9 +171,11 @@
                             (conj acc {:name "timestamp_granularities[]"
                                        :content (name g)}))
                           % granularities)))
-        ;; Current OpenAI-only multipart fields are surfaced through the
-        ;; provider-options escape hatch until they have canonical keys.
-        parts (into parts (provider-option-parts provider-opts))]
+        parts (into parts
+                    ((if (= :groq (:profile/id profile))
+                       groq-provider-option-parts
+                       provider-option-parts)
+                     provider-opts))]
     {:method :post
      :url (str (:profile/base-url profile) "/audio/transcriptions")
      :headers (provider/default-headers profile
@@ -126,35 +187,33 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- normalize-transcription-usage [raw]
-  (if (= "tokens" (:type raw))
-    (usage/normalize-openai-usage raw)
-    raw))
+  (case (:type raw)
+    "tokens"
+    (-> (usage/normalize-openai-usage
+         (cond-> raw
+           (:input_token_details raw)
+           (assoc :input_tokens_details (:input_token_details raw))))
+        (assoc :usage/provider-raw raw))
+
+    "duration"
+    (when (number? (:seconds raw))
+      {:usage/duration-seconds (:seconds raw)
+       :usage/provider-raw raw})
+
+    nil))
 
 (defn parse-response
   [_profile raw]
   (let [base
         (cond
-          ;; verbose_json, diarized_json, and current JSON responses with
-          ;; language detection or token log probabilities
-          (and (map? raw)
-               (or (:segments raw)
-                   (:words raw)
-                   (:language raw)
-                   (:languages raw)
-                   (:logprobs raw)))
+          (and (map? raw) (:text raw))
           (cond-> {:transcription/text (:text raw)
                    :response/raw raw}
             (:language raw) (assoc :transcription/language (:language raw))
             (:languages raw) (assoc :transcription/languages (:languages raw))
             (:logprobs raw) (assoc :transcription/logprobs (:logprobs raw))
-            (:duration raw) (assoc :transcription/duration-seconds (:duration raw))
             (:segments raw) (assoc :transcription/segments (vec (:segments raw)))
             (:words raw) (assoc :transcription/words (vec (:words raw))))
-
-          ;; default json {"text": "..."}
-          (and (map? raw) (:text raw))
-          {:transcription/text (:text raw)
-           :response/raw raw}
 
           ;; plain text response (response_format=text|srt|vtt)
           (string? raw)
@@ -163,16 +222,22 @@
 
           :else
           {:transcription/text ""
-           :response/raw raw})]
-    (if (= "tokens" (get-in raw [:usage :type]))
-      (assoc base :response/usage
-             (normalize-transcription-usage (:usage raw)))
-      base)))
+           :response/raw raw})
+        normalized-usage (when (map? (:usage raw))
+                           (normalize-transcription-usage (:usage raw)))
+        duration (or (:duration raw)
+                     (:usage/duration-seconds normalized-usage))]
+    (cond-> base
+      (some? duration)
+      (assoc :transcription/duration-seconds duration)
+
+      normalized-usage
+      (assoc :response/usage normalized-usage))))
 
 (defn parse-stream-event
-  "Parse current OpenAI transcription SSE events. This is exported even
-   though TranscribeTransport is request/response-only, so callers using the
-   provider escape hatch `{:stream true}` can normalize the event stream."
+  "Normalize an OpenAI transcription SSE event for integrations that already
+   own a streaming HTTP connection. The public TranscribeTransport remains
+   request/response-only and rejects :stream true."
   [profile line]
   (when-let [data (sse/parse-json-data line)]
     (case (:type data)
@@ -217,8 +282,8 @@
 
 (defn make-transport [] (->OpenAITranscribeTransport))
 
-;; Attach to :openai (whisper-1, gpt-4o-transcribe) and :groq
-;; (whisper-large-v3, distil-whisper-large-v3-en) — same wire shape.
+;; Attach to :openai (whisper-1 and current gpt transcription models) and
+;; :groq (whisper-large-v3 and whisper-large-v3-turbo).
 (doseq [pid [:openai :groq]]
   (when-let [p (provider/get-provider pid)]
     (provider/register-provider

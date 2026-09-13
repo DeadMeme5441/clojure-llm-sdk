@@ -152,23 +152,28 @@
     (str "data:" (file-mime-type part) ";base64," data)))
 
 (defn file-extension [part]
-  (or (:file/format part)
-      (some-> (file-name part)
-              (str/split #"\.")
-              last
-              str/lower-case
-              not-empty)
-      (case (file-mime-type part)
-        "application/pdf" "pdf"
-        "text/csv" "csv"
-        "text/html" "html"
-        "text/plain" "txt"
-        "text/markdown" "md"
-        "application/msword" "doc"
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" "docx"
-        "application/vnd.ms-excel" "xls"
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" "xlsx"
-        "pdf")))
+  (let [file-name (file-name part)
+        name-extension
+        (when (and (string? file-name)
+                   (str/includes? file-name "."))
+          (some-> file-name
+                  (str/split #"\.")
+                  last
+                  str/lower-case
+                  not-empty))]
+    (or (:file/format part)
+        name-extension
+        (case (file-mime-type part)
+          "application/pdf" "pdf"
+          "text/csv" "csv"
+          "text/html" "html"
+          "text/plain" "txt"
+          "text/markdown" "md"
+          "application/msword" "doc"
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document" "docx"
+          "application/vnd.ms-excel" "xls"
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" "xlsx"
+          "pdf"))))
 
 (defn unsupported-file-part!
   [provider-id part]

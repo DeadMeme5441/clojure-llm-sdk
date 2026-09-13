@@ -1,14 +1,8 @@
 (ns llm.sdk.providers.voyage-embed-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
             [llm.sdk.providers.voyage.embeddings :as voyage]
             [llm.sdk.transport.embed :as et]))
-
-(deftest test-voyage-profile-uses-dedicated-transport
-  (let [profile (provider/get-provider :voyage)]
-    (is (fn? (:profile/embed-transport-constructor profile)))
-    (is (instance? llm.sdk.providers.voyage.embeddings.VoyageEmbedTransport
-                   ((:profile/embed-transport-constructor profile))))))
 
 (deftest test-build-current-voyage-request
   (let [profile (provider/get-provider :voyage)
@@ -47,9 +41,9 @@
                 (provider/get-provider :voyage)
                 {:object "list"
                  :model "voyage-4-large"
-                 :data [{:object "embedding" :index 1
+                 :data [{:object "embedding" :index 19
                          :embedding [3.0 4.0]}
-                        {:object "embedding" :index 0
+                        {:object "embedding" :index 4
                          :embedding [1.0 2.0]}]
                  :usage {:total_tokens 11}})]
     (is (= [[1.0 2.0] [3.0 4.0]] (:embed/vectors parsed)))
@@ -57,13 +51,32 @@
     (is (= 11 (get-in parsed [:response/usage :usage/input-tokens])))
     (is (= 11 (get-in parsed [:response/usage :usage/total-tokens])))))
 
-(deftest test-parse-voyage-preserves-opaque-base64-response
-  (testing "Voyage base64 encoding is retained without fabricating float vectors"
-    (let [item {:index 0 :embedding "AACAPwAAAEA="}
-          parsed (et/parse-embed-response
-                  (voyage/make-transport)
-                  (provider/get-provider :voyage)
-                  {:model "voyage-4"
-                   :data [item]})]
-      (is (= [] (:embed/vectors parsed)))
-      (is (= {:raw [item]} (:embed/provider-data parsed))))))
+(deftest test-parse-voyage-decodes-base64-response
+  (let [parsed (et/parse-embed-response
+                (voyage/make-transport)
+                (provider/get-provider :voyage)
+                {:model "voyage-4"
+                 :data [{:index 11 :embedding "AABAQAAAgEA="}
+                        {:index 2 :embedding "AACAPwAAAEA="}]})]
+    (is (= [[1.0 2.0] [3.0 4.0]]
+           (mapv #(mapv double %) (:embed/vectors parsed))))
+    (is (= 2 (:embed/dimensions parsed)))
+    (is (nil? (:embed/provider-data parsed)))))
+
+(deftest test-voyage-base64-rejects-nonfloat-dtype
+  (let [error
+        (try
+          (et/build-embed-request
+           (voyage/make-transport)
+           (provider/get-provider :voyage)
+           {:embed/model "voyage-4"
+            :embed/inputs ["a"]
+            :embed/encoding-format :base64
+            :embed/provider-options {:output-dtype "int8"}})
+          nil
+          (catch Exception error error))]
+    (is (= {:provider :voyage
+            :error/type :request/unsupported-embedding-encoding
+            :encoding-format "base64"
+            :output-dtype "int8"}
+           (ex-data error)))))

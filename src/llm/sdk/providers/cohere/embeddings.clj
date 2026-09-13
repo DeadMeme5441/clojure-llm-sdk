@@ -17,9 +17,7 @@
   (:require [clojure.string :as str]
             [llm.sdk.transport.embed :as et]
             [llm.sdk.provider :as provider]
-            [llm.sdk.errors :as errors])
-  (:import (java.nio ByteBuffer ByteOrder)
-           (java.util Base64)))
+            [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
 ;; Usage normalization (Cohere-specific)
@@ -59,25 +57,47 @@
           (str/ends-with? base "/v2") (str base "/embed")
           :else (str base "/embed")))))
 
+(defn- validate-embedding-types! [encoding extra]
+  (let [native-values (cond-> []
+                        (contains? extra :embedding_types)
+                        (conj (:embedding_types extra))
+                        (contains? extra "embedding_types")
+                        (conj (get extra "embedding_types")))
+        expected (when encoding [(name encoding)])]
+    (when (or (> (count native-values) 1)
+              (and expected
+                   (some #(not= expected %) native-values)))
+      (throw
+       (ex-info
+        "Cohere embedding_types contradict :embed/encoding-format"
+        {:provider :cohere
+         :error/type :request/contradictory-embedding-types
+         :embed/encoding-format encoding
+         :embedding_types native-values})))))
+
 (defn build-embed-request-cohere
   [profile request]
   (let [model (:embed/model request)
         inputs (:embed/inputs request)
         opts (:embed/provider-options request)
         input-type (or (:input-type opts) "search_document")
+        encoding (:embed/encoding-format request)
+        raw-extra (:extra_body opts)
+        _ (validate-embedding-types! encoding raw-extra)
+        extra (if encoding
+                (dissoc raw-extra :embedding_types "embedding_types")
+                raw-extra)
         body (cond-> {:model model
                       :texts inputs
                       :input_type input-type}
                (:embed/dimensions request)
                (assoc :output_dimension (:embed/dimensions request))
-               (:embed/encoding-format request)
-               (assoc :embedding_types
-                      [(name (:embed/encoding-format request))])
+               encoding
+               (assoc :embedding_types [(name encoding)])
                (contains? opts :truncate)
                (assoc :truncate (:truncate opts))
                (:max-tokens opts) (assoc :max_tokens (:max-tokens opts))
                (contains? opts :priority) (assoc :priority (:priority opts)))
-        extra (:extra_body opts)
         body (if (seq extra) (merge body extra) body)]
     {:method :post
      :url (embed-url profile)
@@ -89,61 +109,53 @@
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
 
-(defn- decode-base64-floats [encoded]
-  (when (string? encoded)
-    (try
-      (let [bytes (.decode (Base64/getDecoder) ^String encoded)]
-        (when (zero? (mod (alength bytes) Float/BYTES))
-          (let [buffer (doto (ByteBuffer/wrap bytes)
-                         (.order ByteOrder/LITTLE_ENDIAN))]
-            (loop [values (transient [])]
-              (if (>= (.remaining buffer) Float/BYTES)
-                (recur (conj! values (double (.getFloat buffer))))
-                (persistent! values))))))
-      (catch IllegalArgumentException _ nil))))
-
 (defn- dense-vector [embedding]
   (when (and (sequential? embedding)
              (every? number? embedding))
     (vec embedding)))
 
-(defn- partition-dense [embeddings]
-  (if (sequential? embeddings)
-    (reduce (fn [[vectors opaque] embedding]
-              (if-let [vector (dense-vector embedding)]
-                [(conj vectors vector) opaque]
-                [vectors (conj opaque embedding)]))
-            [[] []]
-            embeddings)
-    [[] (if (some? embeddings) [embeddings] [])]))
+(defn- embedding-rows [embeddings]
+  (cond
+    (nil? embeddings) nil
+    (sequential? embeddings) (vec embeddings)
+    :else [embeddings]))
+
+(defn- dense-vectors [embeddings]
+  (let [rows (embedding-rows embeddings)
+        vectors (when (some? rows) (mapv dense-vector rows))]
+    (when (and vectors (every? some? vectors))
+      vectors)))
+
+(defn- extract-embedding-map
+  "Select exactly one canonical dense representation. Cohere returns every
+   requested embedding type as a complete input-aligned row set, so combining
+   types would turn N inputs into N times the number of types. Float is already
+   canonical and takes precedence; base64 is decoded only when float is absent
+   or unusable. Every unselected native representation remains identifiable."
+  [embeddings]
+  (let [float-vectors (dense-vectors (:float embeddings))
+        base64-rows (embedding-rows (:base64 embeddings))
+        [selected vectors]
+        (cond
+          (seq float-vectors) [:float float-vectors]
+          (some? base64-rows)
+          [:base64 (mapv et/decode-float32-base64 base64-rows)]
+          :else [nil []])
+        native (cond-> embeddings selected (dissoc selected))]
+    {:vectors vectors
+     :raw (not-empty native)}))
 
 (defn- extract-embeddings
-  "Return canonical float vectors and any native encodings that cannot be
-   represented honestly by the canonical dense numeric vector schema."
+  "Return one input-aligned canonical representation and retain all other
+   native encodings in provider data."
   [raw]
-  (let [emb (:embeddings raw)]
-    (if (map? emb)
-      (let [[float-vectors opaque-float]
-            (partition-dense (:float emb))
-            encoded-base64 (let [values (:base64 emb)]
-                             (cond
-                               (sequential? values) values
-                               (some? values) [values]
-                               :else []))
-            decoded-base64 (mapv decode-base64-floats encoded-base64)
-            base64-vectors (vec (keep identity decoded-base64))
-            opaque-base64 (->> (map vector encoded-base64 decoded-base64)
-                               (keep (fn [[encoded decoded]]
-                                       (when-not decoded encoded)))
-                               vec)
-            opaque (cond-> (dissoc emb :float :base64)
-                     (seq opaque-float) (assoc :float opaque-float)
-                     (seq opaque-base64) (assoc :base64 opaque-base64))]
-        {:vectors (into float-vectors base64-vectors)
-         :raw (not-empty opaque)})
-      (let [[vectors opaque] (partition-dense emb)]
-        {:vectors vectors
-         :raw (not-empty opaque)}))))
+  (let [embeddings (:embeddings raw)]
+    (if (map? embeddings)
+      (extract-embedding-map embeddings)
+      (let [vectors (dense-vectors embeddings)]
+        {:vectors (or vectors [])
+         :raw (when-not vectors
+                (some-> embeddings embedding-rows not-empty))}))))
 
 (defn parse-embed-response-cohere
   [profile raw]

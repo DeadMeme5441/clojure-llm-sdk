@@ -103,9 +103,9 @@
           profile (provider/get-provider :openai)
           raw {:object "list"
                :model "text-embedding-3-small"
-               :data [{:index 2 :embedding [0.3 0.4]}
-                      {:index 0 :embedding [0.1 0.2]}
-                      {:index 1 :embedding [0.5 0.6]}]
+               :data [{:index 37 :embedding [0.3 0.4]}
+                      {:index 5 :embedding [0.1 0.2]}
+                      {:index 19 :embedding [0.5 0.6]}]
                :usage {:prompt_tokens 10 :total_tokens 10}}
           resp (et/parse-embed-response t profile raw)]
       (is (= [[0.1 0.2] [0.5 0.6] [0.3 0.4]]
@@ -121,6 +121,19 @@
         resp (et/parse-embed-response t profile raw)]
     (is (= [1.0 -2.5] (mapv double (first (:embed/vectors resp)))))
     (is (= 2 (:embed/dimensions resp)))))
+
+(deftest test-parse-response-rejects-malformed-base64
+  (let [error
+        (try
+          (et/parse-embed-response
+           (openai-embed/make-transport)
+           (provider/get-provider :openai)
+           {:data [{:index 0 :embedding "AQI="}]})
+          nil
+          (catch Exception error error))]
+    (is (= :embedding/invalid-byte-length
+           (:error/type (ex-data error))))
+    (is (= 2 (:byte-length (ex-data error))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error classification
@@ -167,28 +180,38 @@
       (is (contains? (:profile/capabilities p) :embedding)
           (str id " capabilities include :embedding")))))
 
-(deftest test-openai-shape-embed-providers-share-transport
-  (testing "all OpenAI-shape embed providers reuse the OpenAI embeddings transport"
-    (doseq [{:keys [id]} openai-shape-embed-providers]
-      (let [profile (provider/get-provider id)
-            transport ((:profile/embed-transport-constructor profile))]
-        (is (satisfies? et/EmbedTransport transport) (str id))))))
+(deftest test-registered-embed-providers-construct-transports
+  (doseq [{:keys [id]} openai-shape-embed-providers]
+    (let [profile (provider/get-provider id)
+          transport ((:profile/embed-transport-constructor profile))]
+      (is (satisfies? et/EmbedTransport transport) (str id)))))
 
-(deftest test-voyage-build-request-includes-extra-body
-  (testing "Voyage-specific :input-type lands on the body via :extra_body"
-    (let [t (openai-embed/make-transport)
-          profile (provider/get-provider :voyage)
-          built (with-redefs [provider/resolve-auth-token
-                              (constantly "stub")]
-                  (et/build-embed-request
-                   t profile
-                   {:embed/model "voyage-3"
-                    :embed/inputs ["query phrase"]
-                    :embed/provider-options
-                    {:extra_body {:input_type "query"}}}))]
-      (is (= "https://api.voyageai.com/v1/embeddings" (:url built)))
-      (is (= "query phrase" (get-in built [:body :input])))
-      (is (= "query" (get-in built [:body :input_type]))))))
+(deftest test-mistral-build-request-uses-native-dimension-and-rejects-user
+  (let [transport (openai-embed/make-transport)
+        profile (provider/get-provider :mistral)
+        built (with-redefs [provider/resolve-auth-token (constantly "stub")]
+                (et/build-embed-request
+                 transport
+                 profile
+                 {:embed/model "mistral-embed"
+                  :embed/inputs ["query"]
+                  :embed/dimensions 512}))
+        error
+        (try
+          (et/build-embed-request
+           transport
+           profile
+           {:embed/model "mistral-embed"
+            :embed/inputs ["query"]
+            :embed/user "user-1"})
+          nil
+          (catch Exception error error))]
+    (is (= 512 (get-in built [:body :output_dimension])))
+    (is (nil? (get-in built [:body :dimensions])))
+    (is (= {:provider :mistral
+            :error/type :provider/unsupported-option
+            :option :embed/user}
+           (ex-data error)))))
 
 (deftest test-openrouter-embed-request-shape
   (testing "OpenRouter embeddings use the OpenAI-compatible endpoint with OpenRouter headers"

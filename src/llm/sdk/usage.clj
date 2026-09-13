@@ -30,34 +30,50 @@
   [& vs]
   (some ->int-or-nil vs))
 
+(defn- sum-if-present
+  "Sum two optional counters while preserving absence versus an explicit zero."
+  [a b]
+  (when (or (some? a) (some? b))
+    (+ (or a 0) (or b 0))))
+
 (defn normalize-openai-usage
-  "Normalize OpenAI Chat Completions usage shape.
+  "Normalize OpenAI Chat Completions and compatible usage shapes.
 
-   Falls back to Anthropic-style top-level cache fields when an
-   OpenAI-compatible proxy (OpenRouter, Vercel AI Gateway, Cline)
-   routes a Claude model and surfaces cache stats outside of
-   prompt_tokens_details. Without this fallback cache writes count as
-   0 and cache reads are missed entirely — port of cline/cline#10266.
+   Cache counters have several official locations: OpenAI-style token details,
+   Together's flat cached_tokens, and Anthropic-style top-level fields exposed
+   by proxies. Locations are alternatives rather than additive counters, so
+   each logical counter is selected once before uncached input is calculated.
 
-   Perplexity adds :citation_tokens and :num_search_queries to the
-   same envelope — both pass through to canonical fields when present."
+   OpenRouter adds cache_write_tokens to prompt_tokens_details. OpenAI image
+   and audio responses use input/output or prompt/completion token-detail
+   envelopes. Raw usage is retained so text/modality and provider billing
+   details without canonical fields remain available."
   [u]
   (let [prompt-total (->int (or (:prompt_tokens u) (:input_tokens u)))
         completion (->int (or (:completion_tokens u) (:output_tokens u)))
-        details (or (:prompt_tokens_details u)
-                    (:input_tokens_details u)
-                    {})
-        cache-read (pick (:cached_tokens details) (:cache_read_input_tokens u))
-        cache-write (pick (:cache_write_tokens details) (:cache_creation_input_tokens u))
-        out-details (or (:completion_tokens_details u)
-                        (:output_tokens_details u)
-                        {})
-        reasoning (->int-or-nil (:reasoning_tokens out-details))
-        image-input-tokens (->int-or-nil (:image_tokens details))
-        image-output-tokens (->int-or-nil (:image_tokens out-details))
-        image-tokens (when (or image-input-tokens image-output-tokens)
-                       (+ (or image-input-tokens 0)
-                          (or image-output-tokens 0)))
+        prompt-details (or (:prompt_tokens_details u) {})
+        input-details (or (:input_tokens_details u) {})
+        completion-details (or (:completion_tokens_details u) {})
+        output-details (or (:output_tokens_details u) {})
+        cache-read (pick (:cached_tokens prompt-details)
+                         (:cached_tokens input-details)
+                         (:cached_tokens u)
+                         (:cache_read_input_tokens u))
+        cache-write (pick (:cache_write_tokens prompt-details)
+                          (:cache_write_tokens input-details)
+                          (:cache_creation_input_tokens u))
+        reasoning (pick (:reasoning_tokens completion-details)
+                        (:reasoning_tokens output-details))
+        image-input-tokens (pick (:image_tokens prompt-details)
+                                 (:image_tokens input-details))
+        image-output-tokens (pick (:image_tokens completion-details)
+                                  (:image_tokens output-details))
+        image-tokens (sum-if-present image-input-tokens image-output-tokens)
+        audio-input-tokens (pick (:audio_tokens prompt-details)
+                                 (:audio_tokens input-details))
+        audio-output-tokens (pick (:audio_tokens completion-details)
+                                  (:audio_tokens output-details))
+        audio-tokens (sum-if-present audio-input-tokens audio-output-tokens)
         citation-tokens (->int-or-nil (:citation_tokens u))
         search-queries (->int-or-nil (:num_search_queries u))
         cr (or cache-read 0)
@@ -72,6 +88,7 @@
       (some? cache-write) (assoc :usage/cache-write-tokens cache-write)
       (some? reasoning) (assoc :usage/reasoning-tokens reasoning)
       (some? image-tokens) (assoc :usage/image-tokens image-tokens)
+      (some? audio-tokens) (assoc :usage/audio-tokens audio-tokens)
       (some? citation-tokens) (assoc :usage/citation-tokens citation-tokens)
       (some? search-queries) (assoc :usage/search-queries search-queries))))
 

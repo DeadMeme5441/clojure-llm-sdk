@@ -40,6 +40,22 @@
     (is (true? (get-in built [:body :return_documents])))
     (is (false? (get-in built [:body :truncation])))))
 
+(deftest test-voyage-rejects-structured-documents
+  (let [t (vrk/make-transport)
+        profile (provider/get-provider :voyage)
+        error (try
+                (rt/build-rerank-request
+                 t profile
+                 {:rerank/model "rerank-2.5"
+                  :rerank/query "q"
+                  :rerank/documents ["plain" {:text "structured"}]})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (= :request/invalid-rerank-document
+           (:error/type (ex-data error))))
+    (is (= :voyage (:provider (ex-data error))))
+    (is (= 1 (:document/index (ex-data error))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Response parsing — data array, document as plain string
 ;; ---------------------------------------------------------------------------
@@ -60,6 +76,19 @@
     (testing "Voyage usage surfaces as canonical input-tokens"
       (is (= 38 (get-in resp [:response/usage :usage/input-tokens])))
       (is (= 38 (get-in resp [:response/usage :usage/total-tokens]))))))
+
+(deftest test-missing-native-score-is-rejected
+  (let [t (vrk/make-transport)
+        profile (provider/get-provider :voyage)
+        error (try
+                (rt/parse-rerank-response
+                 t profile
+                 {:data [{:index 0}]
+                  :usage {:total_tokens 4}})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (= :response/missing-rerank-score
+           (:error/type (ex-data error))))))
 
 (deftest test-parse-error-401
   (let [t (vrk/make-transport)

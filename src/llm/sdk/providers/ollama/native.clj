@@ -28,61 +28,273 @@
 ;; Message conversion
 ;; ---------------------------------------------------------------------------
 
-(defn- collect-images
-  "Ollama native takes images as a sibling :images vector of base64
-   strings, not as content parts."
-  [content]
-  (when (sequential? content)
-    (->> content
-         (filter #(= (:part/type %) :image))
-         (mapv (fn [part]
-                 (let [url (:image/url part)]
-                   (or (:image/data part)
-                       (when (and (string? url) (str/starts-with? url "data:"))
-                         (second (str/split url #"," 2)))
-                       url)))))))
+(defn- invalid-content!
+  [role part]
+  (throw
+   (ex-info
+    (str "Ollama native does not support content part "
+         (:part/type part) " for " role " messages")
+    {:provider :ollama-native
+     :message/role role
+     :part/type (:part/type part)})))
 
-(defn- message->ollama [msg]
-  (let [content (:message/content msg)
-        text (cond
-               (string? content) content
-               (sequential? content)
-               (->> content
-                    (filter #(= (:part/type %) :text))
-                    (map :text)
-                    (str/join ""))
-               :else "")
-        thinking (when (sequential? content)
-                   (->> content
-                        (filter #(= (:part/type %) :reasoning))
-                        (map :reasoning/text)
-                        (str/join "")))
-        images (collect-images content)
-        base (cond-> {:role (name (:message/role msg))
-                      :content text}
-               (seq thinking) (assoc :thinking thinking)
-               (seq images) (assoc :images images))]
+(defn- data-uri->base64
+  [url]
+  (let [comma (str/index-of url ",")
+        header (when comma (subs url 0 comma))
+        lower-header (some-> header str/lower-case)]
+    (if (and comma
+             (str/starts-with? lower-header "data:")
+             (str/ends-with? lower-header ";base64"))
+      (subs url (inc comma))
+      (throw
+       (ex-info
+        "Ollama native images require a base64 data URI"
+        {:provider :ollama-native
+         :image/url url})))))
+
+(defn- image->base64
+  [part]
+  (let [data (:image/data part)
+        url (:image/url part)]
     (cond
-      (= :tool (:message/role msg))
-      (cond-> (assoc base :role "tool")
-        (:message/name msg) (assoc :tool_name (:message/name msg)))
+      (and (string? data) (str/starts-with? data "data:"))
+      (data-uri->base64 data)
 
-      (seq (:message/tool-calls msg))
-      (assoc base :tool_calls
-             (mapv (fn [idx tc]
-                     {:type "function"
-                      :function {:index idx
-                                 :name (:tool-call/name tc)
-                                 :arguments (try
-                                              (json/parse-string
-                                               (:tool-call/arguments tc) true)
-                                              (catch Exception _ {}))}})
-                   (range)
-                   (:message/tool-calls msg)))
+      (string? data)
+      data
 
-      :else base)))
+      (and (string? url) (str/starts-with? url "data:"))
+      (data-uri->base64 url)
+
+      (some? url)
+      (throw
+       (ex-info
+        "Ollama native does not fetch image URLs; provide base64 :image/data or a base64 data URI"
+        {:provider :ollama-native
+         :image/url url}))
+
+      :else
+      (throw
+       (ex-info
+        "Ollama native images require base64 :image/data or a base64 data URI"
+        {:provider :ollama-native
+         :part part})))))
+
+(defn- supported-part?
+  [role part-type]
+  (contains?
+   (case role
+     :user #{:text :image}
+     :assistant #{:text :image :reasoning :tool-call}
+     (:system :developer) #{:text}
+     :tool #{:text :tool-result}
+     #{})
+   part-type))
+
+(defn- content-parts
+  [msg]
+  (let [content (:message/content msg)]
+    (cond
+      (nil? content) []
+      (string? content) []
+      (sequential? content)
+      (mapv (fn [part]
+              (when-not (and (map? part)
+                             (supported-part? (:message/role msg)
+                                              (:part/type part)))
+                (invalid-content! (:message/role msg) part))
+              part)
+            content)
+      :else
+      (throw
+       (ex-info
+        "Ollama native message content must be a string or canonical content parts"
+        {:provider :ollama-native
+         :message/role (:message/role msg)
+         :content content})))))
+
+(defn- content-text
+  [msg parts]
+  (let [content (:message/content msg)]
+    (if (string? content)
+      content
+      (->> parts
+           (keep (fn [part]
+                   (case (:part/type part)
+                     :text (:text part)
+                     :tool-result (:tool-result/content part)
+                     nil)))
+           (str/join "")))))
+
+(defn- tool-call-key
+  [tc]
+  (if-let [id (:tool-call/id tc)]
+    [:id id]
+    [:call (:tool-call/name tc) (:tool-call/arguments tc)]))
+
+(defn- merge-duplicate-tool-call
+  [left right]
+  (let [provider-data (merge (:tool-call/provider-data left)
+                             (:tool-call/provider-data right))]
+    (cond-> (merge left right)
+      (seq provider-data)
+      (assoc :tool-call/provider-data provider-data))))
+
+(defn- canonical-tool-calls
+  [msg parts]
+  (let [from-content (filterv #(= :tool-call (:part/type %)) parts)
+        from-field (vec (:message/tool-calls msg))]
+    (reduce
+     (fn [calls tc]
+       (if-let [idx (first
+                     (keep-indexed
+                      (fn [idx existing]
+                        (when (= (tool-call-key existing)
+                                 (tool-call-key tc))
+                          idx))
+                      calls))]
+         (update calls idx merge-duplicate-tool-call tc)
+         (conj calls tc)))
+     []
+     (concat from-content from-field))))
+
+(defn- tool-arguments->object
+  [tc]
+  (let [arguments (:tool-call/arguments tc)]
+    (try
+      (let [parsed (if (str/blank? arguments)
+                     {}
+                     (json/parse-string arguments true))]
+        (if (map? parsed)
+          parsed
+          (throw
+           (ex-info
+            "Ollama native tool-call arguments must encode a JSON object"
+            {:provider :ollama-native
+             :tool-call/id (:tool-call/id tc)
+             :tool-call/arguments arguments}))))
+      (catch clojure.lang.ExceptionInfo e
+        (throw e))
+      (catch Exception e
+        (throw
+         (ex-info
+          "Ollama native tool-call arguments must encode a JSON object"
+          {:provider :ollama-native
+           :tool-call/id (:tool-call/id tc)
+           :tool-call/arguments arguments}
+          e))))))
+
+(defn- canonical-tool-call->ollama
+  [fallback-index tc]
+  (let [provider-data (:tool-call/provider-data tc)
+        native (:ollama/tool-call provider-data)
+        native-type (or (:type native) (:wire_type provider-data))
+        index (or (get-in native [:function :index]) fallback-index)
+        function {:index index
+                  :name (:tool-call/name tc)
+                  :arguments (tool-arguments->object tc)}]
+    (when (and native-type
+               (not (contains? #{"function" :function} native-type)))
+      (throw
+       (ex-info
+        "Ollama native only supports function tool calls; custom tool calls are unsupported"
+        {:provider :ollama-native
+         :tool-call/id (:tool-call/id tc)
+         :tool/type native-type})))
+    (cond-> {:function function}
+      native-type (assoc :type native-type)
+      (:tool-call/id tc) (assoc :id (:tool-call/id tc)))))
+
+(defn- tool-result-part
+  [parts]
+  (first (filter #(= :tool-result (:part/type %)) parts)))
+
+(defn- message->ollama
+  [msg parts tool-calls tool-name-by-id]
+  (let [role (:message/role msg)
+        wire-role (case role
+                    (:system :developer) "system"
+                    :user "user"
+                    :assistant "assistant"
+                    :tool "tool"
+                    (throw
+                     (ex-info
+                      (str "Ollama native does not support message role " role)
+                      {:provider :ollama-native
+                       :message/role role})))
+        text (content-text msg parts)
+        reasoning (->> parts
+                       (filter #(= :reasoning (:part/type %)))
+                       (map :reasoning/text)
+                       (str/join ""))
+        images (->> parts
+                    (filter #(= :image (:part/type %)))
+                    (mapv image->base64))]
+    (when (and (seq tool-calls) (not= role :assistant))
+      (throw
+       (ex-info
+        "Ollama native tool calls are only valid on assistant messages"
+        {:provider :ollama-native
+         :message/role role})))
+    (if (= role :tool)
+      (let [result-part (tool-result-part parts)
+            tool-call-id (or (:message/tool-call-id msg)
+                             (:tool-result/id result-part))
+            tool-name (or (:message/name msg)
+                          (:tool-result/name result-part)
+                          (get tool-name-by-id tool-call-id))]
+        (when (str/blank? tool-name)
+          (throw
+           (ex-info
+            "Ollama native tool results require a tool name or a resolvable prior tool-call ID"
+            {:provider :ollama-native
+             :tool-call/id tool-call-id})))
+        (cond-> {:role wire-role
+                 :content text
+                 :tool_name tool-name}
+          tool-call-id (assoc :tool_call_id tool-call-id)))
+      (cond-> {:role wire-role
+               :content text}
+        (seq reasoning) (assoc :thinking reasoning)
+        (seq images) (assoc :images images)
+        (seq tool-calls)
+        (assoc :tool_calls
+               (mapv canonical-tool-call->ollama
+                     (range)
+                     tool-calls))))))
+
+(defn- messages->ollama
+  [messages]
+  (:messages
+   (reduce
+    (fn [{:keys [messages tool-name-by-id]} msg]
+      (let [parts (content-parts msg)
+            calls (canonical-tool-calls msg parts)
+            wire-message (message->ollama
+                          msg parts calls tool-name-by-id)
+            updated-tool-name-by-id
+            (reduce (fn [names tc]
+                      (if (and (some? (:tool-call/id tc))
+                               (not (str/blank? (:tool-call/name tc))))
+                        (assoc names
+                               (:tool-call/id tc)
+                               (:tool-call/name tc))
+                        names))
+                    tool-name-by-id
+                    calls)]
+        {:messages (conj messages wire-message)
+         :tool-name-by-id updated-tool-name-by-id}))
+    {:messages [] :tool-name-by-id {}}
+    messages)))
 
 (defn- tool->ollama [tool]
+  (when-not (= :function (:type tool))
+    (throw
+     (ex-info
+      "Ollama native only supports function tools; custom tools are unsupported"
+      {:provider :ollama-native
+       :tool/type (:type tool)})))
   (let [function (:function tool)]
     {:type "function"
      :function (cond-> {:name (:name function)
@@ -99,15 +311,17 @@
 
       (:effort reasoning)
       (case (:effort reasoning)
+        :none false
         :low "low"
         :medium "medium"
         :high "high"
+        :max "max"
         (throw (ex-info
                 (str "Ollama does not support reasoning effort "
                      (name (:effort reasoning)))
                 {:provider :ollama-native
                  :effort (:effort reasoning)
-                 :supported-efforts #{:low :medium :high}})))
+                 :supported-efforts #{:none :low :medium :high :max}})))
 
       (contains? reasoning :enabled)
       (boolean (:enabled reasoning))
@@ -121,7 +335,7 @@
 (defn build-request-ollama
   [profile request]
   (let [stream? (boolean (:request/stream? request))
-        messages (mapv message->ollama (:request/messages request))
+        messages (messages->ollama (:request/messages request))
         extras (get-in request [:request/provider-options :ollama] {})
         opts (merge
               (:options extras)
@@ -155,7 +369,10 @@
                (assoc :top_logprobs (:top_logprobs extras)))]
     {:method :post
      :url (str (base-url profile) "/api/chat")
-     :headers {"Content-Type" "application/json"}
+     :headers {"Content-Type" "application/json"
+               "Accept" (if stream?
+                          "application/x-ndjson"
+                          "application/json")}
      :body body}))
 
 ;; ---------------------------------------------------------------------------
@@ -168,17 +385,56 @@
    "load" :stop
    "tool_calls" :tool-calls})
 
-(defn- usage-from [raw]
-  (when (or (:prompt_eval_count raw) (:eval_count raw))
-    (let [input (or (:prompt_eval_count raw) 0)
-          output (or (:eval_count raw) 0)]
-      {:usage/input-tokens input
-       :usage/output-tokens output
-       :usage/total-tokens (+ input output)
-       :usage/request-count 1
-       :usage/provider-raw (select-keys raw [:total_duration :load_duration
-                                              :prompt_eval_duration
-                                              :eval_duration])})))
+(def ^:private usage-raw-keys
+  [:total_duration
+   :load_duration
+   :prompt_eval_count
+   :prompt_eval_cached_count
+   :prompt_eval_duration
+   :eval_count
+   :eval_duration])
+
+(defn- usage-from
+  [raw]
+  (when (or (contains? raw :prompt_eval_count)
+            (contains? raw :prompt_eval_cached_count)
+            (contains? raw :eval_count))
+    (let [prompt-total (long (or (:prompt_eval_count raw) 0))
+          cached-present? (contains? raw :prompt_eval_cached_count)
+          cached (long (or (:prompt_eval_cached_count raw) 0))
+          input (max 0 (- prompt-total cached))
+          output (long (or (:eval_count raw) 0))]
+      (cond-> {:usage/input-tokens input
+               :usage/output-tokens output
+               :usage/total-tokens (+ prompt-total output)
+               :usage/request-count 1
+               :usage/provider-raw (select-keys raw usage-raw-keys)}
+        cached-present?
+        (assoc :usage/cached-input-tokens cached)))))
+
+(defn- stream-usage-from
+  [raw]
+  (let [prompt-present? (contains? raw :prompt_eval_count)
+        cached-present? (contains? raw :prompt_eval_cached_count)
+        output-present? (contains? raw :eval_count)
+        prompt-total (long (or (:prompt_eval_count raw) 0))
+        cached (long (or (:prompt_eval_cached_count raw) 0))]
+    (when (or prompt-present? cached-present? output-present?)
+      (cond-> {:usage/request-count 1
+               :usage/provider-raw (select-keys raw usage-raw-keys)}
+        prompt-present?
+        (assoc :usage/input-tokens
+               (max 0 (- prompt-total cached)))
+        cached-present?
+        (assoc :usage/cached-input-tokens cached)
+        output-present?
+        (assoc :usage/output-tokens (long (or (:eval_count raw) 0)))))))
+
+(defn- tool-call-arguments-string
+  [arguments]
+  (if (string? arguments)
+    arguments
+    (json/generate-string (or arguments {}))))
 
 (defn- tool-call->part [fallback-index tc]
   (let [index (or (get-in tc [:function :index]) fallback-index)
@@ -186,9 +442,9 @@
     {:part/type :tool-call
      :tool-call/id (or (:id tc) (str "ollama_call_" index))
      :tool-call/name (or (get-in tc [:function :name]) "")
-     :tool-call/arguments (if (string? arguments)
-                            arguments
-                            (json/generate-string (or arguments {})))}))
+     :tool-call/arguments (tool-call-arguments-string arguments)
+     :tool-call/provider-data {:ollama/tool-call tc
+                               :ollama/index index}}))
 
 (defn parse-response-ollama
   [_profile raw]
@@ -200,7 +456,9 @@
         tool-calls (mapv tool-call->part
                          (range)
                          (:tool_calls msg))
-        finish (get finish-reason-map (:done_reason raw) :stop)
+        finish (if (contains? finish-reason-map (:done_reason raw))
+                 (get finish-reason-map (:done_reason raw))
+                 (if (nil? (:done_reason raw)) :stop :unknown))
         usage (usage-from raw)]
     (cond-> {:response/provider :ollama-native
              :response/model (:model raw)
@@ -225,43 +483,56 @@
   (when (and (string? line) (not (str/blank? line)))
     (when-let [data (try (json/parse-string line true)
                          (catch Exception _ nil))]
-      (let [msg (:message data)
-            tool-events
-            (mapcat
-             (fn [[fallback-index tc]]
-               (let [index (or (get-in tc [:function :index]) fallback-index)
-                     arguments (get-in tc [:function :arguments])]
-                 [(stream/tool-call-start
-                   index
-                   (or (:id tc) (str "ollama_call_" index))
-                   (or (get-in tc [:function :name]) ""))
-                  (stream/tool-call-delta
-                   index
-                   (if (string? arguments)
-                     arguments
-                     (json/generate-string (or arguments {}))))
-                  (stream/tool-call-end index)]))
-             (map-indexed vector (:tool_calls msg)))
-            events (cond-> []
-                     (seq (:thinking msg))
-                     (conj (stream/reasoning-delta (:thinking msg)))
-                     (seq (:content msg))
-                     (conj (stream/content-delta (:content msg))))
-            events (into events tool-events)
-            events (if (:done data)
-                     (cond-> events
-                       (usage-from data)
-                       (conj (stream/usage-event (usage-from data)))
-                       true
-                       (conj (stream/end-event
-                              :finish-reason
-                              (or (get finish-reason-map (:done_reason data))
-                                  :stop))))
-                     events)]
-        (case (count events)
-          0 nil
-          1 (first events)
-          events)))))
+      (if (contains? data :error)
+        (stream/error-event
+         {:error/type :provider
+          :error/message (or (:error data) "Unknown Ollama stream error")
+          :error/raw data})
+        (let [msg (:message data)
+              tool-events
+              (mapcat
+               (fn [[fallback-index tc]]
+                 (let [index (or (get-in tc [:function :index])
+                                 fallback-index)
+                       id (or (:id tc) (str "ollama_call_" index))
+                       arguments (get-in tc [:function :arguments])]
+                   [(stream/tool-call-start
+                     index
+                     id
+                     (or (get-in tc [:function :name]) "")
+                     :provider-data {:ollama/tool-call tc
+                                     :ollama/index index})
+                    (stream/tool-call-delta
+                     index
+                     (tool-call-arguments-string arguments))
+                    (stream/tool-call-end index)]))
+               (map-indexed vector (:tool_calls msg)))
+              events (cond-> []
+                       (seq (:thinking msg))
+                       (conj (stream/reasoning-delta (:thinking msg)))
+                       (seq (:content msg))
+                       (conj (stream/content-delta (:content msg))))
+              events (into events tool-events)
+              usage (when (:done data) (stream-usage-from data))
+              events (if (:done data)
+                       (cond-> events
+                         usage
+                         (conj (stream/usage-event usage))
+                         true
+                         (conj
+                          (stream/end-event
+                           :finish-reason
+                           (if (contains? finish-reason-map
+                                          (:done_reason data))
+                             (get finish-reason-map (:done_reason data))
+                             (if (nil? (:done_reason data))
+                               :stop
+                               :unknown)))))
+                       events)]
+          (case (count events)
+            0 nil
+            1 (first events)
+            events))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing

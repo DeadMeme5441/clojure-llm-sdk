@@ -16,10 +16,8 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- build-openrouter-fields
-  "Build fields that OpenRouter accepts at the top level of ChatRequest.
-   `extra_body` is an OpenAI-client escape hatch, not an OpenRouter wire key,
-   so caller-supplied entries are flattened before the request is sent."
-  [profile request generic-extra]
+  "Build OpenRouter-specific fields that extend the shared OpenAI body."
+  [profile request]
   (let [model (:request/model request)
         reasoning (:request/reasoning request)
         provider-opts (:request/provider-options request)
@@ -48,14 +46,12 @@
         session-id (when (cache/cache-enabled? request)
                      (cache/scope-id request))]
     (merge {}
-           generic-extra
            (when prefs {:provider prefs})
            (when plugins {:plugins plugins})
            (when (seq reasoning-wire) {:reasoning reasoning-wire})
            (when session-id {:session_id session-id})
            (when (:request/metadata request)
-             {:metadata (:request/metadata request)})
-           (:extra_body provider-opts))))
+             {:metadata (:request/metadata request)}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
@@ -68,9 +64,8 @@
   [profile request]
   (let [base-req (openai/build-request-openai profile request)
         base-body (:body base-req)
-        openrouter-fields (build-openrouter-fields
-                           profile request (:extra_body base-body))
-        body (merge (dissoc base-body :extra_body) openrouter-fields)
+        openrouter-fields (build-openrouter-fields profile request)
+        body (merge base-body openrouter-fields)
         body (cond-> body
                (:max_tokens body)
                (assoc :max_completion_tokens (:max_tokens body))

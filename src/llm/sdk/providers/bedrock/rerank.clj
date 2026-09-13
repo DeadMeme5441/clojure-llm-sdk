@@ -7,16 +7,9 @@
    configuration. The request is signed by llm.sdk.rerank via SigV4."
   (:require [llm.sdk.errors :as errors]
             [llm.sdk.provider :as provider]
-            [llm.sdk.providers.bedrock.converse]
+            [llm.sdk.providers.bedrock.converse :as bedrock]
             [llm.sdk.transport.rerank :as rt]))
 
-(defn- aws-region []
-  (or (System/getenv "AWS_REGION")
-      (System/getenv "AWS_DEFAULT_REGION")
-      "us-east-1"))
-
-(defn- bedrock-agent-runtime-base-url []
-  (str "https://bedrock-agent-runtime." (aws-region) ".amazonaws.com"))
 
 (defn- source-for [doc]
   {:type "INLINE"
@@ -31,10 +24,12 @@
   (get-in request [:rerank/provider-options :bedrock] {}))
 
 (defn build-rerank-request-bedrock
-  [_profile request]
+  [profile request]
   (let [documents (:rerank/documents request)
         top-n (or (:rerank/top-n request) (count documents))
         options (bedrock-options request)
+        {:keys [base-url region]}
+        (bedrock/runtime-routing profile options :agent-runtime)
         model-configuration
         (cond-> {:modelArn (:rerank/model request)}
           (seq (:additional-model-request-fields options))
@@ -48,13 +43,13 @@
                        {:modelConfiguration model-configuration
                         :numberOfResults top-n}}
                       :sources (mapv source-for documents)}
-               (:next-token options)
-               (assoc :nextToken (:next-token options)))]
+               (:rerank/next-token request)
+               (assoc :nextToken (:rerank/next-token request)))]
     {:method :post
-     :url (str (bedrock-agent-runtime-base-url) "/rerank")
+     :url (str base-url "/rerank")
      :headers {"Content-Type" "application/json"}
      :llm.sdk.providers.bedrock/aws-service "bedrock"
-     :llm.sdk.providers.bedrock/aws-region (aws-region)
+     :llm.sdk.providers.bedrock/aws-region region
      :body body}))
 
 
@@ -63,6 +58,17 @@
     "TEXT" (get-in document [:textDocument :text])
     "JSON" (:jsonDocument document)
     nil))
+(defn- required-score [result]
+  (let [score (:relevanceScore result)]
+    (when-not (number? score)
+      (throw
+       (ex-info
+        "Bedrock rerank response result is missing a numeric relevance score"
+        {:error/type :response/missing-rerank-score
+         :provider :bedrock
+         :result/index (:index result)})))
+    (double score)))
+
 
 (defn parse-rerank-response-bedrock
   [_profile raw]
@@ -70,8 +76,7 @@
                      (mapv (fn [r]
                              (let [document (document->canonical (:document r))]
                                (cond-> {:rerank/index (:index r)
-                                        :rerank/score
-                                        (double (or (:relevanceScore r) 0.0))}
+                                        :rerank/score (required-score r)}
                                  (some? document)
                                  (assoc :rerank/document document))))))]
     (cond-> {:rerank/provider :bedrock

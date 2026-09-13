@@ -1,6 +1,7 @@
 (ns llm.sdk.providers.openai-chat-test
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
+            [llm.sdk.stream :as stream]
             [llm.sdk.transport :as transport]
             [llm.sdk.providers.openai-chat :as openai]))
 
@@ -28,7 +29,9 @@
         stream (transport/build-request t profile
                                         (assoc request :request/stream? true))]
     (is (not (contains? (:body non-stream) :stream)))
-    (is (true? (get-in stream [:body :stream])))))
+    (is (true? (get-in stream [:body :stream])))
+    (is (= {:include_usage true}
+           (get-in stream [:body :stream_options])))))
 
 (deftest test-openai-compatible-alias-wire-contracts
   (let [t (openai/make-transport)
@@ -51,6 +54,8 @@
          {:request/model "grok-4"
           :request/messages [{:message/role :user :message/content "Think"}]
           :request/reasoning {:enabled true :effort :low}
+          :request/max-tokens 512
+          :request/stream? true
           :request/provider-options {:extra_body {:custom_option true}}})]
     (testing "verified alias metadata"
       (is (= "https://api.deepseek.com/v1"
@@ -60,15 +65,21 @@
       (is (nil? (provider/get-provider :lambda)))
       (is (false? (:profile/supports-model-listing
                    (provider/get-provider :volcengine)))))
-    (testing "Groq fields are top-level and unsupported OpenAI fields are dropped"
+    (testing "Groq GPT-OSS fields are top-level and invalid fields are absent"
       (is (= 256 (get-in groq-built [:body :max_completion_tokens])))
       (is (= "high" (get-in groq-built [:body :reasoning_effort])))
-      (is (= "raw" (get-in groq-built [:body :reasoning_format])))
-      (is (= {:service_tier "auto"} (get-in groq-built [:body :extra_body])))
+      (is (not (contains? (:body groq-built) :reasoning_format)))
+      (is (= "auto" (get-in groq-built [:body :service_tier])))
+      (is (not (contains? (:body groq-built) :extra_body)))
       (is (not (contains? (:body groq-built) :max_tokens))))
-    (testing "xAI reasoning effort is top-level without relocating provider options"
+    (testing "xAI reasoning and documented native options stay top-level"
       (is (= "low" (get-in xai-built [:body :reasoning_effort])))
-      (is (= {:custom_option true} (get-in xai-built [:body :extra_body]))))))
+      (is (= 512 (get-in xai-built [:body :max_completion_tokens])))
+      (is (not (contains? (:body xai-built) :max_tokens)))
+      (is (= {:include_usage true}
+             (get-in xai-built [:body :stream_options])))
+      (is (true? (get-in xai-built [:body :custom_option])))
+      (is (not (contains? (:body xai-built) :extra_body))))))
 
 (deftest test-groq-include-reasoning-is-mutually-exclusive-with-format
   (let [built (transport/build-request
@@ -80,6 +91,30 @@
     (is (true? (get-in built [:body :include_reasoning])))
     (is (= "medium" (get-in built [:body :reasoning_effort])))
     (is (not (contains? (:body built) :reasoning_format)))))
+
+(deftest test-groq-raw-reasoning-is-removed-for-tools-and-json
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :groq)
+        base {:request/model "qwen/qwen3.8-27b"
+              :request/messages
+              [{:message/role :user :message/content "Think"}]
+              :request/reasoning {:enabled true :effort :high}}
+        tool-request
+        (assoc base :request/tools
+               [{:type :function
+                 :function {:name "lookup"
+                            :parameters {:type "object"}}}])
+        json-request
+        (assoc base :request/response-format {:type :json_object})
+        conflicting-request
+        (assoc base :request/provider-options
+               {:extra_body {"reasoning_format" "raw"
+                             :include_reasoning true}})]
+    (doseq [request [tool-request json-request conflicting-request]]
+      (let [body (:body (transport/build-request t profile request))]
+        (is (not (contains? body :reasoning_format)))
+        (is (not (contains? body "reasoning_format")))))))
+
 
 (deftest test-build-request-tools
   (let [t (openai/make-transport)
@@ -93,6 +128,51 @@
                                                       :properties {:location {:type :string}}}}}]}
         built (transport/build-request t profile req)]
     (is (= 1 (count (get-in built [:body :tools]))))))
+
+(deftest test-build-request-custom-tool-definition-and-replay
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        call {:part/type :tool-call
+              :tool-call/id "call_custom"
+              :tool-call/name "shell"
+              :tool-call/arguments "pwd"
+              :tool-call/provider-data
+              {:wire_type "custom"
+               :custom {:name "shell" :input "stale"}
+               :extra_content {:trace_id "trace-1"}}}
+        built
+        (transport/build-request
+         t profile
+         {:request/model "gpt-5"
+          :request/messages
+          [{:message/role :assistant
+            :message/content [{:part/type :text :text "Checking"}
+                              call]
+            :message/tool-calls [call]}]
+          :request/tools
+          [{:type :custom
+            :custom
+            {:name "shell"
+             :description "Run a shell command"
+             :format {:type :grammar
+                      :grammar {:definition "start: /.+/"
+                                :syntax :lark}}}}]
+          :request/tool-choice {:type :custom
+                                :custom {:name "shell"}}})
+        definition (get-in built [:body :tools 0])
+        replay (get-in built [:body :messages 0 :tool_calls])]
+    (is (= "custom" (:type definition)))
+    (is (= "grammar" (get-in definition [:custom :format :type])))
+    (is (= "lark" (get-in definition
+                           [:custom :format :grammar :syntax])))
+    (is (= {:type "custom" :custom {:name "shell"}}
+           (get-in built [:body :tool_choice])))
+    (is (= [{:id "call_custom"
+             :type "custom"
+             :extra_content {:trace_id "trace-1"}
+             :custom {:name "shell" :input "pwd"}}]
+           replay))))
+
 
 (deftest test-build-request-json-schema-response-format
   (let [t (openai/make-transport)
@@ -157,6 +237,49 @@
     (is (= "low" (get-in built [:body :verbosity])))
     (is (= "flex" (get-in built [:body :service_tier])))
     (is (nil? (get-in built [:body :extra_body])))))
+
+(deftest test-provider-extra-is-flat-and-rejects-reserved-fields
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        base-request
+        {:request/model "gpt-5"
+         :request/messages
+         [{:message/role :user :message/content "Canonical"}]
+         :request/stream? true}]
+    (doseq [[field spelling provided]
+            [[:model :model "bad-keyword"]
+             [:model "model" "bad-string"]
+             [:messages :messages [{:role "user" :content "bad"}]]
+             [:messages "messages" []]
+             [:stream :stream false]
+             [:stream "stream" false]]]
+      (try
+        (transport/build-request
+         t profile
+         (assoc-in base-request
+                   [:request/provider-options :extra_body]
+                   {spelling provided}))
+        (is false (str "expected reserved extra_body rejection for "
+                       spelling))
+        (catch clojure.lang.ExceptionInfo e
+          (is (= :request/protected-extra-body-override
+                 (:error/type (ex-data e))))
+          (is (= field (:field (ex-data e))))
+          (is (= provided (:provided-value (ex-data e)))))))
+    (let [body
+          (:body
+           (transport/build-request
+            t profile
+            (assoc base-request
+                   :request/provider-options
+                   {:extra_body {"service_tier" "flex"
+                                 :verbosity "low"}})))]
+      (is (= "gpt-5" (:model body)))
+      (is (= [{:role "user" :content "Canonical"}] (:messages body)))
+      (is (true? (:stream body)))
+      (is (= "flex" (:service_tier body)))
+      (is (= "low" (:verbosity body)))
+      (is (not (contains? body :extra_body))))))
 
 (deftest test-build-request-file-attachment
   (let [t (openai/make-transport)
@@ -246,27 +369,46 @@
 (deftest test-parse-mistral-sequential-content
   (let [profile (provider/get-provider :mistral)
         t (openai/make-transport)
-        resp (transport/parse-response
-              t profile
-              {:id "mistral-1"
-               :model "mistral-large"
-               :choices [{:message
-                          {:content [{:type "text" :text "First"}
-                                     {:type "citation" :url "https://example.com"}
-                                     " second"]}
-                          :finish_reason "stop"}]})
-        events (transport/parse-stream-event
-                t profile
-                "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"First\"},{\"type\":\"citation\",\"url\":\"https://example.com\"},\" second\"]}}]}")]
-    (is (= [{:part/type :text :text "First"}
+        resp
+        (transport/parse-response
+         t profile
+         {:id "mistral-1"
+          :model "mistral-small-latest"
+          :choices
+          [{:message
+            {:content
+             [{:type "thinking"
+               :thinking [{:type "text" :text "Check "}
+                          {:type "text" :text "carefully"}]}
+              {:type "text" :text "First"}
+              {:type "citation" :url "https://example.com"}
+              " second"]}
+            :finish_reason "stop"}]})
+        events
+        (transport/parse-stream-event
+         t profile
+         (str "data: {\"choices\":[{\"delta\":{\"content\":["
+              "{\"type\":\"thinking\",\"thinking\":["
+              "{\"type\":\"text\",\"text\":\"Check \"},"
+              "{\"type\":\"text\",\"text\":\"carefully\"}]},"
+              "{\"type\":\"text\",\"text\":\"First\"},"
+              "{\"type\":\"citation\",\"url\":\"https://example.com\"},"
+              "\" second\"]}}]}"))]
+    (is (= [{:part/type :reasoning
+             :reasoning/text "Check carefully"}
+            {:part/type :text :text "First"}
             {:part/type :text :text " second"}]
            (:response/parts resp)))
     (is (= [{:type "citation" :url "https://example.com"}]
            (get-in resp [:response/provider-data :content_chunks])))
-    (is (= [:stream/content-delta :stream/provider-state :stream/content-delta]
+    (is (= [:stream/reasoning-delta
+            :stream/content-delta
+            :stream/provider-state
+            :stream/content-delta]
            (mapv :event/type events)))
+    (is (= "Check carefully" (:event/delta (first events))))
     (is (= {:type "citation" :url "https://example.com"}
-           (get-in events [1 :provider-state/data
+           (get-in events [2 :provider-state/data
                            :chat-completion/content-chunk])))))
 
 (deftest test-parse-deepseek-insufficient-resource-finish
@@ -284,6 +426,55 @@
     (is (= :incomplete (:response/finish-reason resp)))
     (is (= :incomplete (:event/finish-reason event)))))
 
+(deftest test-reasoning-content-is-canonical-and-replayed-exactly
+  (doseq [[provider-id model]
+          [[:deepseek "deepseek-v4-pro"]
+           [:kimi "kimi-k2.6"]
+           [:kimi-code "kimi-for-coding"]]]
+    (let [t (openai/make-transport)
+          profile (provider/get-provider provider-id)
+          parsed
+          (transport/parse-response
+           t profile
+           {:id "reasoning-turn"
+            :model model
+            :choices
+            [{:message
+              {:content ""
+               :reasoning_content "exact private reasoning"
+               :tool_calls
+               [{:id "call_1"
+                 :type "function"
+                 :function {:name "lookup" :arguments "{}"}}]}
+              :finish_reason "tool_calls"}]})
+          built
+          (transport/build-request
+           t profile
+           {:request/model model
+            :request/messages
+            [{:message/role :assistant
+              :message/content (:response/parts parsed)
+              :message/tool-calls (:response/tool-calls parsed)
+              :message/provider-data (:response/provider-data parsed)}
+             {:message/role :tool
+              :message/content "result"
+              :message/tool-call-id "call_1"}]
+            :request/tools
+            [{:type :function
+              :function {:name "lookup"
+                         :parameters {:type "object"}}}]})
+          assistant-message (get-in built [:body :messages 0])]
+      (is (= {:part/type :reasoning
+              :reasoning/text "exact private reasoning"}
+             (first (filter #(= :reasoning (:part/type %))
+                            (:response/parts parsed))))
+          (str provider-id " canonical reasoning"))
+      (is (= "exact private reasoning"
+             (:reasoning_content assistant-message))
+          (str provider-id " reasoning replay"))
+      (is (= 1 (count (:tool_calls assistant-message)))
+          (str provider-id " de-duplicates tool calls")))))
+
 (deftest test-parse-response-current-custom-tool-and-message-state
   (let [t (openai/make-transport)
         profile (provider/get-provider :openai)
@@ -299,7 +490,17 @@
                                        :custom {:name "shell"
                                                 :input "pwd"}}]}
                         :finish_reason "tool_calls"}]}
-        resp (transport/parse-response t profile raw)]
+        resp (transport/parse-response t profile raw)
+        replay
+        (transport/build-request
+         t profile
+         {:request/model "gpt-5"
+          :request/messages
+          [{:message/role :assistant
+            :message/content (:response/parts resp)
+            :message/tool-calls (:response/tool-calls resp)
+            :message/provider-data (:response/provider-data resp)}]})
+        replay-call (get-in replay [:body :messages 0 :tool_calls 0])]
     (is (= "shell" (get-in resp [:response/tool-calls 0 :tool-call/name])))
     (is (= "pwd" (get-in resp [:response/tool-calls 0 :tool-call/arguments])))
     (is (= "custom"
@@ -307,7 +508,12 @@
     (is (= "I cannot do that."
            (get-in resp [:response/provider-data :refusal])))
     (is (= "audio-1"
-           (get-in resp [:response/provider-data :audio :id])))))
+           (get-in resp [:response/provider-data :audio :id])))
+    (is (= {:id "call_custom"
+            :type "custom"
+            :custom {:name "shell" :input "pwd"}}
+           replay-call))
+    (is (not (contains? (get-in replay [:body :messages 0]) :content)))))
 
 (deftest test-parse-stream-event-content
   (let [t (openai/make-transport)
@@ -330,12 +536,46 @@
 (deftest test-parse-stream-event-current-custom-tool-call
   (let [t (openai/make-transport)
         profile (provider/get-provider :openai)
-        line "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"custom\",\"custom\":{\"name\":\"shell\",\"input\":\"pwd\"}}]}}]}"
-        events (transport/parse-stream-event t profile line)]
-    (is (= [:stream/tool-call-start :stream/tool-call-delta]
+        lines
+        [(str "data: {\"choices\":[{\"delta\":{\"tool_calls\":["
+              "{\"index\":0,\"id\":\"call_1\",\"type\":\"custom\","
+              "\"call_id\":\"native-call\",\"extra_content\":{\"trace\":\"t1\"},"
+              "\"custom\":{\"name\":\"shell\",\"input\":\"p\"}}]}}]}")
+         (str "data: {\"choices\":[{\"delta\":{\"tool_calls\":["
+              "{\"index\":0,\"custom\":{\"input\":\"wd\"}}]}}]}")]
+        events
+        (->> lines
+             (mapcat
+              (fn [line]
+                (let [parsed (transport/parse-stream-event t profile line)]
+                  (if (sequential? parsed) parsed [parsed]))))
+             vec)
+        response (stream/events->response events :openai "gpt-5")
+        replay
+        (transport/build-request
+         t profile
+         {:request/model "gpt-5"
+          :request/messages
+          [{:message/role :assistant
+            :message/content (:response/parts response)
+            :message/tool-calls (:response/tool-calls response)}]})
+        replay-call (get-in replay [:body :messages 0 :tool_calls 0])]
+    (is (= [:stream/tool-call-start
+            :stream/tool-call-delta
+            :stream/tool-call-delta]
            (mapv :event/type events)))
+    (is (= "custom"
+           (get-in events [0 :tool-call/provider-data :wire_type])))
+    (is (= {:trace "t1"}
+           (get-in events [0 :tool-call/provider-data :extra_content])))
     (is (= "shell" (:tool-call/name (first events))))
-    (is (= "pwd" (:tool-call/arguments-delta (second events))))))
+    (is (= ["p" "wd"]
+           (mapv :tool-call/arguments-delta (rest events))))
+    (is (= "custom" (:type replay-call)))
+    (is (= "native-call" (:call_id replay-call)))
+    (is (= {:trace "t1"} (:extra_content replay-call)))
+    (is (not (contains? (get-in replay [:body :messages 0]) :content)))
+    (is (= {:name "shell" :input "pwd"} (:custom replay-call)))))
 
 (deftest test-parse-stream-event-legacy-function-call
   (let [events (transport/parse-stream-event

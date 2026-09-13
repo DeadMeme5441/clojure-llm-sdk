@@ -8,7 +8,8 @@
             [llm.sdk.http :as http]
             [llm.sdk.models-dev :as mdev]
             [llm.sdk.pricing :as pricing]
-            [llm.sdk.registry :as registry]))
+            [llm.sdk.registry :as registry]
+            [llm.sdk.usage :as usage]))
 
 (defn- temp-dir ^java.io.File []
   (let [d (java.io.File/createTempFile "stamping-test" "")]
@@ -42,6 +43,17 @@
 
 (deftest cache-status-miss-when-provider-explicitly-zero
   (let [c (pricing/canonical-cache {:usage/cached-input-tokens 0})]
+    (is (= :miss (:cache/status c)))
+    (is (= 0 (:cache/cached-tokens c)))))
+
+(deftest normalized-flat-cache-zero-is-an-explicit-miss
+  (let [normalized (usage/normalize-openai-usage
+                    {:prompt_tokens 100
+                     :completion_tokens 20
+                     :cached_tokens 0})
+        c (pricing/canonical-cache normalized)]
+    (is (= 100 (:usage/input-tokens normalized)))
+    (is (= 0 (:usage/cached-input-tokens normalized)))
     (is (= :miss (:cache/status c)))
     (is (= 0 (:cache/cached-tokens c)))))
 
@@ -111,6 +123,44 @@
        (is (= :hit (get-in stamped [:response/cache :cache/status])))
        (is (= 200 (get-in stamped [:response/cache :cache/cached-tokens])))
        (is (number? (get-in stamped [:response/cost :cost/usd])))))))
+
+(deftest provider-reported-cost-takes-precedence-over-catalog-estimates
+  (offline
+   (fn []
+     (let [reported {:cost/usd 0M
+                     :cost/estimated? false
+                     :cost/pricing-source :provider-reported}
+           stamped (pricing/stamp-response-cost-and-cache
+                    {:response/cost reported
+                     :response/usage {:usage/input-tokens 100
+                                      :usage/output-tokens 50
+                                      :usage/cached-input-tokens 5}}
+                    :openai "gpt-4o")]
+       (is (= reported (:response/cost stamped)))
+       (is (= :hit (get-in stamped [:response/cache :cache/status])))))))
+
+(deftest stamp-does-not-double-count-duplicate-cache-metadata
+  (offline
+   (fn []
+     (let [normalized (usage/normalize-openai-usage
+                       {:prompt_tokens 1000
+                        :completion_tokens 500
+                        :total_tokens 1500
+                        :prompt_tokens_details {:cached_tokens 350}
+                        :cached_tokens 350
+                        :cache_read_input_tokens 350})
+           resp {:response/provider :openai
+                 :response/model "gpt-4o"
+                 :response/parts [{:part/type :text :text "hi"}]
+                 :response/finish-reason :stop
+                 :response/usage normalized}
+           stamped (pricing/stamp-response-cost-and-cache resp :openai "gpt-4o")]
+       (is (= 650 (get-in stamped [:response/usage :usage/input-tokens])))
+       (is (= 350 (get-in stamped [:response/usage :usage/cached-input-tokens])))
+       (is (= 350 (get-in stamped [:response/cache :cache/cached-tokens])))
+       (is (= 650 (get-in stamped [:response/cost :cost/breakdown :input-tokens])))
+       (is (= 350 (get-in stamped [:response/cost :cost/breakdown
+                                   :cached-input-tokens])))))))
 
 (deftest stamp-preserves-unknowns-when-usage-says-nothing-about-cache
   (offline

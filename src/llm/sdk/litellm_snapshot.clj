@@ -2,12 +2,12 @@
   "Read-only loader for the LiteLLM-derived pricing/capability snapshot
    bundled at resources/litellm-snapshot.json.
 
-   LiteLLM maintains an actively-curated catalog of ~2.7k model entries
-   keyed by their provider's model id. The bundled snapshot is a
-   filtered subset — only providers we have SDK adapters for, with
-   each entry stripped to the fields llm.sdk.registry uses
-   (context-length, max-output-tokens, capability flags, per-million
-   pricing). To refresh, re-run scripts/build_litellm_snapshot.py.
+   LiteLLM maintains an actively-curated model catalog keyed by each
+   provider's native model id. The bundled snapshot is a filtered subset —
+   only providers we have SDK adapters for, with each entry stripped to the
+   fields llm.sdk.registry uses (context limits, capability flags, lifecycle
+   metadata, and available text/modality-specific pricing). To refresh, re-run
+   scripts/build_litellm_snapshot.py.
 
    This tier is a sibling to llm.sdk.models-dev — both contribute
    to llm.sdk.registry's field-merge. Where they overlap, the merge
@@ -39,6 +39,12 @@
    where raw-entry has string keys (cost, capabilities, mode, …)."
   (delay (load-snapshot)))
 
+(defn- snapshot-providers [snapshot]
+  (or (get snapshot "providers") snapshot))
+
+(defn- snapshot-meta [snapshot]
+  (get snapshot "_meta"))
+
 (def ^:private provider-aliases
   "SDK provider ids whose model catalog and pricing come from another
    provider in the LiteLLM snapshot."
@@ -59,7 +65,7 @@
       :else (str canonical))))
 
 (defn- by-provider [provider-key]
-  (some-> @cache (get (provider->string provider-key))))
+  (some-> @cache snapshot-providers (get (provider->string provider-key))))
 
 ;; ---------------------------------------------------------------------------
 ;; Normalization — snapshot entry → ModelEntry shape
@@ -67,50 +73,50 @@
 
 (defn- ->entry [provider-id model-id raw]
   (let [cost-raw (get raw "cost")
-        cost (when cost-raw
-               (cond-> {}
-                 (get cost-raw "input_per_million")
-                 (assoc :input-per-million
-                        (double (get cost-raw "input_per_million")))
-                 (get cost-raw "output_per_million")
-                 (assoc :output-per-million
-                        (double (get cost-raw "output_per_million")))
-                 (get cost-raw "cache_read_per_million")
-                 (assoc :cache-read-per-million
-                        (double (get cost-raw "cache_read_per_million")))
-                 (get cost-raw "cache_write_per_million")
-                 (assoc :cache-write-per-million
-                        (double (get cost-raw "cache_write_per_million")))
-                 (get cost-raw "request_cost")
-                 (assoc :request-cost
-                        (double (get cost-raw "request_cost")))
-                 (get cost-raw "image_per_image")
-                 (assoc :image-per-image
-                        (double (get cost-raw "image_per_image")))
-                 (get cost-raw "image_per_megapixel")
-                 (assoc :image-per-megapixel
-                        (double (get cost-raw "image_per_megapixel")))
-                 (get cost-raw "transcription_per_minute")
-                 (assoc :transcription-per-minute
-                        (double (get cost-raw "transcription_per_minute")))
-                 (get cost-raw "tts_per_million_chars")
-                 (assoc :tts-per-million-chars
-                        (double (get cost-raw "tts_per_million_chars")))
-                 (get cost-raw "search_per_call")
-                 (assoc :search-per-call
-                        (double (get cost-raw "search_per_call")))))
+        cost-keys [["input_per_million" :input-per-million]
+                   ["output_per_million" :output-per-million]
+                   ["cache_read_per_million" :cache-read-per-million]
+                   ["cache_write_per_million" :cache-write-per-million]
+                   ["image_input_per_million" :image-input-per-million]
+                   ["image_output_per_million" :image-output-per-million]
+                   ["audio_input_per_million" :audio-input-per-million]
+                   ["audio_output_per_million" :audio-output-per-million]
+                   ["image_cache_read_per_million" :image-cache-read-per-million]
+                   ["audio_cache_read_per_million" :audio-cache-read-per-million]
+                   ["rerank_per_search_unit" :rerank-per-search-unit]
+                   ["request_cost" :request-cost]
+                   ["image_per_image" :image-per-image]
+                   ["image_per_megapixel" :image-per-megapixel]
+                   ["transcription_per_minute" :transcription-per-minute]
+                   ["tts_per_million_chars" :tts-per-million-chars]
+                   ["search_per_call" :search-per-call]]
+        cost (when (map? cost-raw)
+               (reduce (fn [out [json-key model-key]]
+                         (if (contains? cost-raw json-key)
+                           (assoc out model-key
+                                  (double (get cost-raw json-key)))
+                           out))
+                       {}
+                       cost-keys))
         caps-raw (get raw "capabilities")
         caps (when (sequential? caps-raw)
-               (into #{} (map keyword caps-raw)))]
+               (into #{} (map keyword caps-raw)))
+        meta (snapshot-meta @cache)
+        source-url (or (get meta "source_url")
+                       "https://github.com/BerriAI/litellm/blob/b1a61f510c90ce7e4533e89247c941fa201ada4f/model_prices_and_context_window.json")
+        source-revision (get meta "source_revision")]
     (cond-> {:model/id model-id
              :model/provider provider-id
              :model/source :litellm-snapshot
-             :model/source-url
-             "https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"}
+             :model/source-url source-url}
+      source-revision
+      (assoc :model/source-revision source-revision)
       (get raw "context_length")
       (assoc :model/context-length (get raw "context_length"))
       (get raw "max_output_tokens")
       (assoc :model/max-output-tokens (get raw "max_output_tokens"))
+      (get raw "deprecation_date")
+      (assoc :model/deprecation-date (get raw "deprecation_date"))
       (seq caps) (assoc :model/capabilities caps)
       (seq cost) (assoc :model/cost cost))))
 
@@ -136,7 +142,7 @@
 (defn known-providers
   "Set of SDK provider keywords the snapshot has entries for."
   []
-  (->> (or @cache {})
+  (->> (snapshot-providers (or @cache {}))
        keys
        (map keyword)
        set))

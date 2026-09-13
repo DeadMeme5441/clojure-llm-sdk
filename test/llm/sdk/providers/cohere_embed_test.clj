@@ -1,8 +1,5 @@
 (ns llm.sdk.providers.cohere-embed-test
-  "Cohere /embed adapter coverage. Cohere is the only embed
-   provider in this set with a divergent wire shape; Voyage, Mistral,
-   Together, and Jina ride the OpenAI embed adapter and are covered in
-   openai_embed_aliases_test."
+  "Cohere /embed adapter coverage for its divergent v2 wire shape."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.java.io :as io]
             [cheshire.core :as json]
@@ -79,6 +76,24 @@
                     :embed/encoding-format :float}))]
       (is (= ["float"] (get-in built [:body :embedding_types]))))))
 
+(deftest test-build-request-rejects-contradictory-embedding-types
+  (let [error
+        (try
+          (et/build-embed-request
+           (cohere-embed/make-transport)
+           (provider/get-provider :cohere)
+           {:embed/model "embed-english-v3.0"
+            :embed/inputs ["a"]
+            :embed/encoding-format :float
+            :embed/provider-options
+            {:extra_body {:embedding_types ["base64"]}}})
+          nil
+          (catch Exception error error))]
+    (is (= :request/contradictory-embedding-types
+           (:error/type (ex-data error))))
+    (is (= :float (:embed/encoding-format (ex-data error))))
+    (is (= [["base64"]] (:embedding_types (ex-data error))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Response parsing
 ;; ---------------------------------------------------------------------------
@@ -134,27 +149,54 @@
         profile (provider/get-provider :cohere)
         resp (et/parse-embed-response
               t profile
-              {:embeddings {:base64 ["AACAPwAAAEA="]}})]
-    (is (= [[1.0 2.0]] (:embed/vectors resp)))
+              {:embeddings {:base64 ["AACAPwAAAEA="
+                                     "AABAQAAAgEA="]}})]
+    (is (= [[1.0 2.0] [3.0 4.0]]
+           (mapv #(mapv double %) (:embed/vectors resp))))
+    (is (= 2 (:embed/dimensions resp)))
     (is (nil? (:embed/provider-data resp)))))
 
-(deftest test-parse-response-preserves-opaque-embedding-types
+(deftest test-parse-response-selects-one-input-aligned-representation
   (let [t (cohere-embed/make-transport)
         profile (provider/get-provider :cohere)
-        opaque {:float [["not-a-float-vector"]]
-                :base64 ["not-base64!"]
-                :int8 [[1 -2 3]]
+        base64 ["AACAPwAAAEA=" "AABAQAAAgEA="]
+        int8 [[1 -2] [3 -4]]
+        resp (et/parse-embed-response
+              t profile
+              {:embeddings {:float [[0.1 0.2] [0.3 0.4]]
+                            :base64 base64
+                            :int8 int8}})]
+    (is (= [[0.1 0.2] [0.3 0.4]] (:embed/vectors resp)))
+    (is (= {:raw {:base64 base64 :int8 int8}}
+           (:embed/provider-data resp)))
+    (is (= 2 (count (:embed/vectors resp)))
+        "alternate embedding types must not create extra input rows")))
+
+(deftest test-parse-response-preserves-nondense-native-types
+  (let [t (cohere-embed/make-transport)
+        profile (provider/get-provider :cohere)
+        native {:int8 [[1 -2 3]]
                 :uint8 [[1 2 255]]
                 :binary [[1 0 1]]}
         resp (et/parse-embed-response
               t profile
-              {:id "opaque-embed"
-               :embeddings (assoc opaque :float [[0.1 0.2]
-                                                  ["not-a-float-vector"]])})]
-    (is (= [[0.1 0.2]] (:embed/vectors resp)))
-    (is (= {:raw opaque} (:embed/provider-data resp)))
-    (is (= 2 (:embed/dimensions resp))
-        "only the canonical float vector determines dimensions")))
+              {:id "native-embed"
+               :embeddings native})]
+    (is (= [] (:embed/vectors resp)))
+    (is (= {:raw native} (:embed/provider-data resp)))
+    (is (nil? (:embed/dimensions resp)))))
+
+(deftest test-parse-response-rejects-malformed-base64
+  (let [error
+        (try
+          (et/parse-embed-response
+           (cohere-embed/make-transport)
+           (provider/get-provider :cohere)
+           {:embeddings {:base64 ["not-base64!"]}})
+          nil
+          (catch Exception error error))]
+    (is (= :embedding/invalid-base64
+           (:error/type (ex-data error))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Driver path

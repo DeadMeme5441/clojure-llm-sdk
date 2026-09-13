@@ -151,3 +151,175 @@
     (is (= {:seeds [4294967294]
             :finish_reasons [nil]}
            (select-keys (:image/raw parsed) [:seeds :finish_reasons])))))
+
+(deftest test-bedrock-image-requires-explicit-model
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)
+        error (try
+                (it/build-image-request
+                 t profile {:image/prompt "a current model is required"})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (some? error))
+    (is (= :request/missing-model (:error/type (ex-data error))))
+    (is (re-find #"explicit :image/model" (ex-message error)))
+    (is (re-find #"June 30, 2026" (ex-message error)))))
+
+(deftest test-bedrock-image-rejects-unrelated-stability-families
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)
+        error (try
+                (it/build-image-request
+                 t profile
+                 {:image/model "stability.stable-image-control-structure-v1:0"
+                  :image/prompt "do not guess a request body"})
+                nil
+                (catch clojure.lang.ExceptionInfo e e))]
+    (is (some? error))
+    (is (= :request/unsupported-model (:error/type (ex-data error))))
+    (is (= "stability.stable-image-control-structure-v1:0"
+           (:model (ex-data error))))))
+
+(deftest test-bedrock-image-routing-matches-converse
+  (let [t (bimage/make-transport)
+        regional-profile
+        (assoc (provider/get-provider :bedrock)
+               :profile/base-url
+               "https://bedrock-runtime.eu-west-1.amazonaws.com/")
+        regional (it/build-image-request
+                  t regional-profile
+                  {:image/model "amazon.nova-canvas-v1:0"
+                   :image/prompt "a routing diagram"})
+        custom-profile
+        (assoc (provider/get-provider :bedrock)
+               :profile/base-url "https://bedrock-runtime.example.test/")
+        custom (it/build-image-request
+                t custom-profile
+                {:image/model "stability.stable-image-core-v1:1"
+                 :image/prompt "a signing diagram"
+                 :image/provider-options
+                 {:bedrock {:aws-region "ap-southeast-2"}}})]
+    (is (.startsWith ^String (:url regional)
+                     "https://bedrock-runtime.eu-west-1.amazonaws.com/model/"))
+    (is (= "eu-west-1"
+           (:llm.sdk.providers.bedrock/aws-region regional)))
+    (is (= (str "https://bedrock-runtime.example.test/model/"
+                "stability.stable-image-core-v1:1/invoke")
+           (:url custom)))
+    (is (= "ap-southeast-2"
+           (:llm.sdk.providers.bedrock/aws-region custom)))))
+
+(deftest test-bedrock-core-and-ultra-use-documented-request-options
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)
+        core (it/build-image-request
+              t profile
+              {:image/model "stability.stable-image-core-v1:1"
+               :image/prompt "a red panda"
+               :image/size "1536x1024"
+               :image/provider-options
+               {:bedrock {:output-format :jpeg
+                          :seed 4294967295
+                          :negative-prompt "blur"}}})
+        ultra (it/build-image-request
+               t profile
+               {:image/model "stability.stable-image-ultra-v1:1"
+                :image/prompt "restyle the source"
+                :image/provider-options
+                {:bedrock {:image "source-b64"
+                           :output-format :png}}})]
+    (is (= {:prompt "a red panda"
+            :aspect_ratio "3:2"
+            :output_format "jpeg"
+            :seed 4294967295
+            :negative_prompt "blur"}
+           (:body core)))
+    (is (= {:prompt "restyle the source"
+            :output_format "png"
+            :image "source-b64"}
+           (:body ultra)))
+    (is (not (contains? (:body ultra) :mode)))
+    (is (not (contains? (:body ultra) :strength)))))
+
+(deftest test-bedrock-family-specific-options-are-not-forwarded
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)
+        invalid-cases
+        [{:model "amazon.titan-image-generator-v2:0"
+          :options {:style "PHOTOREALISM"}
+          :expected-option :style}
+         {:model "stability.stable-image-ultra-v1:1"
+          :options {:image "source-b64" :mode :image-to-image}
+          :expected-option :mode}
+         {:model "stability.stable-image-core-v1:1"
+          :n 2
+          :expected-option :image/n}]]
+    (doseq [{:keys [model options n expected-option]} invalid-cases]
+      (let [error (try
+                    (it/build-image-request
+                     t profile
+                     (cond-> {:image/model model
+                              :image/prompt "a test image"}
+                       options
+                       (assoc :image/provider-options {:bedrock options})
+                       n
+                       (assoc :image/n n)))
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? error))
+        (is (= :request/invalid-image-option
+               (:error/type (ex-data error))))
+        (is (= expected-option (:option (ex-data error))))))))
+
+(defn- bedrock-response-failure [t profile raw]
+  (try
+    (it/parse-image-response t profile raw)
+    nil
+    (catch clojure.lang.ExceptionInfo e e)))
+
+(deftest test-bedrock-native-image-errors-are-classified-failures
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)
+        raw {:images ["safe-image"]
+             :error "One generated image was blocked by content moderation"}
+        error (bedrock-response-failure t profile raw)
+        data (ex-data error)]
+    (is (some? error))
+    (is (= :invalid-request (get-in data [:error :error/reason])))
+    (is (false? (get-in data [:error :error/retryable])))
+    (is (= [{:image/b64 "safe-image"}] (:image/images data)))
+    (is (= raw (:image/raw data)))))
+
+(deftest test-bedrock-stability-finish-reasons-are-classified-failures
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)]
+    (testing "filter reasons cannot become an empty successful response"
+      (let [raw {:finish_reasons ["Filter reason: prompt"]}
+            error (bedrock-response-failure t profile raw)
+            data (ex-data error)]
+        (is (some? error))
+        (is (= :invalid-request (get-in data [:error :error/reason])))
+        (is (= ["Filter reason: prompt"] (:finish-reasons data)))
+        (is (= [] (:image/images data)))
+        (is (= raw (:body data)))))
+    (testing "inference errors retain any partial image data"
+      (let [raw {:finish_reasons [nil "Inference error"]
+                 :images ["partial-image"]}
+            error (bedrock-response-failure t profile raw)
+            data (ex-data error)]
+        (is (some? error))
+        (is (= :provider-bug (get-in data [:error :error/reason])))
+        (is (true? (get-in data [:error :error/retryable])))
+        (is (= ["Inference error"] (:finish-reasons data)))
+        (is (= [{:image/b64 "partial-image"}] (:image/images data)))))))
+
+(deftest test-bedrock-sdxl-filtered-artifact-is-a-failure
+  (let [t (bimage/make-transport)
+        profile (provider/get-provider :bedrock)
+        raw {:artifacts [{:finishReason "CONTENT_FILTERED"}]}
+        error (bedrock-response-failure t profile raw)
+        data (ex-data error)]
+    (is (some? error))
+    (is (= :invalid-request (get-in data [:error :error/reason])))
+    (is (= ["CONTENT_FILTERED"] (:finish-reasons data)))
+    (is (= raw (:image/raw data)))))
