@@ -1,10 +1,13 @@
 (ns llm.sdk.speak-test
   (:require [clojure.test :refer [deftest is]]
+            [hato.client :as hc]
+            [llm.sdk :as sdk]
+            [llm.sdk.http :as http]
             [llm.sdk.provider :as provider]
+            [llm.sdk.providers.elevenlabs.tts :as eleven]
+            [llm.sdk.providers.openai.speak :as openai-spk]
             [llm.sdk.schema :as schema]
-            [llm.sdk.transport.speak :as st]
-            [llm.sdk.providers.openai-speak :as openai-spk]
-            [llm.sdk.providers.elevenlabs :as eleven]))
+            [llm.sdk.transport.speak :as st]))
 
 (deftest test-openai-build-request-defaults
   (let [t (openai-spk/make-transport)
@@ -43,6 +46,21 @@
                 :speak/provider-options {:stream_format "audio"}})]
     (is (= {:id "voice_1234"} (get-in built [:body :voice])))
     (is (= "audio" (get-in built [:body :stream_format])))))
+
+(deftest test-speech-provider-options-cannot-change-canonical-body
+  (let [failure (try
+                  (st/build-speak-request
+                   (openai-spk/make-transport)
+                   (provider/get-provider :openai)
+                   {:speak/model "canonical-model"
+                    :speak/input "canonical input"
+                    :speak/voice "canonical-voice"
+                    :speak/provider-options {"model" "other-model"}})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+    (is (= {:provider :openai :field :model
+            :error/type :request/protected-extra-body-override}
+           failure))))
 
 (deftest test-openai-buffered-speech-rejects-sse
   (let [t (openai-spk/make-transport)
@@ -160,8 +178,8 @@
   (let [t (eleven/make-transport)
         profile (provider/get-provider :elevenlabs)]
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"voice"
-          (st/build-speak-request t profile
-                                  {:speak/model "x" :speak/input "y"})))))
+                          (st/build-speak-request t profile
+                                                  {:speak/model "x" :speak/input "y"})))))
 
 (deftest test-elevenlabs-preserves-422-validation-detail
   (let [t (eleven/make-transport)
@@ -207,3 +225,37 @@
     (is (= 4 (count (:audio/bytes parsed))))
     (is (= headers (:response/raw parsed)))
     (is (schema/validate-speak-response parsed))))
+
+(deftest test-speak-uses-shared-client
+  (let [client (Object.)
+        sent (atom nil)
+        audio (byte-array [1 2 3])
+        response
+        (binding [http/*http-client* client]
+          (with-redefs [hc/request
+                        (fn [request]
+                          (reset! sent request)
+                          {:status 200
+                           :headers {"content-type" "audio/mpeg"}
+                           :body audio})]
+            (sdk/speak :openai
+                       {:speak/model "tts-1"
+                        :speak/input "Hello"})))]
+    (is (identical? client (:http-client @sent)))
+    (is (= 120000 (:timeout @sent)))
+    (is (identical? audio (:audio/bytes response)))))
+
+(deftest test-speak-rejects-empty-success-body
+  (with-redefs [hc/request
+                (fn [_]
+                  {:status 200
+                   :headers {"content-type" "audio/mpeg"}
+                   :body (byte-array 0)})]
+    (let [error (try
+                  (sdk/speak :openai
+                             {:speak/model "tts-1"
+                              :speak/input "Hello"})
+                  nil
+                  (catch clojure.lang.ExceptionInfo cause cause))]
+      (is (= :provider/invalid-speech-response
+             (:error/type (ex-data error)))))))

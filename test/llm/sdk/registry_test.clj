@@ -3,7 +3,9 @@
             [llm.sdk.http :as http]
             [llm.sdk.models :as models]
             [llm.sdk.models-dev :as mdev]
-            [llm.sdk.registry :as registry]))
+            [llm.sdk.provider :as provider]
+            [llm.sdk.registry :as registry]
+            [llm.sdk.providers.openai.chat :as openai]))
 
 ;; ---------------------------------------------------------------------------
 ;; Sandbox each test: empty live/override stores, isolated mdev cache dir
@@ -57,7 +59,10 @@
     (is (= "https://api.openai.com/v1/models" (:model/source-url merged))
         "source-url carries from live tier")
     (is (= :live-models-api (:model/source merged))
-        "highest-precedence non-nil source tag wins")))
+        "highest-precedence non-nil source tag wins")
+    (is (= :live-models-api (get-in merged [:model/sources 1 :source])))
+    (is (= :models-dev (:source (:model/cost-source merged)))
+        "id-only live entries do not claim lower-tier pricing provenance")))
 
 (deftest merge-entries-merges-cost-key-by-key
   (let [mdev-entry {:model/id "claude" :model/source :models-dev
@@ -168,6 +173,93 @@
       (is (= 2 (count entries)))
       (let [snap (registry/snapshot)]
         (is (= 2 (:live-entries snap)))))))
+
+(deftest refresh-replaces-only-the-provider-live-slice
+  (let [responses (atom {:openai
+                         [{:model/id "removed-later"
+                           :model/provider :openai
+                           :model/source :live-models-api}
+                          {:model/id "gpt-4o"
+                           :model/provider :openai
+                           :model/source :live-models-api}]
+                         :anthropic
+                         [{:model/id "anthropic-live"
+                           :model/provider :anthropic
+                           :model/source :live-models-api}]})]
+    (with-redefs [models/fetch-models #(get @responses %)
+                  http/request
+                  (fn [_] {:status 500 :body {:error "offline"}})]
+      (registry/refresh! :openai)
+      (registry/refresh! :anthropic)
+      (swap! responses assoc :openai
+             [{:model/id "replacement"
+               :model/provider :openai
+               :model/source :live-models-api}])
+      (registry/refresh! :openai)
+      (is (nil? (registry/lookup :openai "removed-later"))
+          "a model omitted by the later response loses its live tier")
+      (let [fallback (registry/lookup :openai "gpt-4o")]
+        (is (some? fallback) "lower catalog metadata remains available")
+        (is (not= :live-models-api (:model/source fallback))
+            "omission removes only the live tier"))
+      (is (= :live-models-api
+             (:model/source (registry/lookup :openai "replacement"))))
+      (is (= :live-models-api
+             (:model/source (registry/lookup :anthropic "anthropic-live")))
+          "refreshing OpenAI does not replace Anthropic's slice"))))
+
+(deftest refresh-failure-preserves-last-successful-slice-as-stale
+  (let [fail? (atom false)]
+    (with-redefs [models/fetch-models
+                  (fn [provider-id]
+                    (if @fail?
+                      (throw (ex-info "catalog unavailable"
+                                      {:provider provider-id}))
+                      [{:model/id "last-known"
+                        :model/provider provider-id
+                        :model/source :live-models-api}]))
+                  http/request
+                  (fn [_] {:status 500 :body {:error "offline"}})]
+      (registry/refresh! :openai)
+      (reset! fail? true)
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (registry/refresh! :openai)))
+      (let [entry (registry/lookup :openai "last-known")]
+        (is (= :live-models-api (:model/source entry)))
+        (is (= :stale (:model/source-freshness entry)))))))
+
+(deftest refresh-replacement-does-not-touch-overrides
+  (registry/register-entry! :openai "caller-model"
+                            {:model/context-length 4242})
+  (with-redefs [models/fetch-models (constantly [])
+                http/request
+                (fn [_] {:status 500 :body {:error "offline"}})]
+    (registry/refresh! :openai)
+    (let [entry (registry/lookup :openai "caller-model")]
+      (is (= :override (:model/source entry)))
+      (is (= :configured (:model/availability entry)))
+      (is (= 4242 (:model/context-length entry))))))
+
+(deftest registered-openai-compatible-profile-refreshes-generically
+  (let [provider-id :test-registry-custom-listing
+        profile (openai/build-alias-profile
+                 {:id provider-id
+                  :base-url "https://custom.example/v1"
+                  :auth-strategy :none
+                  :supports-model-listing? true})]
+    (provider/register-provider profile)
+    (try
+      (with-redefs [http/request
+                    (constantly
+                     {:status 200
+                      :body {:data [{:id "custom-visible-model"}]}})]
+        (is (= 1 (count (registry/refresh! provider-id))))
+        (let [entry (registry/lookup provider-id "custom-visible-model")]
+          (is (= provider-id (:model/provider entry)))
+          (is (= :listed (:model/availability entry)))))
+      (finally
+        (provider/register-provider
+         (assoc profile :profile/supports-model-listing false))))))
 
 (deftest refresh-all-aggregates-counts
   (offline

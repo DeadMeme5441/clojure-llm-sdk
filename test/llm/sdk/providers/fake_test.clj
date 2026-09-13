@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.fake :as fake]))
+            [llm.sdk.providers.fake.chat :as fake]))
 
 (deftest test-fake-profile-is-chat-only
   (let [profile (provider/get-provider :fake)

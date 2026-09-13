@@ -63,6 +63,12 @@
     (is (= 2 (:embed/dimensions parsed)))
     (is (nil? (:embed/provider-data parsed)))))
 
+(deftest test-voyage-usage-does-not-invent-missing-token-counts
+  (let [usage (voyage/normalize-voyage-embedding-usage {})]
+    (is (= 0 (:usage/output-tokens usage)))
+    (is (not (contains? usage :usage/input-tokens)))
+    (is (not (contains? usage :usage/total-tokens)))))
+
 (deftest test-voyage-base64-rejects-nonfloat-dtype
   (let [error
         (try

@@ -7,20 +7,32 @@
 ;; Marker building
 ;; ---------------------------------------------------------------------------
 
-(deftest test-marker-default-ttl
-  (is (= {:type "ephemeral" :ttl "5m"} (cache/marker)))
-  (is (= {:type "ephemeral" :ttl "5m"} (cache/marker "5m"))))
-
-(deftest test-marker-1h-ttl
-  (is (= {:type "ephemeral" :ttl "1h"} (cache/marker "1h"))))
+(deftest test-marker-ttl
+  (testing "default and explicit 5m inherit the provider default"
+    (is (= {:type "ephemeral"} (cache/marker)))
+    (is (= {:type "ephemeral"} (cache/marker "5m"))))
+  (testing "only an explicit 1h is emitted on the wire"
+    (is (= {:type "ephemeral" :ttl "1h"} (cache/marker "1h"))))
+  (testing "unsupported TTLs are rejected rather than degraded"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Cache TTL must be one of: 5m, 1h"
+                          (cache/marker "30m")))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Cache TTL must be one of: 5m, 1h"
+                          (cache/ttl {:request/cache {:ttl "30m"}})))))
 
 ;; ---------------------------------------------------------------------------
 ;; system_and_3 layout — native
 ;; ---------------------------------------------------------------------------
 
-(deftest test-system-and-3-empty
+(deftest test-system-and-3-empty-and-zero-breakpoints
   (is (= [] (cache/apply-system-and-3 [])))
-  (is (= [] (cache/apply-system-and-3 [] {:breakpoints 4}))))
+  (is (= [] (cache/apply-system-and-3 [] {:breakpoints 4})))
+  (let [messages [{:role "user" :content "hello"}]]
+    (is (= messages
+           (cache/apply-system-and-3
+            messages
+            {:ttl "1h" :breakpoints 0})))))
 
 (deftest test-system-and-3-marks-system-and-tail-native
   (let [messages [{:role "system" :content "sys"}
@@ -33,14 +45,14 @@
     (testing "system message gets marker on inner content block"
       (let [sys-content (:content (first marked))]
         (is (vector? sys-content))
-        (is (= {:type "ephemeral" :ttl "5m"}
+        (is (= {:type "ephemeral"}
                (get-in (last sys-content) [:cache_control])))))
     (testing "last 3 non-system messages get markers"
       ;; total 6 messages, system = 1 breakpoint, 3 more for tail.
       ;; That means messages at indices 3, 4, 5 are marked.
       (doseq [i [3 4 5]]
         (let [c (:content (nth marked i))]
-          (is (= {:type "ephemeral" :ttl "5m"}
+          (is (= {:type "ephemeral"}
                  (get-in (last c) [:cache_control]))
               (str "expected marker on message " i)))))
     (testing "middle messages stay un-marked"
@@ -55,11 +67,11 @@
                   {:role "user" :content "u2"}]
         marked (cache/apply-system-and-3 messages {:layout :envelope})]
     (testing "marker lives on outer dict, content untouched"
-      (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (first marked))))
+      (is (= {:type "ephemeral"} (:cache_control (first marked))))
       (is (= "sys" (:content (first marked)))))
     (testing "tail messages marked on envelope"
       (doseq [i [1 2 3]]
-        (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (nth marked i))))))))
+        (is (= {:type "ephemeral"} (:cache_control (nth marked i))))))))
 
 (deftest test-system-and-3-no-system-message
   (let [messages [{:role "user" :content "u1"}
@@ -69,7 +81,7 @@
     (testing "all messages get marked when no system role + breakpoints = count"
       (doseq [m marked]
         (let [c (:content m)]
-          (is (= {:type "ephemeral" :ttl "5m"}
+          (is (= {:type "ephemeral"}
                  (get-in (last c) [:cache_control]))))))))
 
 (deftest test-system-and-3-respects-breakpoint-count
@@ -80,8 +92,8 @@
                   {:role "user" :content "u4"}]
         ;; breakpoints=2 → system + only the very last message
         marked (cache/apply-system-and-3 messages {:layout :envelope :breakpoints 2})]
-    (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (first marked))))
-    (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last marked))))
+    (is (= {:type "ephemeral"} (:cache_control (first marked))))
+    (is (= {:type "ephemeral"} (:cache_control (last marked))))
     (is (nil? (:cache_control (nth marked 1))))
     (is (nil? (:cache_control (nth marked 2))))
     (is (nil? (:cache_control (nth marked 3))))))
@@ -102,13 +114,26 @@
                 {:type "text" :text "b"}]
         marked (cache/apply-system-blocks-cache blocks {})]
     (is (nil? (:cache_control (first marked))))
-    (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last marked))))))
+    (is (= {:type "ephemeral"} (:cache_control (last marked))))))
 
 (deftest test-apply-tools-cache
   (let [tools [{:name "foo"} {:name "bar"}]
         marked (cache/apply-tools-cache tools {})]
     (is (nil? (:cache_control (first marked))))
-    (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last marked))))))
+    (is (= {:type "ephemeral"} (:cache_control (last marked))))))
+
+(deftest test-cache-request-breakpoints
+  (is (= 4 (cache/breakpoints {})))
+  (is (= 0 (cache/breakpoints {:request/cache {:breakpoints 0}})))
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                        #"Cache breakpoints must be a non-negative integer"
+                        (cache/breakpoints
+                         {:request/cache {:breakpoints -1}})))
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                        #"Cache breakpoints must be a non-negative integer"
+                        (cache/apply-system-and-3
+                         [{:role "user" :content "hello"}]
+                         {:breakpoints -1}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Layout policy
@@ -145,9 +170,9 @@
       (is (= :implicit (:strategy (cache/decide-strategy vertex-profile "gemini-2.5-pro" {})))))
     (testing "explicit cached-content-id wins when supplied"
       (is (= :explicit (:strategy (cache/decide-strategy native-profile "gemini-2.5-pro"
-                                                          {:cached-content-id "cachedContents/x"}))))
+                                                         {:cached-content-id "cachedContents/x"}))))
       (is (= :explicit (:strategy (cache/decide-strategy vertex-profile "gemini-2.5-pro"
-                                                          {:cached-content-id "cachedContents/x"})))))))
+                                                         {:cached-content-id "cachedContents/x"})))))))
 
 (deftest test-decide-strategy-respects-caller-override
   (let [profile (provider/get-provider :anthropic)

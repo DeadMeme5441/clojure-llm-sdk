@@ -9,9 +9,9 @@
      5. Bundled snapshot at resources/models-dev-snapshot.json (last resort,
         ships with the SDK so offline use works)
 
-   Normalizes models.dev's per-provider tree into ModelEntry maps with
-   :model/source :models-dev so the registry merge layer can compare
-   against live /models fetches and the bundled snapshot uniformly."
+   Normalizes models.dev's per-provider tree into ModelEntry maps while
+   preserving whether data came from the network, a fresh/stale disk cache, or
+   the bundled snapshot. Public catalog presence is metadata, not entitlement."
   (:require [cheshire.core :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -123,18 +123,31 @@
   ([provider-keyword model-id raw-entry ts]
    (normalize-entry provider-keyword model-id raw-entry ts {}))
   ([provider-keyword model-id raw-entry ts
-    {:keys [source-url source-revision]}]
+    {:keys [source source-url source-revision source-freshness]}]
    (let [caps (entry->capabilities model-id raw-entry)
          cost (entry->cost raw-entry)
          limit (:limit raw-entry)
          status (:status raw-entry)
-         base {:model/id model-id
-               :model/provider provider-keyword
-               :model/source :models-dev
-               :model/source-url (or source-url "https://models.dev/api.json")}]
+         model-source (case source
+                        :bundled :bundled-snapshot
+                        :disk :models-dev-cache
+                        :models-dev)
+         base (cond-> {:model/id model-id
+                       :model/provider provider-keyword
+                       :model/source model-source
+                       :model/source-url (or source-url
+                                             "https://models.dev/api.json")
+                       :model/source-freshness
+                       (or source-freshness
+                           (case source
+                             :bundled :bundled
+                             :disk :fresh
+                             :fresh))
+                       :model/availability :unknown}
+                ts (assoc :model/fetched-at ts)
+                source-revision
+                (assoc :model/source-revision source-revision))]
      (cond-> base
-       ts (assoc :model/fetched-at ts)
-       source-revision (assoc :model/source-revision source-revision)
        (:family raw-entry) (assoc :model/family (:family raw-entry))
        (:name raw-entry) (assoc :model/display-name (:name raw-entry))
        (:release_date raw-entry)
@@ -173,30 +186,50 @@
 (defn- cache-file ^java.io.File []
   (io/file *cache-dir* "models-dev-cache.json"))
 
+(defn- fresh-timestamp? [timestamp]
+  (and timestamp (< (- (ms-now) timestamp) *ttl-ms*)))
+
 (defn- mem-fresh? [{:keys [fetched-at-ms]}]
-  (and fetched-at-ms (< (- (ms-now) fetched-at-ms) *ttl-ms*)))
+  (fresh-timestamp? fetched-at-ms))
 
 (defn- disk-fresh? []
   (let [f (cache-file)]
-    (and (.exists f)
-         (< (- (ms-now) (.lastModified f)) *ttl-ms*))))
+    (and (.exists f) (fresh-timestamp? (.lastModified f)))))
 
 (defn- read-disk-cache []
   (try
     (let [f (cache-file)]
       (when (.exists f)
-        {:data (json/parse-string (slurp f) true)
-         :fetched-at-ms (.lastModified f)
-         :source :disk}))
+        (let [parsed (json/parse-string (slurp f) true)
+              envelope? (and (map? parsed)
+                             (map? (:_llm_sdk_cache parsed))
+                             (contains? parsed :data))
+              meta (when envelope? (:_llm_sdk_cache parsed))
+              fetched-at-ms (or (:fetched_at_ms meta) (.lastModified f))]
+          {:data (if envelope? (:data parsed) parsed)
+           :fetched-at-ms fetched-at-ms
+           :source :disk
+           :source-url (or (:source_url meta) *api-url*)
+           :source-revision (:source_revision meta)
+           :source-freshness (if (fresh-timestamp? fetched-at-ms)
+                               :fresh
+                               :stale)})))
     (catch Exception _ nil)))
 
-(defn- write-disk-cache! [data]
+(defn- write-disk-cache! [{:keys [data fetched-at-ms source-url
+                                  source-revision]}]
   (try
     (let [dir (io/file *cache-dir*)
           f (cache-file)
-          tmp (io/file (str (.getPath f) ".tmp"))]
+          tmp (io/file (str (.getPath f) ".tmp"))
+          envelope {:_llm_sdk_cache
+                    (cond-> {:fetched_at_ms fetched-at-ms
+                             :source_url source-url}
+                      source-revision
+                      (assoc :source_revision source-revision))
+                    :data data}]
       (when-not (.exists dir) (.mkdirs dir))
-      (spit tmp (json/generate-string data))
+      (spit tmp (json/generate-string envelope))
       (.renameTo tmp f))
     (catch Exception _ nil)))
 
@@ -209,7 +242,8 @@
          :fetched-at-ms 0
          :source :bundled
          :source-url (:source_url meta)
-         :source-revision (:source_revision meta)}))
+         :source-revision (:source_revision meta)
+         :source-freshness :bundled}))
     (catch Exception _ nil)))
 
 (defn- fetch-network []
@@ -221,7 +255,9 @@
       (when (and (>= status 200) (< status 300) (map? (:body resp)))
         {:data (:body resp)
          :fetched-at-ms (ms-now)
-         :source :network}))
+         :source :network
+         :source-url *api-url*
+         :source-freshness :fresh}))
     (catch Exception _ nil)))
 
 (defn fetch-all
@@ -243,7 +279,7 @@
      :else
      (or (let [n (fetch-network)]
            (when n
-             (write-disk-cache! (:data n))
+             (write-disk-cache! n)
              (reset! cache n)
              n))
          (let [d (read-disk-cache)]
@@ -308,32 +344,37 @@
     (java.util.Date. ^long ms)))
 
 (defn lookup
-  "Look up (provider, model) and return a normalized ModelEntry tagged
-   :model/source :models-dev. Returns nil when the provider has no
-   mapping or models.dev doesn't know the model."
+  "Look up (provider, model) and return a normalized ModelEntry retaining
+   network/disk/bundled source and freshness. Returns nil when unknown."
   [provider-id model-id]
-  (let [{:keys [data fetched-at-ms source-url source-revision]}
-        (or (fetch-all) {})]
+  (let [{:keys [data fetched-at-ms source source-url source-revision
+                source-freshness]}
+        (or (fetch-all) {})
+        provenance {:source source
+                    :source-url source-url
+                    :source-revision source-revision
+                    :source-freshness source-freshness}]
     (when-let [models-map (provider-models-map data provider-id)]
       (when-let [raw (find-model-entry models-map model-id)]
         (normalize-entry provider-id model-id raw (ms->inst fetched-at-ms)
-                         {:source-url source-url
-                          :source-revision source-revision})))))
+                         provenance)))))
 
 (defn list-models
   "Return normalized ModelEntry maps for every model models.dev knows
-   under our SDK provider keyword. Empty vector when the provider has
-   no mapping or the registry is empty."
+   under our SDK provider keyword. Empty vector when unavailable."
   [provider-id]
-  (let [{:keys [data fetched-at-ms source-url source-revision]}
+  (let [{:keys [data fetched-at-ms source source-url source-revision
+                source-freshness]}
         (or (fetch-all) {})
-        ts (ms->inst fetched-at-ms)]
+        ts (ms->inst fetched-at-ms)
+        provenance {:source source
+                    :source-url source-url
+                    :source-revision source-revision
+                    :source-freshness source-freshness}]
     (->> (provider-models-map data provider-id)
          (mapv (fn [[k v]]
-                 (normalize-entry
-                  provider-id (full-key-name k) v ts
-                  {:source-url source-url
-                   :source-revision source-revision}))))))
+                 (normalize-entry provider-id (full-key-name k) v ts
+                                  provenance))))))
 
 (defn known-providers
   "Return the set of SDK provider keywords for which models.dev has

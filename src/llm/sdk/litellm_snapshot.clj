@@ -102,13 +102,15 @@
         caps (when (sequential? caps-raw)
                (into #{} (map keyword caps-raw)))
         meta (snapshot-meta @cache)
-        source-url (or (get meta "source_url")
-                       "https://github.com/BerriAI/litellm/blob/b1a61f510c90ce7e4533e89247c941fa201ada4f/model_prices_and_context_window.json")
+        source-url (get meta "source_url")
         source-revision (get meta "source_revision")]
     (cond-> {:model/id model-id
              :model/provider provider-id
              :model/source :litellm-snapshot
-             :model/source-url source-url}
+             :model/source-freshness :bundled
+             :model/availability :unknown}
+      source-url
+      (assoc :model/source-url source-url)
       source-revision
       (assoc :model/source-revision source-revision)
       (get raw "context_length")

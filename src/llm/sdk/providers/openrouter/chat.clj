@@ -4,7 +4,6 @@
    plugins, reasoning, session routing, and detailed usage."
   (:require [clojure.string :as str]
             [llm.sdk.transport :as t]
-            [llm.sdk.provider :as provider]
             [llm.sdk.providers.openai.chat :as openai]
             [llm.sdk.providers.openrouter.embeddings]
             [llm.sdk.usage :as usage]
@@ -174,12 +173,9 @@
     (usage/normalize-usage :openrouter raw))
 
   (request-capabilities [_]
-    #{:chat :streaming :tools :json-schema :reasoning :provider-routing}))
+    #{:chat :streaming :tools :json-schema :reasoning :cache :multimodal
+      :provider-routing}))
 
 (defn make-transport []
   (->OpenRouterTransport))
 
-;; Register
-(when-let [p (provider/get-provider :openrouter)]
-  (provider/register-provider
-   (assoc p :profile/transport-constructor make-transport)))

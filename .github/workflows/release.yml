@@ -51,11 +51,18 @@ jobs:
 
       - name: Derive version from tag
         id: ver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            V="${{ github.event.inputs.version }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            V="$INPUT_VERSION"
           else
             V="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ ! "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Invalid release version" >&2
+            exit 1
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Releasing version $V"
@@ -63,16 +70,12 @@ jobs:
       - name: Run tests
         run: clojure -M:test
 
-      - name: Build jar
-        env:
-          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
-        run: clojure -T:build jar
+      - name: Snapshot generator tests
+        run: python3 -m unittest discover -s test -p '*_test.py'
 
-      - name: Deploy to Clojars
+      - name: Build and deploy to Clojars
         env:
           RELEASE_VERSION: ${{ steps.ver.outputs.version }}
           CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
-        run: |
-          clojure -X:deploy \
-            :artifact "\"target/clojure-llm-sdk-${{ steps.ver.outputs.version }}.jar\""
+        run: clojure -T:build deploy

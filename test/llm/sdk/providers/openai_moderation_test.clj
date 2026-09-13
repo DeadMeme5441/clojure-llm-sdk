@@ -6,7 +6,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.moderate :as mt]
             [llm.sdk.schema :as schema]
-            [llm.sdk.providers.openai-moderation :as oai-mod]))
+            [llm.sdk.providers.openai.moderation :as oai-mod]))
 
 (defn- load-fixture [path]
   (-> (io/resource path) slurp (json/parse-string true)))

@@ -12,7 +12,6 @@
    GOOGLE_CLOUD_PROJECT env → SA JSON project_id."
   (:require [clojure.string :as str]
             [llm.sdk.transport :as t]
-            [llm.sdk.provider :as provider]
             [llm.sdk.providers.gemini.native :as gemini]
             [llm.sdk.usage :as usage]
             [llm.sdk.errors :as errors]
@@ -132,17 +131,3 @@
 (defn make-transport []
   (->VertexGeminiTransport))
 
-;; Register
-(provider/register-provider
- {:profile/id :vertex-gemini
-  :profile/protocol-family :gemini-native
-  :profile/base-url "https://us-central1-aiplatform.googleapis.com"
-  :profile/auth-strategy :gcp-oauth
-  :profile/supports-model-listing true
-  :profile/capabilities #{:chat :streaming :tools :multimodal :reasoning
-                          :file-attachments :json-schema :cache}
-  :profile/env-var-names ["GOOGLE_APPLICATION_CREDENTIALS"
-                          "GOOGLE_OAUTH_ACCESS_TOKEN"
-                          "GOOGLE_CLOUD_PROJECT"
-                          "GOOGLE_CLOUD_LOCATION"]
-  :profile/transport-constructor make-transport})

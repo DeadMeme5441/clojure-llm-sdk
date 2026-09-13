@@ -111,12 +111,12 @@
 ;; Fuzzy resolve
 ;; ---------------------------------------------------------------------------
 
-(deftest resolve-model-exact
+(deftest resolve-model-provider-aware-exact
   (offline
    (fn []
-     (let [m (catalog/resolve-model "gpt-4o")]
-       (is (some? m))
-       (is (= "gpt-4o" (:model/id m)))))))
+     (let [m (catalog/resolve-model :openai "gpt-4o")]
+       (is (= "gpt-4o" (:model/id m)))
+       (is (= :openai (:model/provider m)))))))
 
 (deftest resolve-model-prioritizes-explicit-provider-prefix
   (offline
@@ -133,6 +133,30 @@
        (is (= :anthropic (:model/provider native)))
        (is (= "vendor/routed-model" (:model/id routed)))
        (is (= :openrouter (:model/provider routed)))))))
+
+(deftest resolve-model-rejects-ambiguous-exact-id
+  (offline
+   (fn []
+     (catalog/register-model :anthropic "same-billing-name"
+                             {:model/cost {:input-per-million 1.0}})
+     (catalog/register-model :openrouter "same-billing-name"
+                             {:model/cost {:input-per-million 9.0}})
+     (try
+       (catalog/resolve-model "same-billing-name")
+       (is false "expected explicit ambiguity")
+       (catch clojure.lang.ExceptionInfo e
+         (is (= :catalog/ambiguous-model (:error (ex-data e))))
+         (is (= [:anthropic :openrouter]
+                (:providers (ex-data e)))))))))
+
+(deftest resolve-model-does-not-guess-substrings
+  (offline
+   (fn []
+     (catalog/register-model :openai "unique-resolver-model"
+                             {:model/context-length 1024})
+     (is (nil? (catalog/resolve-model "resolver")))
+     (is (= "unique-resolver-model"
+            (:model/id (catalog/resolve-model "unique-resolver-model")))))))
 
 ;; ---------------------------------------------------------------------------
 ;; register-model — override roundtrip

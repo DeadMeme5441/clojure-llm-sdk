@@ -6,7 +6,7 @@
             [llm.sdk.transport.embed :as et]
             [llm.sdk.schema :as schema]
             [llm.sdk.stream :as stream]
-            [llm.sdk.providers.ollama-native :as ollama]))
+            [llm.sdk.providers.ollama.native :as ollama]))
 
 (deftest test-chat-build-request
   (let [t (ollama/make-transport)
@@ -127,8 +127,12 @@
                                     call]
                   :message/tool-calls [call]}
                  {:message/role :tool
-                  :message/tool-call-id "canonical-id"
-                  :message/content "sunny"}]})
+                  :message/content
+                  [{:part/type :tool-result
+                    :tool-result/id "canonical-id"
+                    :tool-result/name "weather"
+                    :tool-result/content "sunny"
+                    :tool-result/is-error false}]}]})
         assistant (get-in built [:body :messages 0])
         tool-result (get-in built [:body :messages 1])]
     (is (= "checking" (:thinking assistant)))
@@ -139,7 +143,8 @@
            (:tool_calls assistant))
         "The canonical call in content and message/tool-calls is replayed once")
     (is (= "weather" (:tool_name tool-result)))
-    (is (= "canonical-id" (:tool_call_id tool-result)))))
+    (is (= "canonical-id" (:tool_call_id tool-result)))
+    (is (= "sunny" (:content tool-result)))))
 
 (deftest test-chat-vision-images-sibling
   (let [t (ollama/make-transport)
@@ -470,7 +475,25 @@
            (:embed/vectors parsed)))
     (is (= 3 (:embed/dimensions parsed)))
     (is (= 8 (get-in parsed [:response/usage :usage/input-tokens])))
-    (is (= {:total_duration 200 :load_duration 25}
+    (is (= {:prompt_eval_count 8
+            :total_duration 200
+            :load_duration 25}
            (get-in parsed [:response/usage :usage/provider-raw])))
     (is (= raw (:embed/raw parsed)))
     (is (schema/validate-embed-response parsed))))
+
+(deftest test-embed-duration-only-usage-does-not-invent-token-counts
+  (let [profile (provider/get-provider :ollama-native)
+        t ((:profile/embed-transport-constructor profile))
+        parsed (et/parse-embed-response
+                t profile
+                {:model "nomic-embed-text"
+                 :embeddings [[0.1]]
+                 :total_duration 200})
+        usage (:response/usage parsed)]
+    (is (= {:usage/request-count 1
+            :usage/provider-raw {:total_duration 200}}
+           usage))
+    (is (not (contains? usage :usage/input-tokens)))
+    (is (not (contains? usage :usage/output-tokens)))
+    (is (not (contains? usage :usage/total-tokens)))))

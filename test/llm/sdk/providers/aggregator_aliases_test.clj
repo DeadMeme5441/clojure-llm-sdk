@@ -6,7 +6,7 @@
             [llm.sdk :as sdk]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.openai-chat :as openai]
+            [llm.sdk.providers.openai.chat :as openai]
             [llm.sdk.models :as models]))
 
 (def ^:private aggregators

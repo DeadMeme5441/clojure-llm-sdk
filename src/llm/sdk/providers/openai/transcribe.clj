@@ -43,6 +43,22 @@
 (defn- repeated-parts [field values]
   (mapv #(hash-map :name field :content (multipart-content %)) values))
 
+(def ^:private protected-multipart-fields
+  #{"file" "model" "prompt" "language" "temperature"
+    "response_format" "timestamp_granularities[]"})
+
+(defn- custom-multipart-parts [options]
+  (let [parts (:multipart options)]
+    (doseq [part parts
+            :let [field (some-> (:name part) name)]
+            :when (contains? protected-multipart-fields field)]
+      (throw
+       (ex-info "Provider multipart options cannot override canonical transcription fields"
+                {:provider :openai
+                 :field field
+                 :error/type :request/protected-extra-body-override})))
+    parts))
+
 (defn- provider-option-parts [options]
   (let [chunking (or (:chunking_strategy options)
                      (:chunking-strategy options))]
@@ -65,7 +81,7 @@
            (repeated-parts "known_speaker_references[]"
                            (or (:known_speaker_references options)
                                (:known-speaker-references options)))
-           (:multipart options)))))
+           (custom-multipart-parts options)))))
 
 (def ^:private groq-response-formats #{"json" "verbose_json" "text"})
 
@@ -111,7 +127,7 @@
                                    (multipart-content response-format))))
           (reject-option! profile :transcribe/response-format)))
       (when-let [option (first (remove groq-provider-option-keys
-                                      (keys options)))]
+                                       (keys options)))]
         (reject-option! profile option)))))
 
 (defn- groq-provider-option-parts [options]
@@ -221,8 +237,11 @@
            :response/raw raw}
 
           :else
-          {:transcription/text ""
-           :response/raw raw})
+          (throw
+           (ex-info "Transcription provider returned no transcript text"
+                    {:provider :openai
+                     :error/type :provider/invalid-transcription-response
+                     :body raw})))
         normalized-usage (when (map? (:usage raw))
                            (normalize-transcription-usage (:usage raw)))
         duration (or (:duration raw)
@@ -282,9 +301,3 @@
 
 (defn make-transport [] (->OpenAITranscribeTransport))
 
-;; Attach to :openai (whisper-1 and current gpt transcription models) and
-;; :groq (whisper-large-v3 and whisper-large-v3-turbo).
-(doseq [pid [:openai :groq]]
-  (when-let [p (provider/get-provider pid)]
-    (provider/register-provider
-     (assoc p :profile/transcribe-transport-constructor make-transport))))

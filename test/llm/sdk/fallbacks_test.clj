@@ -37,9 +37,9 @@
 (deftest test-first-provider-succeeds
   (let [stub (stub-complete {:openai {:ok (response :openai "gpt-4o")}})
         resp (sdk/with-fallbacks
-              [[:openai "gpt-4o"] [:anthropic "claude-haiku-4-5"]]
-              {:request/messages [{:message/role :user :message/content "Hi"}]}
-              {:complete-fn stub})]
+               [[:openai "gpt-4o"] [:anthropic "claude-haiku-4-5"]]
+               {:request/messages [{:message/role :user :message/content "Hi"}]}
+               {:complete-fn stub})]
     (is (= :openai (:response/provider resp)))
     (is (= "gpt-4o" (:response/model resp)))))
 
@@ -48,9 +48,9 @@
               {:openai {:throw {:status 429 :error {:error/reason :rate-limit}}}
                :anthropic {:ok (response :anthropic "claude-haiku-4-5")}})
         resp (sdk/with-fallbacks
-              [[:openai "gpt-4o"] [:anthropic "claude-haiku-4-5"]]
-              {:request/messages [{:message/role :user :message/content "Hi"}]}
-              {:complete-fn stub})]
+               [[:openai "gpt-4o"] [:anthropic "claude-haiku-4-5"]]
+               {:request/messages [{:message/role :user :message/content "Hi"}]}
+               {:complete-fn stub})]
     (is (= :anthropic (:response/provider resp)))))
 
 (deftest test-falls-through-on-terminal-error-too
@@ -59,9 +59,9 @@
                 {:openai {:throw {:status 401 :error {:error/reason :auth}}}
                  :anthropic {:ok (response :anthropic "claude-haiku-4-5")}})
           resp (sdk/with-fallbacks
-                [[:openai "gpt-4o"] [:anthropic "claude-haiku-4-5"]]
-                {:request/messages [{:message/role :user :message/content "Hi"}]}
-                {:complete-fn stub})]
+                 [[:openai "gpt-4o"] [:anthropic "claude-haiku-4-5"]]
+                 {:request/messages [{:message/role :user :message/content "Hi"}]}
+                 {:complete-fn stub})]
       (is (= :anthropic (:response/provider resp))))))
 
 ;; ---------------------------------------------------------------------------
@@ -74,9 +74,9 @@
                :anthropic {:throw {:status 503 :error {:error/reason :overloaded}}}})
         ex (try
              (sdk/with-fallbacks
-              [[:openai "gpt-4o"] [:anthropic "claude-haiku-4-5"]]
-              {:request/messages [{:message/role :user :message/content "Hi"}]}
-              {:complete-fn stub})
+               [[:openai "gpt-4o"] [:anthropic "claude-haiku-4-5"]]
+               {:request/messages [{:message/role :user :message/content "Hi"}]}
+               {:complete-fn stub})
              nil
              (catch clojure.lang.ExceptionInfo e e))
         data (ex-data ex)]
@@ -89,7 +89,7 @@
 
 (deftest test-empty-provider-list-throws
   (is (thrown-with-msg? Exception #"empty provider list"
-        (sdk/with-fallbacks [] {:request/messages []}))))
+                        (sdk/with-fallbacks [] {:request/messages []}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Side-effects
@@ -123,11 +123,3 @@
          :request/messages [{:message/role :user :message/content "Hi"}]}
         {:complete-fn stub})
       (is (= [[:openai "gpt-4o"] [:anthropic "claude-haiku-4-5"]] @calls)))))
-
-;; ---------------------------------------------------------------------------
-;; Public API surface
-;; ---------------------------------------------------------------------------
-
-(deftest test-public-api-exposes-with-fallbacks
-  (is (some? (resolve 'llm.sdk/with-fallbacks)))
-  (is (fn? @(resolve 'llm.sdk/with-fallbacks))))

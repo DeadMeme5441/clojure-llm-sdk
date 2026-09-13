@@ -6,6 +6,7 @@
             [llm.sdk.errors :as errors]
             [llm.sdk.sse :as sse]
             [llm.sdk.stream :as stream]
+            [llm.sdk.transport :as transport]
             [llm.sdk.usage :as usage]))
 
 (defn build-request
@@ -31,11 +32,11 @@
                fmt (assoc :response_format fmt)
                (:speak/speed request) (assoc :speed (:speak/speed request))
                (:speak/instructions request) (assoc :instructions (:speak/instructions request)))
-        body (merge body options)]
+        body (transport/merge-extra-body (:profile/id profile) body options)]
     {:method :post
      :url (str (:profile/base-url profile) "/audio/speech")
      :headers (merge (provider/default-headers profile
-                                                (provider/resolve-auth-token profile))
+                                               (provider/resolve-auth-token profile))
                      {"Content-Type" "application/json"})
      :body body}))
 
@@ -82,6 +83,3 @@
 
 (defn make-transport [] (->OpenAISpeakTransport))
 
-(when-let [p (provider/get-provider :openai)]
-  (provider/register-provider
-   (assoc p :profile/speak-transport-constructor make-transport)))

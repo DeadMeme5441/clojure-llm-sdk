@@ -6,10 +6,8 @@
    request containing queries, sources, and a Bedrock reranking
    configuration. The request is signed by llm.sdk.rerank via SigV4."
   (:require [llm.sdk.errors :as errors]
-            [llm.sdk.provider :as provider]
             [llm.sdk.providers.bedrock.converse :as bedrock]
             [llm.sdk.transport.rerank :as rt]))
-
 
 (defn- source-for [doc]
   {:type "INLINE"
@@ -48,10 +46,9 @@
     {:method :post
      :url (str base-url "/rerank")
      :headers {"Content-Type" "application/json"}
-     :llm.sdk.providers.bedrock/aws-service "bedrock"
-     :llm.sdk.providers.bedrock/aws-region region
+     :llm.sdk.providers.bedrock.converse/aws-service "bedrock"
+     :llm.sdk.providers.bedrock.converse/aws-region region
      :body body}))
-
 
 (defn- document->canonical [document]
   (case (:type document)
@@ -68,7 +65,6 @@
          :provider :bedrock
          :result/index (:index result)})))
     (double score)))
-
 
 (defn parse-rerank-response-bedrock
   [_profile raw]
@@ -103,8 +99,3 @@
 
 (defn make-transport [] (->BedrockRerankTransport))
 
-(when-let [p (provider/get-provider :bedrock)]
-  (provider/register-provider
-   (-> p
-       (assoc :profile/rerank-transport-constructor make-transport)
-       (update :profile/capabilities (fnil conj #{}) :rerank))))

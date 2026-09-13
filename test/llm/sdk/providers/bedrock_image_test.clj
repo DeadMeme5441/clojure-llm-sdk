@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.image :as it]
-            [llm.sdk.providers.bedrock-image :as bimage]))
+            [llm.sdk.providers.bedrock.image :as bimage]))
 
 (deftest test-bedrock-titan-build-request
   (let [t (bimage/make-transport)
@@ -19,7 +19,7 @@
     (is (= "a cat in space" (get-in built [:body :textToImageParams :text])))
     (is (= 2 (get-in built [:body :imageGenerationConfig :numberOfImages])))
     (is (= 1024 (get-in built [:body :imageGenerationConfig :width])))
-    (is (= "bedrock" (get built :llm.sdk.providers.bedrock/aws-service)))))
+    (is (= "bedrock" (get built :llm.sdk.providers.bedrock.converse/aws-service)))))
 
 (deftest test-bedrock-stability-build-request
   (let [t (bimage/make-transport)
@@ -202,12 +202,12 @@
     (is (.startsWith ^String (:url regional)
                      "https://bedrock-runtime.eu-west-1.amazonaws.com/model/"))
     (is (= "eu-west-1"
-           (:llm.sdk.providers.bedrock/aws-region regional)))
+           (:llm.sdk.providers.bedrock.converse/aws-region regional)))
     (is (= (str "https://bedrock-runtime.example.test/model/"
                 "stability.stable-image-core-v1:1/invoke")
            (:url custom)))
     (is (= "ap-southeast-2"
-           (:llm.sdk.providers.bedrock/aws-region custom)))))
+           (:llm.sdk.providers.bedrock.converse/aws-region custom)))))
 
 (deftest test-bedrock-core-and-ultra-use-documented-request-options
   (let [t (bimage/make-transport)

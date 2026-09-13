@@ -31,6 +31,9 @@
    8 :timestamp
    9 :uuid})
 
+(def ^:private max-frame-length (* 24 1024 1024))
+(def ^:private max-headers-length (* 128 1024))
+
 (defn- read-fully ^bytes [^DataInputStream in n]
   (let [buf (byte-array n)]
     (.readFully in buf)
@@ -40,7 +43,7 @@
   (let [name-len (.readUnsignedByte in)
         name (String. (read-fully in name-len) StandardCharsets/UTF_8)
         type-byte (.readUnsignedByte in)
-        t (get header-types type-byte :unknown)
+        t (get header-types type-byte)
         value (case t
                 :bool-true true
                 :bool-false false
@@ -54,7 +57,8 @@
                   (if (= t :string) (String. bs StandardCharsets/UTF_8) bs))
                 :timestamp (.readLong in)
                 :uuid (read-fully in 16)
-                (read-fully in 0))]
+                (throw (ex-info "Unknown AWS event-stream header type"
+                                {:header name :type-byte type-byte})))]
     [name value]))
 
 (defn- read-headers [headers-bytes]
@@ -67,34 +71,60 @@
           (let [[k v] (read-header in)]
             (recur (assoc! out k v)))
           (persistent! out)))
-      (catch EOFException _
-        {}))))
+      (catch EOFException e
+        (throw (ex-info "Truncated AWS event-stream headers"
+                        {:headers-length (alength ^bytes headers-bytes)}
+                        e))))))
 
 (defn read-frame
   "Read one frame from a DataInputStream. Returns
-   {:headers {} :payload <bytes>} or nil at EOF."
+   {:headers {} :payload <bytes>} or nil only when EOF precedes a new frame.
+   Truncated and invalid frames throw ExceptionInfo."
   [^DataInputStream in]
-  (try
-    (let [total-len (.readInt in)
-          headers-len (.readInt in)
-          ;; skip prelude CRC
-          _ (.readInt in)
-          headers-bytes (read-fully in headers-len)
-          payload-len (- total-len headers-len 16)
-          payload (read-fully in payload-len)
-          _ (.readInt in)]   ; skip message CRC
-      {:headers (read-headers headers-bytes)
-       :payload payload})
-    (catch EOFException _ nil)))
+  (let [first-byte (.read in)]
+    (when-not (= -1 first-byte)
+      (try
+        (let [total-len (bit-or (bit-shift-left first-byte 24)
+                                (bit-shift-left (.readUnsignedByte in) 16)
+                                (bit-shift-left (.readUnsignedByte in) 8)
+                                (.readUnsignedByte in))
+              headers-len (.readInt in)
+              _ (.readInt in)
+              payload-len (- total-len headers-len 16)]
+          (when (or (< total-len 16) (> total-len max-frame-length))
+            (throw (ex-info "Invalid AWS event-stream frame length"
+                            {:total-length total-len
+                             :maximum max-frame-length})))
+          (when (or (neg? headers-len)
+                    (> headers-len max-headers-length)
+                    (> headers-len (- total-len 16)))
+            (throw (ex-info "Invalid AWS event-stream headers length"
+                            {:total-length total-len
+                             :headers-length headers-len
+                             :maximum max-headers-length})))
+          (let [headers-bytes (read-fully in headers-len)
+                payload (read-fully in payload-len)
+                _ (.readInt in)]
+            {:headers (read-headers headers-bytes)
+             :payload payload}))
+        (catch EOFException e
+          (throw (ex-info "Truncated AWS event-stream frame" {} e)))))))
 
 (defn frame-seq
-  "Lazy seq of decoded frames from an InputStream."
+  "Lazy seq of decoded frames from an InputStream. Full consumption and decoder
+   failures close the stream; callers abandoning a prefix must still close its
+   owning SDK stream handle."
   [^InputStream is]
   (let [in (DataInputStream. is)]
     (letfn [(step []
               (lazy-seq
-                (when-let [f (read-frame in)]
-                  (cons f (step)))))]
+               (try
+                 (if-let [frame (read-frame in)]
+                   (cons frame (step))
+                   (do (.close in) nil))
+                 (catch Throwable t
+                   (try (.close in) (catch Throwable _))
+                   (throw t)))))]
       (step))))
 
 (defn frame->json

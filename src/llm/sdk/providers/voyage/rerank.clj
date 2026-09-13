@@ -9,9 +9,14 @@
    Voyage usage shape: {:usage {:total_tokens N}}."
   (:require [llm.sdk.transport.rerank :as rt]
             [llm.sdk.provider :as provider]
+            [llm.sdk.transport :as transport]
             [llm.sdk.errors :as errors]))
 
-(defn- ->int [x] (cond (int? x) x (number? x) (int x) :else 0))
+(defn- ->int [value]
+  (when (and (number? value)
+             (not (neg? value))
+             (Double/isFinite (double value)))
+    (int value)))
 (defn- validate-documents! [documents]
   (doseq [[index document] (map-indexed vector documents)]
     (when-not (string? document)
@@ -22,7 +27,6 @@
          :provider :voyage
          :document/index index
          :document/value document})))))
-
 
 (defn build-rerank-request-voyage
   [profile request]
@@ -39,7 +43,7 @@
                (contains? opts :truncation)
                (assoc :truncation (:truncation opts)))
         extra (:extra_body opts)
-        body (if (seq extra) (merge body extra) body)
+        body (transport/merge-extra-body (:profile/id profile) body extra)
         _ (validate-documents! (:documents body))]
     {:method :post
      :url (str (:profile/base-url profile) "/rerank")
@@ -80,12 +84,12 @@
              :rerank/results results
              :rerank/raw raw}
       (:id raw) (assoc :rerank/id (:id raw))
-      (pos? total) (assoc :response/usage
-                          {:usage/input-tokens total
-                           :usage/output-tokens 0
-                           :usage/total-tokens total
-                           :usage/request-count 1
-                           :usage/provider-raw (:usage raw)}))))
+      (some? total) (assoc :response/usage
+                           {:usage/input-tokens total
+                            :usage/output-tokens 0
+                            :usage/total-tokens total
+                            :usage/request-count 1
+                            :usage/provider-raw (:usage raw)}))))
 
 (defn parse-rerank-error-voyage
   [_profile status body]
@@ -105,6 +109,3 @@
 
 (defn make-transport [] (->VoyageRerankTransport))
 
-(when-let [p (provider/get-provider :voyage)]
-  (provider/register-provider
-   (assoc p :profile/rerank-transport-constructor make-transport)))

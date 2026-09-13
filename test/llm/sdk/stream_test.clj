@@ -53,7 +53,6 @@
                   "gpt-5.5")]
     (is (= :tool-calls (:response/finish-reason response)))))
 
-
 (deftest test-events->response
   (let [events [(stream/start-event)
                 (stream/content-delta "The answer")
@@ -195,6 +194,45 @@
     (is (= 16 (get-in revised-response
                       [:response/usage :usage/output-tokens])))
     (is (= 41 (get-in revised-response
+                      [:response/usage :usage/total-tokens])))))
+
+(deftest authoritative-total-survives-sparse-cumulative-updates
+  (let [response
+        (stream/events->response
+         [(stream/usage-event
+           {:usage/input-tokens 20
+            :usage/output-tokens 10
+            :usage/total-tokens 99})
+          (stream/usage-event {:usage/output-tokens 11})
+          (stream/end-event :finish-reason :stop)]
+         :openai
+         "model")]
+    (is (= {:usage/input-tokens 20
+            :usage/output-tokens 11
+            :usage/total-tokens 99}
+           (:response/usage response)))))
+
+(deftest derived-total-waits-for-derivable-cumulative-usage
+  (let [output-only
+        (stream/acc->response
+         (stream/reduce-event
+          (stream/empty-accumulator)
+          (stream/usage-event {:usage/output-tokens 0}))
+         :openai
+         "model")
+        complete
+        (stream/events->response
+         [(stream/usage-event {:usage/output-tokens 7})
+          (stream/usage-event {:usage/input-tokens 5})]
+         :openai
+         "model")]
+    (is (= 0 (get-in output-only
+                     [:response/usage :usage/output-tokens])))
+    (is (not (contains? (:response/usage output-only)
+                        :usage/input-tokens)))
+    (is (not (contains? (:response/usage output-only)
+                        :usage/total-tokens)))
+    (is (= 12 (get-in complete
                       [:response/usage :usage/total-tokens])))))
 
 (deftest accumulated-stream-errors-throw-with-partial-response

@@ -23,7 +23,11 @@
     (is (= "gpt-4o" (:model/id e)))
     (is (= :litellm-snapshot (:model/source e)))
     (is (pos? (:model/context-length e)))
-    (is (pos? (get-in e [:model/cost :input-per-million])))))
+    (is (pos? (get-in e [:model/cost :input-per-million])))
+    (is (= :bundled (:model/source-freshness e)))
+    (is (= :unknown (:model/availability e)))
+    (is (string? (:model/source-url e)))
+    (is (string? (:model/source-revision e)))))
 
 (deftest test-codex-aliases-openai-snapshot
   (doseq [provider-id [:codex :codex-backend]]

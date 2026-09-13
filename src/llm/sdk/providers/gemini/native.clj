@@ -248,40 +248,20 @@
 
 (defn- tool-message->gemini
   [provider-id msg tool-name-by-id]
-  (let [content (:message/content msg)
-        parts (when (sequential? content) content)
-        unsupported (seq (remove #(#{:text :tool-result} (:part/type %))
-                                 parts))
-        tool-results (filterv #(= :tool-result (:part/type %)) parts)]
-    (when unsupported
-      (unsupported-input! provider-id (first unsupported)
-                          :unsupported-tool-result-content))
-    (when (< 1 (count tool-results))
-      (unsupported-input! provider-id (second tool-results)
-                          :multiple-tool-results-in-message))
-    (when (and (seq tool-results)
-               (some #(= :text (:part/type %)) parts))
-      (unsupported-input! provider-id (first tool-results)
-                          :mixed-tool-result-content))
-    (let [tool-result (first tool-results)
-          tool-call-id (or (:message/tool-call-id msg)
-                           (:tool-result/id tool-result))
-          tool-name (or (get tool-name-by-id tool-call-id)
-                        (:message/name msg)
-                        (:tool-result/name tool-result)
-                        "tool")
-          output (or (:tool-result/content tool-result)
-                     (t/content->string content)
-                     "")
-          response (cond-> {:name tool-name
-                            :response
-                            {(if (:tool-result/is-error tool-result)
-                               :error
-                               :output)
-                             output}}
-                     tool-call-id (assoc :id tool-call-id))]
-      {:role "user"
-       :parts [{:functionResponse response}]})))
+  (let [tool-result (t/extract-tool-result provider-id msg)
+        tool-call-id (:tool-result/id tool-result)
+        tool-name (or (:tool-result/name tool-result)
+                      (get tool-name-by-id tool-call-id)
+                      "tool")
+        response (cond-> {:name tool-name
+                          :response
+                          {(if (:tool-result/is-error tool-result)
+                             :error
+                             :output)
+                           (:tool-result/content tool-result)}}
+                   tool-call-id (assoc :id tool-call-id))]
+    {:role "user"
+     :parts [{:functionResponse response}]}))
 
 (defn- message->gemini [provider-id msg tool-name-by-id]
   (let [message-role (:message/role msg)
@@ -520,7 +500,11 @@
         thinking (build-thinking-config provider-id model
                                         (:request/reasoning request))
         response-format (response-format->gemini (:request/response-format request))
-        extra-body (or (get-in request [:request/provider-options :extra_body]) {})
+        extra-body (t/merge-extra-body
+                    provider-id
+                    {}
+                    (get-in request [:request/provider-options :extra_body])
+                    #{:model :messages :stream})
         canonical-generation-config
         (cond-> {}
           (some? (:request/temperature request))
@@ -535,8 +519,10 @@
           (merge response-format)
           thinking
           (assoc :thinkingConfig thinking))
-        generation-config (merge canonical-generation-config
-                                 (:generationConfig extra-body))
+        generation-extra (:generationConfig extra-body)
+        generation-config (t/merge-extra-body provider-id
+                                              canonical-generation-config
+                                              generation-extra)
         ;; Gemini caching is "explicit only" from the SDK's
         ;; perspective: the caller pre-creates a CachedContent
         ;; resource (via cachedContents.create or the genai SDK) and
@@ -558,7 +544,11 @@
            {:cachedContent cached-content})
          (when-some [tool-choice (:request/tool-choice request)]
            {:toolConfig (tool-choice->gemini provider-id tool-choice)}))
-        body (cond-> (merge base-body (dissoc extra-body :generationConfig))
+        body (t/merge-extra-body
+              provider-id
+              base-body
+              (dissoc extra-body :generationConfig))
+        body (cond-> body
                (seq generation-config)
                (assoc :generationConfig generation-config))
         ;; Gemini uses a different endpoint suffix + ?alt=sse for
@@ -579,9 +569,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- normalize-gemini-usage [raw]
-  (cond-> (usage/normalize-usage :gemini-native raw)
-    (some? (:thoughtsTokenCount raw))
-    (assoc :usage/reasoning-tokens (:thoughtsTokenCount raw))))
+  (let [reasoning (usage/->int (:thoughtsTokenCount raw))]
+    (cond-> (usage/normalize-usage :gemini-native raw)
+      (some? reasoning)
+      (assoc :usage/reasoning-tokens reasoning))))
 
 (defn- wire-part->canonical [provider-id idx part]
   (cond
@@ -729,24 +720,23 @@
   (sse/parse-json-data line))
 
 (defn- normalize-gemini-stream-usage [raw]
-  (let [prompt (:promptTokenCount raw)
-        completion (:candidatesTokenCount raw)
-        total (:totalTokenCount raw)
-        cached (:cachedContentTokenCount raw)
-        reasoning (:thoughtsTokenCount raw)]
+  (let [prompt (usage/->int (:promptTokenCount raw))
+        completion (usage/->int (:candidatesTokenCount raw))
+        total (usage/->int (:totalTokenCount raw))
+        cached (usage/->int (:cachedContentTokenCount raw))
+        reasoning (usage/->int (:thoughtsTokenCount raw))]
     (cond-> {:usage/provider-raw raw}
       (some? prompt)
       (assoc :usage/input-tokens
-             (max 0 (- (usage/->int prompt)
-                       (if (some? cached) (usage/->int cached) 0))))
+             (max 0 (- prompt (or cached 0))))
       (some? completion)
-      (assoc :usage/output-tokens (usage/->int completion))
+      (assoc :usage/output-tokens completion)
       (some? total)
-      (assoc :usage/total-tokens (usage/->int total))
+      (assoc :usage/total-tokens total)
       (some? cached)
-      (assoc :usage/cached-input-tokens (usage/->int cached))
+      (assoc :usage/cached-input-tokens cached)
       (some? reasoning)
-      (assoc :usage/reasoning-tokens (usage/->int reasoning)))))
+      (assoc :usage/reasoning-tokens reasoning))))
 
 (defn- citation-source->event [provider-id source]
   (stream/citation-event
@@ -897,11 +887,3 @@
 (defn make-transport []
   (->GeminiNativeTransport))
 
-;; Register
-(when-let [p (provider/get-provider :gemini-native)]
-  (provider/register-provider
-   (assoc p
-          :profile/capabilities
-          (conj (:profile/capabilities p) :json-schema :cache)
-          :profile/transport-constructor
-          make-transport)))

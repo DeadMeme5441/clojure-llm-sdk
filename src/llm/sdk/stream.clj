@@ -2,7 +2,8 @@
   "Streaming event taxonomy and reducer.
    Stream events → final canonical response.
    Preserves event order in output parts."
-  (:require [llm.sdk.errors :as errors]))
+  (:require [llm.sdk.errors :as errors]
+            [llm.sdk.usage :as usage]))
 
 ;; ---------------------------------------------------------------------------
 ;; Event constructors
@@ -80,9 +81,11 @@
 ;; ---------------------------------------------------------------------------
 
 (defrecord Accumulator
-  [parts tool-calls-indexed finish-reason usage cost provider-data errors])
+           [parts tool-calls-indexed finish-reason usage cost provider-data errors])
 
-(defn- empty-acc []
+(defn empty-accumulator
+  "Create an empty stream accumulator for incremental reduction."
+  []
   (->Accumulator [] {} nil nil nil {} []))
 
 (defn- deep-merge
@@ -92,26 +95,6 @@
               (merge-with merge-entry a b)
               b))]
     (apply merge-with merge-entry maps)))
-
-(defn- derived-total-tokens
-  [usage]
-  (+ (or (:usage/input-tokens usage) 0)
-     (or (:usage/cached-input-tokens usage) 0)
-     (or (:usage/cache-write-tokens usage) 0)
-     (or (:usage/output-tokens usage) 0)))
-
-(defn- merge-usage
-  [current update]
-  (let [update (or update {})
-        merged (deep-merge (or current {}) update)
-        merged (assoc merged
-                      :usage/input-tokens
-                      (or (:usage/input-tokens merged) 0)
-                      :usage/output-tokens
-                      (or (:usage/output-tokens merged) 0))]
-    (if (contains? update :usage/total-tokens)
-      merged
-      (assoc merged :usage/total-tokens (derived-total-tokens merged)))))
 
 (defn- update-last-text [parts delta]
   (if (and (seq parts) (= (:part/type (peek parts)) :text))
@@ -212,7 +195,7 @@
                             (assoc :tool-call/id (or (:tool-call/id event)
                                                      (:tool-call/id tc))
                                    :tool-call/name (or (:tool-call/name event)
-                                                      (:tool-call/name tc))
+                                                       (:tool-call/name tc))
                                    :tool-call/arguments (or (:tool-call/arguments tc) ""))
                             (update :tool-call/provider-data
                                     #(assoc (deep-merge
@@ -231,7 +214,7 @@
     acc ;; marker only
 
     :stream/usage
-    (cond-> (update acc :usage merge-usage (:usage event))
+    (cond-> (update acc :usage usage/merge-usage (:usage event))
       (:cost event) (update :cost #(deep-merge (or % {}) (:cost event))))
 
     :stream/provider-state
@@ -264,7 +247,7 @@
 (defn reduce-events
   "Reduce a sequence of stream events to an accumulator."
   [events]
-  (reduce reduce-event (empty-acc) events))
+  (reduce reduce-event (empty-accumulator) events))
 
 (defn- response-map
   [acc provider model]

@@ -118,8 +118,3 @@
 
 (def chat-alias-ids
   (mapv :id chat-alias-specs))
-
-(def model-listing-alias-ids
-  (->> chat-alias-specs
-       (remove #(false? (:supports-model-listing? %)))
-       (mapv :id)))

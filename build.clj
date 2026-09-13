@@ -5,12 +5,12 @@
 ;; Version is the release coordinate. CI passes the git tag (minus the `v`)
 ;; via RELEASE_VERSION so the tag, the jar name, and the pom never drift;
 ;; local builds fall back to this literal.
-(def version (or (System/getenv "RELEASE_VERSION") "0.5.0"))
+(def version (or (System/getenv "RELEASE_VERSION") "0.6.0"))
 (def class-dir "target/classes")
 (def basis (b/create-basis {:project "deps.edn"}))
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
 (def pom-data
-  [[:description "Production-quality Clojure SDK for canonical LLM provider integration."]
+  [[:description "Clojure SDK for canonical LLM provider integration."]
    [:url "https://github.com/DeadMeme5441/clojure-llm-sdk"]
    [:licenses
     [:license
@@ -18,7 +18,8 @@
      [:url "https://opensource.org/license/mit"]]]
    [:developers
     [:developer
-     [:id "DeadMeme5441"]]]
+     [:id "DeadMeme5441"]
+     [:email "deadmeme5441@gmail.com"]]]
    [:scm
     [:url "https://github.com/DeadMeme5441/clojure-llm-sdk"]
     [:connection "scm:git:https://github.com/DeadMeme5441/clojure-llm-sdk.git"]
@@ -28,6 +29,7 @@
   (b/delete {:path "target"}))
 
 (defn jar [_]
+  (b/delete {:path class-dir})
   (b/write-pom {:class-dir class-dir
                 :lib lib
                 :version version
@@ -47,3 +49,14 @@
               :version version
               :jar-file jar-file
               :class-dir class-dir}))
+
+(defn deploy
+  "Build and publish the same versioned artifact. Requires Clojars credentials."
+  [_]
+  (jar nil)
+  ((requiring-resolve 'deps-deploy.deps-deploy/deploy)
+   {:installer :remote
+    :sign-releases? false
+    :pom-file (str class-dir "/META-INF/maven/" (namespace lib) "/"
+                   (name lib) "/pom.xml")
+    :artifact jar-file}))

@@ -275,7 +275,7 @@
   "If the provider profile uses AWS SigV4, pre-serialize the body, sign,
    and return the signed request. Otherwise pass-through.
    Reads region/service hints off the request map at the bedrock-namespaced
-   keys (:llm.sdk.providers.bedrock/aws-service / :aws-region) and the
+   keys (:llm.sdk.providers.bedrock.converse/aws-service / :aws-region) and the
    profile's :profile/aws-service fallback.
 
    Throws ex-info if SigV4 is required but AWS_ACCESS_KEY_ID is missing."
@@ -290,15 +290,15 @@
           {:keys [access-key-id secret-access-key
                   session-token region]}
           (discover-credentials)
-          service (or (get req :llm.sdk.providers.bedrock/aws-service)
+          service (or (get req :llm.sdk.providers.bedrock.converse/aws-service)
                       (:profile/aws-service profile)
                       "bedrock")
-          region (or (get req :llm.sdk.providers.bedrock/aws-region)
+          region (or (get req :llm.sdk.providers.bedrock.converse/aws-region)
                      region
                      "us-east-1")
           req (dissoc req
-                      :llm.sdk.providers.bedrock/aws-service
-                      :llm.sdk.providers.bedrock/aws-region)]
+                      :llm.sdk.providers.bedrock.converse/aws-service
+                      :llm.sdk.providers.bedrock.converse/aws-region)]
       (when-not access-key-id
         (throw (ex-info "AWS_ACCESS_KEY_ID not set for AWS SigV4 signing"
                         {:provider (:profile/id profile)})))

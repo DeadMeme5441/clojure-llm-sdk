@@ -11,8 +11,11 @@ permissions:
 
 jobs:
   test:
-    name: Lint, test, and build
+    name: Lint, test, and build (JDK ${{ matrix.java }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java: ["17", "21"]
 
     steps:
       - name: Check out repository
@@ -22,7 +25,7 @@ jobs:
         uses: actions/setup-java@v5.2.0
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: ${{ matrix.java }}
 
       - name: Set up Clojure tools
         uses: DeLaGuardo/setup-clojure@13.6.1
@@ -47,6 +50,9 @@ jobs:
 
       - name: Unit tests
         run: clojure -M:test
+
+      - name: Snapshot generator tests
+        run: python3 -m unittest discover -s test -p '*_test.py'
 
       - name: Build jar
         run: clojure -T:build jar

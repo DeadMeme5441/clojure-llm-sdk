@@ -65,14 +65,12 @@
 
 (defn normalize-gemini-embedding-usage
   [raw]
-  (let [prompt (:promptTokenCount raw)]
-    (when (number? prompt)
-      (let [input (usage/->int prompt)]
-        {:usage/input-tokens input
-         :usage/output-tokens 0
-         :usage/total-tokens input
-         :usage/request-count 1
-         :usage/provider-raw raw}))))
+  (when-let [input (usage/->int (:promptTokenCount raw))]
+    {:usage/input-tokens input
+     :usage/output-tokens 0
+     :usage/total-tokens input
+     :usage/request-count 1
+     :usage/provider-raw raw}))
 
 (defn- numeric-vector! [index embedding]
   (let [values (:values embedding)]
@@ -114,8 +112,3 @@
 (defn make-transport []
   (->GeminiNativeEmbedTransport))
 
-(when-let [p (provider/get-provider :gemini-native)]
-  (provider/register-provider
-   (-> p
-       (assoc :profile/embed-transport-constructor make-transport)
-       (update :profile/capabilities (fnil conj #{}) :embedding))))

@@ -6,7 +6,7 @@
             [cheshire.core :as json]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.rerank :as rt]
-            [llm.sdk.providers.cohere-rerank :as ckr]))
+            [llm.sdk.providers.cohere.rerank :as ckr]))
 
 (defn- load-fixture [path]
   (-> (io/resource path) slurp (json/parse-string true)))
@@ -47,6 +47,31 @@
     (is (= 2 (get-in built [:body :top_n])))
     (is (nil? (get-in built [:body :return_documents]))
         "Cohere v2 does not accept return_documents")))
+
+(deftest test-extra-body-rejects-rerank-canonical-fields
+  (let [transport (ckr/make-transport)
+        profile (provider/get-provider :cohere)
+        base-request {:rerank/model "canonical-model"
+                      :rerank/query "canonical-query"
+                      :rerank/documents ["canonical-document"]}]
+    (doseq [[provided-key expected-field provided-value]
+            [["model" :model "other-model"]
+             [:query :query "other-query"]
+             ["documents" :documents ["other-document"]]]]
+      (let [error
+            (try
+              (with-redefs [provider/resolve-auth-token (constantly "stub")]
+                (rt/build-rerank-request
+                 transport profile
+                 (assoc base-request
+                        :rerank/provider-options
+                        {:extra_body {provided-key provided-value}})))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :request/protected-extra-body-override
+               (:error/type (ex-data error))))
+        (is (= expected-field (:field (ex-data error))))
+        (is (= :cohere (:provider (ex-data error))))))))
 
 (deftest test-cohere-rejects-structured-documents
   (let [t (ckr/make-transport)
@@ -181,6 +206,15 @@
              (:rerank/document (second results)))))
     (testing "Jina total_tokens surfaces in usage"
       (is (= 25 (get-in resp [:response/usage :usage/total-tokens]))))))
+
+(deftest test-jina-rerank-preserves-explicit-zero-usage
+  (let [response
+        (rt/parse-rerank-response
+         (ckr/make-transport)
+         (provider/get-provider :jina)
+         {:results [] :usage {:total_tokens 0}})]
+    (is (= 0 (get-in response [:response/usage :usage/input-tokens])))
+    (is (= 0 (get-in response [:response/usage :usage/total-tokens])))))
 
 (deftest test-jina-request-current-options-and-structured-documents
   (let [t (ckr/make-transport)

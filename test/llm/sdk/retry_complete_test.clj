@@ -6,7 +6,9 @@
             [llm.sdk :as sdk]
             [llm.sdk.http :as http]
             [llm.sdk.models-dev :as mdev]
-            [llm.sdk.registry :as registry]))
+            [llm.sdk.registry :as registry]
+            [llm.sdk.retry :as retry])
+  (:import [java.time Instant]))
 
 (defn- temp-dir ^java.io.File []
   (let [d (java.io.File/createTempFile "retry-test" "")]
@@ -95,6 +97,21 @@
         (is (= 2 @calls) "one retry after the 429")
         (is (= :openai (:response/provider resp)))
         (is (contains? resp :response/cost))))))
+
+(deftest retry-after-value-parsing
+  (let [now (Instant/parse "1994-11-06T08:49:30Z")]
+    (is (= 7000 (retry/parse-retry-after " 7 " now)))
+    (is (= 19000
+           (retry/parse-retry-after
+            "Sun, 06 Nov 1994 08:49:49 GMT"
+            now)))
+    (is (zero?
+         (retry/parse-retry-after
+          "Sun, 06 Nov 1994 08:49:29 GMT"
+          now))
+        "past HTTP dates clamp to zero")
+    (is (nil? (retry/parse-retry-after "-1" now)))
+    (is (nil? (retry/parse-retry-after "not a date" now)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Honors Retry-After header (max of header + computed backoff)

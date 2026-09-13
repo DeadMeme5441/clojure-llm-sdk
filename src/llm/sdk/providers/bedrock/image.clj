@@ -8,7 +8,6 @@
    /model/{modelId}/invoke with SigV4."
   (:require [clojure.string :as str]
             [llm.sdk.transport.image :as it]
-            [llm.sdk.provider :as provider]
             [llm.sdk.errors :as errors]
             [llm.sdk.providers.bedrock.converse :as bedrock]))
 
@@ -210,7 +209,6 @@
       (when (and aspect-ratio (= mode "image-to-image"))
         (invalid-stability-option! model :aspect-ratio aspect-ratio)))))
 
-
 (defn- modern-stability-body [model request]
   (let [opts (bedrock-options request)
         aspect-ratio (some-> (or (:aspect-ratio opts)
@@ -266,8 +264,8 @@
      :url (str base-url "/model/" model "/invoke")
      :headers {"Content-Type" "application/json"
                "Accept" "application/json"}
-     :llm.sdk.providers.bedrock/aws-service "bedrock"
-     :llm.sdk.providers.bedrock/aws-region region
+     :llm.sdk.providers.bedrock.converse/aws-service "bedrock"
+     :llm.sdk.providers.bedrock.converse/aws-region region
      :body body}))
 
 ;; ---------------------------------------------------------------------------
@@ -364,10 +362,3 @@
 
 (defn make-transport [] (->BedrockImageTransport))
 
-;; Attach to :bedrock alongside its existing chat transport so callers
-;; can do (sdk/complete :bedrock ...) AND (sdk/generate-image :bedrock ...).
-(when-let [p (provider/get-provider :bedrock)]
-  (provider/register-provider
-   (-> p
-       (assoc :profile/image-transport-constructor make-transport)
-       (update :profile/capabilities (fnil conj #{}) :image-generation))))

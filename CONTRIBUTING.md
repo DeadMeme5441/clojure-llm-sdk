@@ -6,8 +6,9 @@
 
 Prerequisites:
 
-- JDK 17 or newer
+- JDK 17 or newer (the CI matrix runs 17 and 21)
 - Clojure CLI
+- Python 3
 - `clj-kondo`
 
 Run the default verification set before opening a PR:
@@ -15,6 +16,7 @@ Run the default verification set before opening a PR:
 ```bash
 clj-kondo --lint src test
 clojure -M:test
+python3 -m unittest discover -s test -p '*_test.py'
 clojure -T:build jar
 ```
 
@@ -39,7 +41,7 @@ Live tests should be cheap, deterministic smoke tests. Do not add expensive imag
 
 Provider additions should include:
 
-- A provider profile in `llm.sdk.provider` or a registration helper under the relevant provider namespace.
+- A complete, validated provider profile through a helper in the relevant provider-family namespace.
 - A transport implementation or reuse of an existing OpenAI-compatible transport.
 - Unit tests for URL, auth, headers, body shape, response parsing, streaming where relevant, error parsing, and usage normalization.
 - Golden fixtures for non-trivial provider payloads.
@@ -57,6 +59,15 @@ Update public docs in the same change when behavior changes:
 - `doc/canonical-response.md` for canonical response/usage/cost/cache semantics.
 - `doc/litellm-parity-survey.md` when provider parity or non-goals change.
 - `CHANGELOG.md` for user-visible changes.
+
+## Release Build
+
+Build and deployment use the same `RELEASE_VERSION`; `deploy` builds the jar
+before publishing it. There is no separate `:deploy` alias:
+
+```bash
+RELEASE_VERSION=x.y.z clojure -T:build deploy
+```
 
 ## Secrets
 

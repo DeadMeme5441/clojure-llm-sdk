@@ -4,7 +4,9 @@
             [clojure.java.io :as io]
             [cheshire.core :as json]
             [llm.sdk.models :as models]
-            [llm.sdk.http :as http]))
+            [llm.sdk.http :as http]
+            [llm.sdk.provider :as provider]
+            [llm.sdk.providers.openai.chat :as openai]))
 
 ;; ---------------------------------------------------------------------------
 ;; Fixture loading
@@ -150,6 +152,33 @@
   (is (false? (models/supports-models-listing? :bedrock)))
   (is (false? (models/supports-models-listing? :volcengine)))
   (is (false? (models/supports-models-listing? :fake))))
+
+(deftest custom-openai-compatible-profile-can-list-models
+  (let [provider-id :test-custom-model-listing
+        captured (atom nil)
+        profile (openai/build-alias-profile
+                 {:id provider-id
+                  :base-url "https://models.example/v1"
+                  :auth-strategy :none
+                  :default-headers {"X-Test" "listing"}
+                  :supports-model-listing? true})]
+    (provider/register-provider profile)
+    (try
+      (with-redefs [http/request
+                    (fn [request]
+                      (reset! captured request)
+                      {:status 200
+                       :body {:data [{:id "custom-chat"}]}})]
+        (is (true? (models/supports-models-listing? provider-id)))
+        (let [[entry] (models/fetch-models provider-id)]
+          (is (= "https://models.example/v1/models" (:url @captured)))
+          (is (= "listing" (get-in @captured [:headers "X-Test"])))
+          (is (= provider-id (:model/provider entry)))
+          (is (= "custom-chat" (:model/id entry)))))
+      (finally
+        ;; Keep global provider state harmless for later refresh-all tests.
+        (provider/register-provider
+         (assoc profile :profile/supports-model-listing false))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Fetch-models end-to-end with mocked HTTP

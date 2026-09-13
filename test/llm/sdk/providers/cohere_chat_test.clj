@@ -3,7 +3,7 @@
             [cheshire.core :as json]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.cohere-chat :as cohere]))
+            [llm.sdk.providers.cohere.chat :as cohere]))
 
 (deftest test-build-request-shape
   (let [t (cohere/make-transport)
@@ -62,8 +62,23 @@
         tools (get-in built [:body :tools])]
     (is (= 1 (count tools)))
     (is (= "function" (get-in tools [0 :type])))
-      (is (= "get_weather" (get-in tools [0 :function :name])))
+    (is (= "get_weather" (get-in tools [0 :function :name])))
     (is (= "REQUIRED" (get-in built [:body :tool_choice])))))
+
+(deftest test-build-request-rejects-specific-forced-tool-choice
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)]
+    (try
+      (transport/build-request
+       t profile
+       {:request/model "command-r-plus"
+        :request/messages [{:message/role :user :message/content "weather"}]
+        :request/tool-choice {:type :function
+                              :function {:name "get_weather"}}})
+      (is false "expected unsupported forced function rejection")
+      (catch clojure.lang.ExceptionInfo e
+        (is (= :provider/unsupported-tool-choice
+               (:error/type (ex-data e))))))))
 
 (deftest test-build-request-current-v2-options
   (let [t (cohere/make-transport)
@@ -96,6 +111,47 @@
            (get-in built [:body :thinking])))
     (is (= 2 (get-in built [:body :priority])))
     (is (true? (get-in built [:body :logprobs])))))
+
+(deftest test-inline-image-and-extra-body-protection
+  (let [t (cohere/make-transport)
+        profile (provider/get-provider :cohere)
+        base-request
+        {:request/model "command-r"
+         :request/stream? true
+         :request/messages
+         [{:message/role :user
+           :message/content
+           [{:part/type :image
+             :image/data "aW1hZ2U="
+             :image/mime-type "image/jpeg"}]}]}]
+    (doseq [[provided-key expected-field provided-value]
+            [["model" :model "wrong"]
+             [:messages :messages []]
+             ["stream" :stream false]]]
+      (let [error
+            (try
+              (transport/build-request
+               t profile
+               (assoc base-request
+                      :request/provider-options
+                      {:cohere
+                       {:extra_body {provided-key provided-value}}}))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :request/protected-extra-body-override
+               (:error/type (ex-data error))))
+        (is (= expected-field (:field (ex-data error))))
+        (is (= :cohere (:provider (ex-data error))))))
+    (let [body
+          (:body
+           (transport/build-request
+            t profile
+            (assoc base-request
+                   :request/provider-options
+                   {:cohere {:extra_body {"custom_option" 7}}})))]
+      (is (= "data:image/jpeg;base64,aW1hZ2U="
+             (get-in body [:messages 0 :content 0 :image_url :url])))
+      (is (= 7 (:custom_option body))))))
 
 (deftest test-build-request-stop-sequence-is-not-split
   (let [t (cohere/make-transport)
@@ -180,8 +236,11 @@
                                                          :tool-call/name "get_weather"
                                                          :tool-call/arguments "{\"city\":\"NYC\"}"}]}
                                   {:message/role :tool
-                                   :message/tool-call-id "tc_1"
-                                   :message/content "72F"}]}
+                                   :message/content
+                                   [{:part/type :tool-result
+                                     :tool-result/id "tc_1"
+                                     :tool-result/name "get_weather"
+                                     :tool-result/content "72F"}]}]}
           built (transport/build-request t profile req)
           msgs (get-in built [:body :messages])]
       (is (= 3 (count msgs)))
@@ -191,7 +250,9 @@
                           :arguments "{\"city\":\"NYC\"}"}}]
              (get-in msgs [1 :tool_calls])))
       (is (= "tool" (:role (msgs 2))))
-      (is (= "tc_1" (:tool_call_id (msgs 2)))))))
+      (is (= "tc_1" (:tool_call_id (msgs 2))))
+      (is (= "72F"
+             (get-in msgs [2 :content 0 :document :data]))))))
 
 (deftest test-build-request-preserves-reasoning-and-deduplicates-tool-calls
   (let [t (cohere/make-transport)
@@ -310,9 +371,9 @@
                                       :thinking "I should inspect the evidence."}
                                      {:type "text" :text "Answer"}]}})]
     (is (= :unknown (:response/finish-reason parsed)))
-    (is (= [{:part/type :text :text "Answer"}
-            {:part/type :reasoning
-             :reasoning/text "I should inspect the evidence."}]
+    (is (= [{:part/type :reasoning
+             :reasoning/text "I should inspect the evidence."}
+            {:part/type :text :text "Answer"}]
            (:response/parts parsed)))))
 
 (deftest test-stream-content-delta

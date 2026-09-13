@@ -4,7 +4,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.anthropic :as anthropic]
+            [llm.sdk.providers.anthropic.chat :as anthropic]
             [llm.sdk.providers.anthropic.vertex :as vertex]))
 
 (deftest test-build-request-basic
@@ -144,8 +144,12 @@
                                                        :tool-call/name "get_weather"
                                                        :tool-call/arguments "{\"location\":\"NYC\"}"}]}
                                 {:message/role :tool
-                                 :message/tool-call-id "toolu_1"
-                                 :message/content "72F"}]}
+                                 :message/content
+                                 [{:part/type :tool-result
+                                   :tool-result/id "toolu_1"
+                                   :tool-result/name "get_weather"
+                                   :tool-result/content "72F"
+                                   :tool-result/is-error false}]}]}
         built (transport/build-request t profile req)
         messages (get-in built [:body :messages])]
     (is (= "assistant" (get-in messages [1 :role])))
@@ -155,7 +159,9 @@
            (get-in messages [1 :content 1 :input])))
     (is (= "user" (get-in messages [2 :role])))
     (is (= "tool_result" (get-in messages [2 :content 0 :type])))
-    (is (= "toolu_1" (get-in messages [2 :content 0 :tool_use_id])))))
+    (is (= "toolu_1" (get-in messages [2 :content 0 :tool_use_id])))
+    (is (= "72F" (get-in messages [2 :content 0 :content])))
+    (is (false? (get-in messages [2 :content 0 :is_error])))))
 
 (deftest test-parse-response-thinking
   (let [t (anthropic/make-transport)
@@ -338,7 +344,7 @@
                :request/cache {}}
           built (transport/build-request t profile req)
           sys (get-in built [:body :system])]
-      (is (= {:type "ephemeral" :ttl "5m"} (get-in (last sys) [:cache_control]))))))
+      (is (= {:type "ephemeral"} (get-in (last sys) [:cache_control]))))))
 
 (deftest test-cache-system-and-tail-native-layout
   (testing "system + last 3 messages get inner-block cache_control"
@@ -361,7 +367,7 @@
       (is (not (some :cache_control (get-in msgs [0 :content]))))
       ;; messages[2,3,4] (a1 dropped from marking; last 3 are u2, a2, u3) — marked
       (doseq [i [2 3 4]]
-        (is (= {:type "ephemeral" :ttl "5m"}
+        (is (= {:type "ephemeral"}
                (get-in msgs [i :content (-> msgs (nth i) :content count dec) :cache_control]))
             (str "expected marker on message " i))))))
 
@@ -396,13 +402,13 @@
           req {:request/model "claude-sonnet-4-6"
                :request/messages [{:message/role :user :message/content "Hi"}]
                :request/tools [{:type :function :function {:name "a" :description "A"}}
-                                {:type :function :function {:name "b" :description "B"}}]
+                               {:type :function :function {:name "b" :description "B"}}]
                :request/cache {:tools-cache? true}}
           built (transport/build-request t profile req)
           tools (get-in built [:body :tools])]
       (is (= 2 (count tools)))
       (is (nil? (:cache_control (first tools))))
-      (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last tools)))))))
+      (is (= {:type "ephemeral"} (:cache_control (last tools)))))))
 
 (deftest test-current-structured-output-and-strict-tool-wire-shape
   (let [t (anthropic/make-transport)
@@ -592,8 +598,8 @@
         parsed (anthropic/parse-response-anthropic {} raw)
         parts (:response/parts parsed)
         replay-parts (filterv #(contains? #{:provider-state
-                                           :unknown/provider-native}
-                                         (:part/type %))
+                                            :unknown/provider-native}
+                                          (:part/type %))
                               parts)
         replay (anthropic/build-request-anthropic
                 (provider/get-provider :anthropic)

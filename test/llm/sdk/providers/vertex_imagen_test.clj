@@ -5,8 +5,8 @@
             [llm.sdk.schema :as schema]
             [llm.sdk.transport :as transport]
             [llm.sdk.transport.image :as it]
-            [llm.sdk.providers.vertex-gemini :as vertex]
-            [llm.sdk.providers.vertex-imagen :as imagen]))
+            [llm.sdk.providers.gemini.vertex :as vertex]
+            [llm.sdk.providers.gemini.imagen :as imagen]))
 
 (deftest test-build-request-uses-gemini-image-generate-content
   (let [t (imagen/make-transport)
@@ -27,6 +27,31 @@
            (get-in built [:body :generationConfig :responseModalities])))
     (is (= 1 (get-in built [:body :generationConfig :candidateCount])))
     (is (= :gemini-native (:profile/protocol-family profile)))))
+
+(deftest test-extra-body-rejects-vertex-image-identity-and-prompt
+  (doseq [[provided-key expected-field provided-value]
+          [[:model :model "other-model"]
+           ["contents" :contents
+            [{:role "user" :parts [{:text "other prompt"}]}]]
+           [:generationConfig :candidateCount {"candidateCount" 9}]]]
+    (let [error
+          (try
+            (it/build-image-request
+             (imagen/make-transport)
+             (provider/get-provider :vertex-imagen)
+             {:image/model "gemini-2.5-flash-image"
+              :image/prompt "canonical prompt"
+              :image/provider-options
+              {:vertex {:project "test-proj"
+                        :location "global"
+                        :access-token "fake-token"}
+               :extra_body {provided-key provided-value}}})
+            nil
+            (catch clojure.lang.ExceptionInfo e e))]
+      (is (= :request/protected-extra-body-override
+             (:error/type (ex-data error))))
+      (is (= expected-field (:field (ex-data error))))
+      (is (= :vertex-imagen (:provider (ex-data error)))))))
 
 (deftest test-vertex-gemini-capability-and-env-metadata
   (let [t (vertex/make-transport)

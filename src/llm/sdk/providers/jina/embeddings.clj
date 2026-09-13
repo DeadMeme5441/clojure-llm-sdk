@@ -2,14 +2,14 @@
   "Jina embeddings transport for the model-discriminated /v1/embeddings API."
   (:require [llm.sdk.errors :as errors]
             [llm.sdk.provider :as provider]
+            [llm.sdk.transport :as transport]
             [llm.sdk.transport.embed :as et]))
 
-(defn- ->int [x]
-  (cond
-    (int? x) x
-    (number? x) (int x)
-    :else 0))
-
+(defn- ->int [value]
+  (when (and (number? value)
+             (not (neg? value))
+             (Double/isFinite (double value)))
+    (int value)))
 
 (defn build-embed-request-jina
   [profile request]
@@ -35,9 +35,9 @@
                (contains? opts :return-tokenized-input)
                (assoc :return_tokenized_input
                       (:return-tokenized-input opts)))
-        body (if-let [extra (:extra_body opts)]
-               (merge body extra)
-               body)
+        body (transport/merge-extra-body (:profile/id profile)
+                                         body
+                                         (:extra_body opts))
         multivector? (true? (:return_multivector body))
         tokenized? (true? (:return_tokenized_input body))
         dimensions (:dimensions body)
@@ -63,19 +63,20 @@
 
 (defn normalize-jina-embedding-usage [raw]
   (let [usage (or (:usage raw) raw)
-        input (->int (or (:prompt_tokens usage) (:total_tokens usage)))
-        total (->int (or (:total_tokens usage) input))
+        input (or (->int (:prompt_tokens usage))
+                  (->int (:total_tokens usage)))
+        total (or (->int (:total_tokens usage)) input)
         image (->int (:image_tokens usage))
         audio (->int (:audio_tokens usage))
         video (->int (:video_tokens usage))]
-    (cond-> {:usage/input-tokens input
-             :usage/output-tokens 0
-             :usage/total-tokens total
+    (cond-> {:usage/output-tokens 0
              :usage/request-count 1
              :usage/provider-raw usage}
-      (pos? image) (assoc :usage/image-tokens image)
-      (pos? audio) (assoc :usage/audio-tokens audio)
-      (pos? video) (assoc :usage/video-tokens video))))
+      (some? input) (assoc :usage/input-tokens input)
+      (some? total) (assoc :usage/total-tokens total)
+      (some? image) (assoc :usage/image-tokens image)
+      (some? audio) (assoc :usage/audio-tokens audio)
+      (some? video) (assoc :usage/video-tokens video))))
 
 (defn- dense-vector [embedding]
   (cond
@@ -132,6 +133,3 @@
 
 (defn make-transport [] (->JinaEmbedTransport))
 
-(when-let [p (provider/get-provider :jina)]
-  (provider/register-provider
-   (assoc p :profile/embed-transport-constructor make-transport)))

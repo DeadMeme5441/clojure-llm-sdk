@@ -17,13 +17,18 @@
   (:require [clojure.string :as str]
             [llm.sdk.transport.embed :as et]
             [llm.sdk.provider :as provider]
+            [llm.sdk.transport :as transport]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
 ;; Usage normalization (Cohere-specific)
 ;; ---------------------------------------------------------------------------
 
-(defn- ->int [x] (cond (int? x) x (number? x) (int x) :else 0))
+(defn- ->int [value]
+  (when (and (number? value)
+             (not (neg? value))
+             (Double/isFinite (double value)))
+    (int value)))
 
 (defn normalize-cohere-embedding-usage
   "Normalize Cohere v2 meta tokens, retaining billed units in provider raw."
@@ -31,17 +36,18 @@
   (let [meta (or (:meta raw) raw)
         actual (:tokens meta)
         billed (:billed_units meta)
-        input (->int (or (:input_tokens actual)
-                         (:input_tokens billed)))
-        output (->int (or (:output_tokens actual)
-                          (:output_tokens billed)))
+        input (or (->int (:input_tokens actual))
+                  (->int (:input_tokens billed)))
+        output (or (->int (:output_tokens actual))
+                   (->int (:output_tokens billed))
+                   0)
         image-tokens (->int (:image_tokens billed))]
-    (cond-> {:usage/input-tokens input
-             :usage/output-tokens output
-             :usage/total-tokens (+ input output)
+    (cond-> {:usage/output-tokens output
              :usage/request-count 1
              :usage/provider-raw meta}
-      (pos? image-tokens) (assoc :usage/image-tokens image-tokens))))
+      (some? input) (assoc :usage/input-tokens input
+                           :usage/total-tokens (+ input output))
+      (some? image-tokens) (assoc :usage/image-tokens image-tokens))))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
@@ -57,24 +63,6 @@
           (str/ends-with? base "/v2") (str base "/embed")
           :else (str base "/embed")))))
 
-(defn- validate-embedding-types! [encoding extra]
-  (let [native-values (cond-> []
-                        (contains? extra :embedding_types)
-                        (conj (:embedding_types extra))
-                        (contains? extra "embedding_types")
-                        (conj (get extra "embedding_types")))
-        expected (when encoding [(name encoding)])]
-    (when (or (> (count native-values) 1)
-              (and expected
-                   (some #(not= expected %) native-values)))
-      (throw
-       (ex-info
-        "Cohere embedding_types contradict :embed/encoding-format"
-        {:provider :cohere
-         :error/type :request/contradictory-embedding-types
-         :embed/encoding-format encoding
-         :embedding_types native-values})))))
-
 (defn build-embed-request-cohere
   [profile request]
   (let [model (:embed/model request)
@@ -82,11 +70,7 @@
         opts (:embed/provider-options request)
         input-type (or (:input-type opts) "search_document")
         encoding (:embed/encoding-format request)
-        raw-extra (:extra_body opts)
-        _ (validate-embedding-types! encoding raw-extra)
-        extra (if encoding
-                (dissoc raw-extra :embedding_types "embedding_types")
-                raw-extra)
+        extra (:extra_body opts)
         body (cond-> {:model model
                       :texts inputs
                       :input_type input-type}
@@ -98,7 +82,7 @@
                (assoc :truncate (:truncate opts))
                (:max-tokens opts) (assoc :max_tokens (:max-tokens opts))
                (contains? opts :priority) (assoc :priority (:priority opts)))
-        body (if (seq extra) (merge body extra) body)]
+        body (transport/merge-extra-body (:profile/id profile) body extra)]
     {:method :post
      :url (embed-url profile)
      :headers (provider/default-headers profile
@@ -202,7 +186,3 @@
 
 (defn make-transport [] (->CohereEmbedTransport))
 
-;; Attach
-(when-let [p (provider/get-provider :cohere)]
-  (provider/register-provider
-   (assoc p :profile/embed-transport-constructor make-transport)))

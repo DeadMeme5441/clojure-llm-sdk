@@ -2,7 +2,6 @@
   "Native Z.AI chat-completions transport over the shared OpenAI wire codec."
   (:require [cheshire.core :as json]
             [llm.sdk.errors :as errors]
-            [llm.sdk.provider :as provider]
             [llm.sdk.providers.openai.chat :as openai]
             [llm.sdk.sse :as sse]
             [llm.sdk.transport :as t]
@@ -173,18 +172,3 @@
 (defn make-transport []
   (->ZAIChatTransport))
 
-(provider/register-provider
- {:profile/id :zai
-  :profile/protocol-family :zai-chat
-  :profile/base-url "https://api.z.ai/api/paas/v4"
-  :profile/auth-strategy :bearer
-  :profile/env-var-names ["ZAI_API_KEY"]
-  :profile/default-headers {}
-  :profile/capabilities #{:chat :streaming :tools :reasoning :multimodal}
-  :profile/quirks {:reasoning-replay-field :reasoning_content}
-  :profile/supports-model-listing false
-  :profile/supported-params #{:request/tools :request/tool-choice
-                              :request/temperature :request/top-p
-                              :request/max-tokens :request/stop
-                              :request/response-format :request/reasoning}
-  :profile/transport-constructor make-transport})

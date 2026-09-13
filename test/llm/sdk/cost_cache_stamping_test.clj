@@ -103,6 +103,16 @@
 (deftest cost-nil-for-nil-usage
   (is (nil? (pricing/canonical-cost :openai "gpt-4o" nil))))
 
+(deftest empty-normalized-openai-usage-does-not-become-zero-cost
+  (offline
+   (fn []
+     (let [normalized (usage/normalize-openai-usage {})
+           cost (pricing/canonical-cost :openai "gpt-4o" normalized)]
+       (is (= :unknown (:cost/usd cost)))
+       (is (not= 0 (:cost/usd cost)))
+       (is (not (contains? normalized :usage/input-tokens)))
+       (is (not (contains? normalized :usage/output-tokens)))))))
+
 ;; ---------------------------------------------------------------------------
 ;; stamp-response-cost-and-cache — integration with response shape
 ;; ---------------------------------------------------------------------------

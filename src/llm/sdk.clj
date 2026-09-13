@@ -4,9 +4,11 @@
    estimate-cost, provider registration."
   (:require [clojure.string :as str]
             [llm.sdk.provider :as provider]
+            [llm.sdk.provider.auth :as provider-auth]
             [llm.sdk.schema :as schema]
             [llm.sdk.transport :as transport]
             [llm.sdk.http :as http]
+            [llm.sdk.sse :as sse]
             [llm.sdk.websocket :as websocket]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
@@ -25,40 +27,9 @@
             [llm.sdk.fallbacks :as fallbacks]
             [llm.sdk.request :as request]
             [llm.sdk.aws-sigv4 :as aws-sigv4]
-            [llm.sdk.aws-eventstream :as aws-eventstream]
-            ;; Ensure provider adapters are loaded so their transport
-            ;; constructors are registered
-            [llm.sdk.providers.openai.chat]
-            [llm.sdk.providers.openai.embeddings]
-            [llm.sdk.providers.voyage.embeddings]
-            [llm.sdk.providers.jina.embeddings]
-            [llm.sdk.providers.openrouter.embeddings]
-            [llm.sdk.providers.openai.moderation]
-            [llm.sdk.providers.openai.image]
-            [llm.sdk.providers.openai.transcribe]
-            [llm.sdk.providers.openai.speak]
-            [llm.sdk.providers.elevenlabs.tts]
-            [llm.sdk.providers.cohere.embeddings]
-            [llm.sdk.providers.cohere.chat]
-            [llm.sdk.providers.cohere.rerank]
-            [llm.sdk.providers.voyage.rerank]
-            [llm.sdk.providers.anthropic.chat]
-            [llm.sdk.providers.anthropic.vertex]
-            [llm.sdk.providers.gemini.native]
-            [llm.sdk.providers.gemini.embeddings]
-            [llm.sdk.providers.zai.chat]
-            [llm.sdk.providers.gemini.vertex]
-            [llm.sdk.providers.gemini.imagen]
-            [llm.sdk.providers.codex.responses]
-            [llm.sdk.providers.openrouter.chat]
-            [llm.sdk.providers.openrouter.image]
-            [llm.sdk.providers.perplexity.chat]
-            [llm.sdk.providers.bedrock.converse]
-            [llm.sdk.providers.bedrock.image]
-            [llm.sdk.providers.bedrock.rerank]
-            [llm.sdk.providers.ollama.native]
-            [llm.sdk.providers.fake.chat])
-  (:import [java.io BufferedReader InputStreamReader]))
+            [llm.sdk.aws-eventstream :as aws-eventstream])
+  (:import [java.io BufferedReader Closeable InputStreamReader]
+           [java.nio.charset StandardCharsets]))
 
 ;; ---------------------------------------------------------------------------
 ;; Provider discovery
@@ -140,27 +111,93 @@
                     {:error/type :schema/invalid-request
                      :schema/explain (schema/explain-request request)}))))
 
+(defn- close-once!
+  [resource closed?]
+  (when (compare-and-set! closed? false true)
+    (when (instance? Closeable resource)
+      (.close ^Closeable resource))))
+
+(defn- read-event!
+  [cursor close-fn]
+  (try
+    (let [source @cursor]
+      (if-let [remaining (seq source)]
+        (let [event (first remaining)]
+          ;; Retain only the unread tail. A concurrent close must not let a
+          ;; blocked read restore the cursor after the resource is released.
+          (when (compare-and-set! cursor source (rest remaining))
+            event))
+        (do (close-fn) nil)))
+    (catch Throwable t
+      (try (close-fn) (catch Throwable _))
+      (throw t))))
+
+(defn- event-sequence [cursor close-fn]
+  (lazy-seq
+   (when-let [event (read-event! cursor close-fn)]
+     (cons event (event-sequence cursor close-fn)))))
+
+(deftype StreamHandle [cursor close-fn]
+  clojure.lang.Seqable
+  (seq [_]
+    (seq (event-sequence cursor close-fn)))
+
+  clojure.lang.IReduceInit
+  (reduce [this f init]
+    (try
+      (loop [acc init]
+        (if-let [event (read-event! cursor close-fn)]
+          (let [next-acc (f acc event)]
+            (if (reduced? next-acc) @next-acc (recur next-acc)))
+          acc))
+      (finally (.close ^Closeable this))))
+
+  clojure.lang.IReduce
+  (reduce [this f]
+    (try
+      (if-let [event (read-event! cursor close-fn)]
+        (loop [acc event]
+          (if-let [event (read-event! cursor close-fn)]
+            (let [next-acc (f acc event)]
+              (if (reduced? next-acc) @next-acc (recur next-acc)))
+            acc))
+        (f))
+      (finally (.close ^Closeable this))))
+
+  Closeable
+  (close [_]
+    (close-fn)))
+
+(defn- stream-handle
+  [events resource]
+  (let [cursor (atom events)
+        closed? (atom false)
+        close-fn #(do (reset! cursor nil)
+                      (close-once! resource closed?))]
+    (StreamHandle. cursor close-fn)))
+
+(declare event->seq)
+
 (defn- binary-stream-events
-  "Bedrock-style streaming: open a binary connection, decode AWS event-
-   stream frames, hand each parsed frame to parse-stream-event."
+  "Open a Bedrock-style binary stream and return its body with lazily decoded
+   canonical events. The public StreamHandle owns the body."
   [transport profile req]
   (let [{:keys [body status]} (http/binary-stream-request req)]
-    (when (and status (>= status 400))
+    (if (and status (>= status 400))
       (let [parsed-body (http/decode-body body)
             classified (transport/parse-error transport profile status parsed-body)]
         (throw (ex-info "Provider streaming API error"
                         {:error classified
                          :status status
                          :body parsed-body
-                         :provider (:profile/id profile)}))))
-    (->> (aws-eventstream/frame-seq body)
-         (map aws-eventstream/frame->json)
-         (mapcat (fn [frame]
-                 (let [ev (transport/parse-stream-event transport profile frame)]
-                   (cond
-                     (nil? ev) nil
-                     (sequential? ev) ev
-                     :else [ev])))))))
+                         :provider (:profile/id profile)})))
+      {:body body
+       :events
+       (->> (aws-eventstream/frame-seq body)
+            (map aws-eventstream/frame->json)
+            (mapcat (fn [frame]
+                      (event->seq
+                       (transport/parse-stream-event transport profile frame)))))})))
 
 (defn- event->seq [ev]
   (cond
@@ -169,38 +206,65 @@
     :else [ev]))
 
 (defn- parse-stream-lines
-  "Parse one line at a time: mapcat's apply/concat reads ahead and can
-   block delivery of a delta until the provider sends another event."
+  "Frame standards-compliant SSE records (while preserving non-SSE lines), then
+   parse each record without reading ahead into the following event."
   [transport profile lines]
-  (lazy-seq
-   (when-let [lines (seq lines)]
-     (concat (event->seq (transport/parse-stream-event transport profile (first lines)))
-             (parse-stream-lines transport profile (rest lines))))))
+  (letfn [(step [records]
+            (lazy-seq
+             (when-let [records (seq records)]
+               (concat
+                (event->seq
+                 (transport/parse-stream-event transport profile (first records)))
+                (step (rest records))))))]
+    (step (sse/event-seq lines))))
 
 (defn- collect-sse-events-until-end
   "Read an SSE InputStream eagerly until EOF or the provider emits a
    terminal :stream/end event, then close it. This is used by providers
    that return SSE even for the public non-streaming complete path."
   [transport profile body]
-  (with-open [reader (BufferedReader. (InputStreamReader. body))]
-    (loop [events []
-           lines []]
-      (if-let [line (.readLine reader)]
-        (let [parsed (vec (event->seq
-                           (transport/parse-stream-event transport profile line)))
+  (with-open [reader (BufferedReader.
+                      (InputStreamReader. body StandardCharsets/UTF_8))]
+    (loop [records (sse/event-seq (line-seq reader))
+           events []
+           raw []]
+      (if-let [records (seq records)]
+        (let [record (first records)
+              parsed (vec (event->seq
+                           (transport/parse-stream-event transport profile record)))
               events' (into events parsed)
-              lines' (conj lines line)]
+              raw' (conj raw record)]
           (if (some #(= :stream/end (:event/type %)) parsed)
             {:events events'
-             :raw (str (str/join "\n" lines') "\n")}
-            (recur events' lines')))
+             :raw (str (str/join "\n\n" raw') "\n\n")}
+            (recur (rest records) events' raw')))
         {:events events
-         :raw (str (str/join "\n" lines) "\n")}))))
+         :raw (str (str/join "\n\n" raw) "\n\n")}))))
 
 (defn- streaming-response [req]
-  (if (= :websocket (:transport req))
-    (websocket/response req)
-    (http/sse-response req)))
+  (let [send (if (= :websocket (:transport req))
+               websocket/response
+               http/sse-response)
+        outcome (try {:response (send req)}
+                     (catch Exception e {:exception e}))
+        response (:response outcome)
+        exception (:exception outcome)
+        failure (some-> exception ex-data)
+        rejected? (or (= 401 (:status response))
+                      (and (= 401 (:status failure))
+                           (= :handshake (:phase failure))
+                           (false? (:request-sent? failure))))]
+    (if (and rejected? (:auth/recover! req))
+      (do
+        (when (instance? Closeable (:body response))
+          (.close ^Closeable (:body response)))
+        ;; Authentication rejection precedes generation. Retry once with
+        ;; refreshed credentials; never replay a partially consumed response.
+        (send (-> req
+                  (update :headers provider-auth/replace-auth-headers
+                          ((:auth/recover! req)))
+                  (dissoc :auth/recover!))))
+      (if exception (throw exception) response))))
 
 (defn- complete-sse-non-streaming
   [transport profile req provider-id model]
@@ -217,7 +281,8 @@
             has-end? (some #(= :stream/end (:event/type %)) events)
             parsed-events (concat [(stream/start-event)]
                                   events
-                                  (when-not has-end? [(stream/end-event)]))
+                                  (when-not has-end?
+                                    [(stream/end-event :finish-reason :incomplete)]))
             parsed (try
                      (transport/parse-response transport profile raw)
                      (catch Throwable _
@@ -358,18 +423,15 @@
   "The Codex backend's SSE response end is also its transport terminator. Stop
    reading there so a server that keeps the HTTP connection alive cannot stall
    SDK terminal delivery. Other protocols must remain open for usage trailers."
-  [events closeable]
+  [events]
   (letfn [(step [remaining]
             (lazy-seq
              (when-let [remaining (seq remaining)]
                (let [event (first remaining)]
                  (if (= :stream/end (:event/type event))
-                   (do
-                     (close-quietly! closeable)
-                     (list event))
+                   (list event)
                    (cons event (step (rest remaining))))))))]
     (step events)))
-
 
 (defn complete
   "Send a canonical request and return a canonical response.
@@ -382,9 +444,8 @@
    - never substituted 0/$0.
 
    Options:
-     :stream?   If true, returns a lazy seq of stream events
-                (or a list-of-events plus terminal response when
-                :on-event is given).
+     :stream?   If true, returns a lazy, seqable and reducible Closeable stream
+                owner (or the terminal response when :on-event is given).
      :on-event  Callback fn for each stream event (only if stream? true).
      :retry     Opt-in retry policy. nil/false → one-shot (default).
                 true → use llm.sdk.retry/default-policy. A map → merged
@@ -404,7 +465,11 @@
         profile (or profile
                     (throw (ex-info "Unknown provider" {:provider provider-id})))
         _ (validate-chat-request! request)
-        transport ((:profile/transport-constructor profile))
+        constructor (or (:profile/transport-constructor profile)
+                        (throw (ex-info "Provider does not support chat completions"
+                                        {:provider provider-id
+                                         :capability :chat})))
+        transport (constructor)
         ;; Strip canonical fields the provider doesn't support
         ;; (and warn) when the profile opts in via :profile/supported-params.
         request (request/apply-supported-params profile request)
@@ -420,7 +485,7 @@
                   (throw (ex-info "Unsupported Codex backend transport"
                                   {:provider provider-id :transport mode})))
                 (assoc req :transport mode
-                           :incremental? (get config :incremental? true)))
+                       :incremental? (get config :incremental? true)))
               req)
         binary-stream? (= :aws-eventstream (:profile/binary-stream profile))
         model (:request/model request)]
@@ -428,35 +493,41 @@
       ;; Streaming path - retry NOT applied; a partially-consumed stream
       ;; can't be safely resumed by the SDK. Wrap your own retry loop
       ;; if you need it.
-      (let [response (when-not binary-stream? (streaming-response req))
-            events (if binary-stream?
-                     (binary-stream-events transport profile req)
-                     (let [{:keys [status body]} response
-                           _ (when (and (number? status) (>= status 400))
-                               (let [classified (transport/parse-error transport profile status body)]
-                                 (throw (ex-info "Provider streaming API error"
-                                                 {:error classified
-                                                  :status status
-                                                  :body body
-                                                  :provider provider-id}))))
-                           ev-seq (http/line-seq-closeable body)]
-                       (parse-stream-lines transport profile ev-seq)))
+      (let [{:keys [body events]}
+            (if binary-stream?
+              (binary-stream-events transport profile req)
+              (let [{:keys [status body]} (streaming-response req)]
+                (when (and (number? status) (>= status 400))
+                  (try
+                    (let [classified
+                          (transport/parse-error transport profile status body)]
+                      (throw (ex-info "Provider streaming API error"
+                                      {:error classified
+                                       :status status
+                                       :body body
+                                       :provider provider-id})))
+                    (finally
+                      (close-quietly! body))))
+                {:body body
+                 :events
+                 (parse-stream-lines transport profile
+                                     (http/line-seq-closeable body))}))
             events (if (and (= :codex-backend provider-id)
                             (= :sse (:transport req)))
-                     (stop-at-provider-end events (:body response))
+                     (stop-at-provider-end events)
                      events)
             parsed-events (concat [(stream/start-event)]
-                                  (ensure-terminal-end events))]
+                                  (ensure-terminal-end events))
+            handle (stream-handle parsed-events body)]
         (if on-event
-          (try
-            (doseq [ev parsed-events] (on-event ev))
-            (stamp (stream/events->response parsed-events provider-id model)
-                   provider-id model)
-            (finally
-              (when-let [body (:body response)]
-                (when (instance? java.io.Closeable body)
-                  (.close ^java.io.Closeable body)))))
-          parsed-events))
+          (let [acc (reduce (fn [acc event]
+                              (on-event event)
+                              (stream/reduce-event acc event))
+                            (stream/empty-accumulator)
+                            handle)]
+            (stamp (stream/acc->response acc provider-id model)
+                   provider-id model))
+          handle))
       ;; Non-streaming path
       (complete-non-streaming transport profile req provider-id model
                               (normalize-retry-policy retry)))))

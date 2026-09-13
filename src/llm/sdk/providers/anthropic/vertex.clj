@@ -24,7 +24,6 @@
    quirks :vertex-location > GOOGLE_CLOUD_LOCATION env > us-central1."
   (:require [clojure.string :as str]
             [llm.sdk.transport :as t]
-            [llm.sdk.provider :as provider]
             [llm.sdk.providers.anthropic.chat :as anthropic]
             [llm.sdk.usage :as usage]
             [llm.sdk.errors :as errors]
@@ -194,19 +193,3 @@
 (defn make-transport []
   (->VertexAnthropicTransport))
 
-;; ---------------------------------------------------------------------------
-;; Register
-;; ---------------------------------------------------------------------------
-
-(provider/register-provider
- {:profile/id :vertex-anthropic
-  :profile/protocol-family :anthropic-messages
-  :profile/base-url "https://us-central1-aiplatform.googleapis.com"
-  :profile/auth-strategy :gcp-oauth
-  :profile/supports-model-listing false
-  :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning
-                          :cache :thinking-blocks :file-attachments}
-  :profile/default-headers {}
-  :profile/env-var-names ["GOOGLE_APPLICATION_CREDENTIALS"
-                          "GOOGLE_OAUTH_ACCESS_TOKEN"]
-  :profile/transport-constructor make-transport})

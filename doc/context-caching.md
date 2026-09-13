@@ -22,14 +22,19 @@ Keys:
 | Key | Meaning |
 |---|---|
 | `:enabled?` | Defaults to true when `:request/cache` is present. |
-| `:ttl` | Provider TTL, currently meaningful for Anthropic-style cache markers. |
+| `:ttl` | `"5m"` or `"1h"` for Anthropic-style markers. Omitted defaults to `"5m"`; `"30m"` and every other value are rejected. |
 | `:strategy` | `:auto`, `:system-and-3`, `:explicit`, or `:none`. |
 | `:scope-id` | Cache routing key for prompt-key providers. |
 | `:cached-content-id` | Explicit Gemini CachedContent resource id. |
-| `:breakpoints` | Maximum Anthropic `cache_control` markers. |
+| `:breakpoints` | Maximum Anthropic `cache_control` markers; must be a non-negative integer (`0` disables markers). |
 | `:tools-cache?` | Whether tool schemas may receive cache markers. |
 
 Omit `:request/cache` entirely to send no cache markers or cache routing keys.
+
+The provider's default is five minutes. Both an omitted TTL and explicit
+`"5m"` serialize as the bare marker `{:type "ephemeral"}`. Only explicit
+`"1h"` adds `{:ttl "1h"}`. Invalid TTLs and negative or non-integer breakpoint
+counts fail request validation instead of being coerced.
 
 ## Provider Matrix
 

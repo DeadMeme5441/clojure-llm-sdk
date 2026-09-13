@@ -17,7 +17,7 @@
     (is (= :post (:method built)))
     (is (.contains ^String (:url built) "bedrock-agent-runtime."))
     (is (.endsWith ^String (:url built) "/rerank"))
-    (is (= "bedrock" (get built :llm.sdk.providers.bedrock/aws-service)))
+    (is (= "bedrock" (get built :llm.sdk.providers.bedrock.converse/aws-service)))
     (is (= [{:type "TEXT"
              :textQuery {:text "best clojure sdk"}}]
            (:queries body)))
@@ -95,9 +95,9 @@
     (is (= "https://bedrock-agent-runtime.eu-west-1.amazonaws.com/rerank"
            (:url built)))
     (is (= "eu-west-1"
-           (:llm.sdk.providers.bedrock/aws-region built)))
+           (:llm.sdk.providers.bedrock.converse/aws-region built)))
     (is (= "bedrock"
-           (:llm.sdk.providers.bedrock/aws-service built)))))
+           (:llm.sdk.providers.bedrock.converse/aws-service built)))))
 
 (deftest test-parse-rerank-returned-document-and-pagination
   (let [t (bedrock-rerank/make-transport)

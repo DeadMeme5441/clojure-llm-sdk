@@ -4,10 +4,13 @@
    refresh-models! API."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [llm.sdk :as sdk]
+            [llm.sdk.aws-eventstream :as aws-eventstream]
+            [llm.sdk.aws-sigv4 :as aws-sigv4]
             [llm.sdk.http :as http]
             [llm.sdk.models :as models]
             [llm.sdk.models-dev :as mdev]
-            [llm.sdk.registry :as registry])
+            [llm.sdk.registry :as registry]
+            [llm.sdk.sse :as sse])
   (:import [java.io ByteArrayInputStream]))
 
 (defn- temp-dir ^java.io.File []
@@ -31,17 +34,21 @@
   (with-redefs [http/request (fn [_] {:status 500 :body {:error "offline"}})]
     (f)))
 
-(defn- sse-body [content]
-  (ByteArrayInputStream. (.getBytes content "UTF-8")))
+(defn- tracking-sse-body [content closed?]
+  (proxy [ByteArrayInputStream] [(.getBytes content "UTF-8")]
+    (close []
+      (reset! closed? true)
+      (proxy-super close))))
 
 (defn- run-codex-stream [content]
   (let [events (atom [])
+        closed? (atom false)
         response
         (with-redefs [http/sse-response
                       (fn [_]
                         {:status 200
                          :headers {}
-                         :body (sse-body content)})]
+                         :body (tracking-sse-body content closed?)})]
           (sdk/complete
            :codex
            {:request/model "gpt-5.3-codex"
@@ -50,8 +57,7 @@
            :stream? true
            :on-event #(swap! events conj %)
            :config {:api-key "test-key"}))]
-    {:events @events :response response}))
-
+    {:events @events :response response :closed? @closed?}))
 
 (deftest complete-validates-canonical-request-before-network
   (let [ex (try
@@ -82,7 +88,7 @@
       (is (= :auth (get-in (ex-data ex) [:error :error/reason]))))))
 
 (deftest complete-streaming-does-not-duplicate-provider-end
-  (let [{:keys [events response]}
+  (let [{:keys [events response closed?]}
         (run-codex-stream
          (str "data: {\"type\":\"response.output_text.delta\","
               "\"delta\":\"ok\"}\n\n"
@@ -92,6 +98,7 @@
               "\"status\":\"completed\","
               "\"usage\":{\"input_tokens\":2,\"output_tokens\":1,"
               "\"total_tokens\":3}}}\n\n"))]
+    (is closed?)
     (is (= 1 (count (filter #(= :stream/end (:event/type %)) events))))
     (is (= "ok" (get-in response [:response/parts 0 :text])))
     (is (= :stop (:response/finish-reason response)))))
@@ -130,29 +137,164 @@
     (is (= "ok" (get-in response [:response/parts 0 :text])))))
 
 (deftest complete-streaming-exposes-error-events-to-lazy-consumers
-  (with-redefs [http/sse-response
-                (fn [_]
-                  {:status 200
-                   :headers {}
-                   :body (sse-body
-                          (str "data: {\"type\":\"response.error\","
-                               "\"error\":{\"message\":\"provider failed\"}}"
-                               "\n\n"))})]
-    (let [events
-          (vec
-           (sdk/complete
-            :codex
-            {:request/model "gpt-5.3-codex"
-             :request/messages [{:message/role :user
-                                 :message/content "reply"}]}
-            :stream? true
-            :config {:api-key "test-key"}))]
-      (is (= [:stream/start :stream/error :stream/end]
-             (mapv :event/type events)))
-      (is (= "provider failed"
-             (get-in events [1 :error/error :error/message])))
-      (is (= :incomplete (:event/finish-reason (last events)))))))
+  (let [closed? (atom false)]
+    (with-redefs [http/sse-response
+                  (fn [_]
+                    {:status 200
+                     :headers {}
+                     :body (tracking-sse-body
+                            (str "data: {\"type\":\"response.error\","
+                                 "\"error\":{\"message\":\"provider failed\"}}"
+                                 "\n\n")
+                            closed?)})]
+      (let [events
+            (vec
+             (sdk/complete
+              :codex
+              {:request/model "gpt-5.3-codex"
+               :request/messages [{:message/role :user
+                                   :message/content "reply"}]}
+              :stream? true
+              :config {:api-key "test-key"}))]
+        (is (= [:stream/start :stream/error :stream/end]
+               (mapv :event/type events)))
+        (is (= "provider failed"
+               (get-in events [1 :error/error :error/message])))
+        (is (= :incomplete (:event/finish-reason (last events))))
+        (is @closed?)))))
 
+(deftest streaming-handle-supports-explicit-close-and-with-open
+  (let [closed? (atom false)]
+    (with-redefs [http/sse-response
+                  (fn [_]
+                    {:status 200
+                     :headers {}
+                     :body (tracking-sse-body
+                            "data:{\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+                            closed?)})]
+      (with-open [events (sdk/complete
+                          :codex
+                          {:request/model "gpt-5.3-codex"
+                           :request/messages [{:message/role :user
+                                               :message/content "reply"}]}
+                          :stream? true
+                          :config {:api-key "test-key"})]
+        (is (instance? java.io.Closeable events))
+        (is (= :stream/start (:event/type (first events))))
+        (is (false? @closed?))))
+    (is @closed?)))
+
+(deftest reducing-a-stream-prefix-closes-its-body
+  (let [closed? (atom false)]
+    (with-redefs [http/sse-response
+                  (fn [_]
+                    {:status 200
+                     :headers {}
+                     :body (tracking-sse-body
+                            "data:{\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+                            closed?)})]
+      (let [events (sdk/complete
+                    :codex
+                    {:request/model "gpt-5.3-codex"
+                     :request/messages [{:message/role :user
+                                         :message/content "reply"}]}
+                    :stream? true
+                    :config {:api-key "test-key"})
+            seen (reduce (fn [types event]
+                           (let [types (conj types (:event/type event))]
+                             (if (= :stream/content-delta (:event/type event))
+                               (reduced types)
+                               types)))
+                         []
+                         events)]
+        (is (= [:stream/start :stream/content-delta] seen))
+        (is @closed?)))))
+
+(deftest callback-failure-closes-stream-body
+  (let [closed? (atom false)
+        failure (ex-info "callback failed" {})
+        caught
+        (with-redefs [http/sse-response
+                      (fn [_]
+                        {:status 200
+                         :headers {}
+                         :body (tracking-sse-body
+                                "data:{\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+                                closed?)})]
+          (try
+            (sdk/complete
+             :codex
+             {:request/model "gpt-5.3-codex"
+              :request/messages [{:message/role :user
+                                  :message/content "reply"}]}
+             :stream? true
+             :on-event (fn [event]
+                         (when (= :stream/content-delta (:event/type event))
+                           (throw failure)))
+             :config {:api-key "test-key"})
+            nil
+            (catch Exception e e)))]
+    (is (identical? failure caught))
+    (is @closed?)))
+
+(deftest parser-failure-closes-stream-body
+  (let [closed? (atom false)
+        failure (ex-info "parser failed" {})
+        caught
+        (with-redefs [http/sse-response
+                      (fn [_]
+                        {:status 200
+                         :headers {}
+                         :body (tracking-sse-body
+                                "data:{\"delta\":\"ok\"}\n\n"
+                                closed?)})
+                      sse/parse-json-data
+                      (fn [& _] (throw failure))]
+          (try
+            (dorun
+             (sdk/complete
+              :codex
+              {:request/model "gpt-5.3-codex"
+               :request/messages [{:message/role :user
+                                   :message/content "reply"}]}
+              :stream? true
+              :config {:api-key "test-key"}))
+            nil
+            (catch Exception e e)))]
+    (is (identical? failure caught))
+    (is @closed?)))
+
+(deftest bedrock-stream-closes-and-emits-terminal-after-metadata
+  (let [closed? (atom false)
+        body (tracking-sse-body "" closed?)
+        seen (atom [])]
+    (with-redefs [aws-sigv4/maybe-sign (fn [_ req] req)
+                  http/binary-stream-request
+                  (fn [_] {:status 200 :headers {} :body body})
+                  aws-eventstream/frame-seq
+                  (fn [_]
+                    [{:event-type "contentBlockDelta"
+                      :data {:contentBlockIndex 0 :delta {:text "ok"}}}
+                     {:event-type "messageStop"
+                      :data {:stopReason "end_turn"}}
+                     {:event-type "metadata"
+                      :data {:usage {:inputTokens 2
+                                     :outputTokens 1
+                                     :totalTokens 3}}}])
+                  aws-eventstream/frame->json identity]
+      (let [response
+            (sdk/complete
+             :bedrock
+             {:request/model "claude-sonnet-4-5"
+              :request/messages [{:message/role :user
+                                  :message/content "reply"}]}
+             :stream? true
+             :on-event #(swap! seen conj %))]
+        (is (= [:stream/start :stream/content-delta :stream/usage :stream/end]
+               (mapv :event/type @seen)))
+        (is (= :stop (:response/finish-reason response)))
+        (is (= 3 (get-in response [:response/usage :usage/total-tokens])))))
+    (is @closed?)))
 
 ;; ---------------------------------------------------------------------------
 ;; list-models
@@ -276,3 +418,24 @@
          (is (= :actual (:cost/status r))
              (str "expected pricing for " pid "/" mid))
          (is (pos? (:cost/amount-usd r))))))))
+
+(deftest stream-handles-consume-once-and-release-their-unread-tail
+  (let [closed? (atom false)]
+    (with-redefs [http/sse-response
+                  (fn [_]
+                    {:status 200
+                     :body (tracking-sse-body
+                            (str "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"
+                                 "data: [DONE]\n\n")
+                            closed?)})]
+      (with-open [events (sdk/complete
+                          :openai
+                          {:request/model "test-model"
+                           :request/messages [{:message/role :user :message/content "hello"}]}
+                          :stream? true)]
+        (is (= :stream/start (:event/type (first events))))
+        (let [remaining (into [] events)]
+          (is (= [:stream/content-delta :stream/end] (mapv :event/type remaining)))
+          (is (= "hello" (:event/delta (first remaining)))))
+        (is @closed?)
+        (is (nil? (seq events)))))))

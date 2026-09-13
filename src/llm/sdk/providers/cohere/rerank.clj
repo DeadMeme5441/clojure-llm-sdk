@@ -6,20 +6,23 @@
    usage; Jina returns :usage {total_tokens}. Both are surfaced
    through the canonical :response/usage where possible."
   (:require [clojure.string :as str]
-            [llm.sdk.transport.rerank :as rt]
+            [llm.sdk.errors :as errors]
             [llm.sdk.provider :as provider]
-            [llm.sdk.errors :as errors]))
+            [llm.sdk.transport :as transport]
+            [llm.sdk.transport.rerank :as rt]))
 
 ;; ---------------------------------------------------------------------------
 ;; Usage normalization
 ;; ---------------------------------------------------------------------------
 
-(defn- ->int [x] (cond (int? x) x (number? x) (int x) :else 0))
+(defn- ->int [value]
+  (when (and (number? value)
+             (not (neg? value))
+             (Double/isFinite (double value)))
+    (int value)))
 
 (defn- present-int [m k]
-  (let [value (get m k)]
-    (when (number? value)
-      (int value))))
+  (->int (get m k)))
 
 (defn- normalize-cohere-rerank-usage [raw]
   (when-let [meta (:meta raw)]
@@ -39,13 +42,12 @@
           (assoc :usage/search-units search-units))))))
 
 (defn- normalize-jina-rerank-usage [raw]
-  (let [total (->int (get-in raw [:usage :total_tokens]))]
-    (when (pos? total)
-      {:usage/input-tokens total
-       :usage/output-tokens 0
-       :usage/total-tokens total
-       :usage/request-count 1
-       :usage/provider-raw (:usage raw)})))
+  (when-some [total (->int (get-in raw [:usage :total_tokens]))]
+    {:usage/input-tokens total
+     :usage/output-tokens 0
+     :usage/total-tokens total
+     :usage/request-count 1
+     :usage/provider-raw (:usage raw)}))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
@@ -74,7 +76,6 @@
            :document/index index
            :document/value document}))))))
 
-
 (defn build-rerank-request-cohere-shape
   [profile request]
   (let [provider-id (:profile/id profile)
@@ -98,7 +99,7 @@
                (and (= :jina provider-id) (contains? opts :return-embeddings))
                (assoc :return_embeddings (:return-embeddings opts)))
         extra (:extra_body opts)
-        body (if (seq extra) (merge body extra) body)
+        body (transport/merge-extra-body provider-id body extra)
         _ (validate-documents! provider-id (:documents body))]
     {:method :post
      :url (rerank-url profile)
@@ -131,7 +132,6 @@
          :provider provider-id
          :result/index (:index result)})))
     (double score)))
-
 
 (defn- result->canonical [provider-id r]
   (let [document (result-document provider-id (:document r))
@@ -188,8 +188,3 @@
 
 (defn make-transport [] (->CohereShapeRerankTransport))
 
-;; Attach to :cohere and :jina (both share the wire shape).
-(doseq [pid [:cohere :jina]]
-  (when-let [p (provider/get-provider pid)]
-    (provider/register-provider
-     (assoc p :profile/rerank-transport-constructor make-transport))))

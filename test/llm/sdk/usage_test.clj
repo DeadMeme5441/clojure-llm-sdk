@@ -166,3 +166,32 @@
                                     :audio_tokens 0}})]
     (is (= 0 (:usage/image-tokens u)))
     (is (= 0 (:usage/audio-tokens u)))))
+
+(deftest sparse-and-malformed-usage-remains-absent
+  (testing "an empty OpenAI envelope retains raw metadata without inventing tokens"
+    (let [normalized (usage/normalize-openai-usage {})]
+      (is (= {} (:usage/provider-raw normalized)))
+      (is (not (contains? normalized :usage/input-tokens)))
+      (is (not (contains? normalized :usage/output-tokens)))
+      (is (not (contains? normalized :usage/total-tokens)))))
+  (testing "an output-only envelope does not invent an input count or total"
+    (let [normalized
+          (usage/normalize-openai-usage {:completion_tokens 7})]
+      (is (= 7 (:usage/output-tokens normalized)))
+      (is (not (contains? normalized :usage/input-tokens)))
+      (is (not (contains? normalized :usage/total-tokens)))))
+  (testing "malformed counters are absent while explicit zero remains known"
+    (let [malformed
+          (usage/normalize-openai-usage
+           {:prompt_tokens "not-a-counter"
+            :completion_tokens {:value 3}
+            :total_tokens -1})
+          zero
+          (usage/normalize-openai-usage
+           {:prompt_tokens 0 :completion_tokens "0" :total_tokens 0})]
+      (is (not (contains? malformed :usage/input-tokens)))
+      (is (not (contains? malformed :usage/output-tokens)))
+      (is (not (contains? malformed :usage/total-tokens)))
+      (is (= 0 (:usage/input-tokens zero)))
+      (is (= 0 (:usage/output-tokens zero)))
+      (is (= 0 (:usage/total-tokens zero))))))

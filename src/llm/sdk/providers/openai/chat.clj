@@ -5,7 +5,6 @@
             [llm.sdk.sse :as sse]
             [llm.sdk.transport :as t]
             [llm.sdk.provider :as provider]
-            [llm.sdk.providers.openai-compat.aliases :as openai-aliases]
             [llm.sdk.providers.openai.embeddings :as openai-embeddings]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
@@ -89,7 +88,8 @@
   (case (:part/type part)
     :text {:type "text" :text (:text part)}
     :image {:type "image_url"
-            :image_url {:url (:image/url part)
+            :image_url {:url (t/image-url-or-data-uri!
+                              (:profile/id profile) part)
                         :detail (name (get part :image/detail :auto))}}
     :input-audio {:type "input_audio"
                   :input_audio {:data (:audio/data part)
@@ -128,10 +128,19 @@
       configured)))
 
 (defn- message->openai [profile model msg]
-  (let [role (name (:message/role msg))
-        content (:message/content msg)
+  (let [tool-result
+        (when (= :tool (:message/role msg))
+          (t/reject-error-tool-result!
+           (:profile/id profile)
+           (t/extract-tool-result (:profile/id profile) msg)))
+        role (name (:message/role msg))
+        content (if tool-result
+                  (:tool-result/content tool-result)
+                  (:message/content msg))
         tool-calls (assistant-tool-calls profile msg)
-        tool-call-id (:message/tool-call-id msg)
+        tool-call-id (or (:message/tool-call-id msg)
+                         (:tool-result/id tool-result))
+        tool-name (:tool-result/name tool-result)
         text-content (cond
                        (nil? content) nil
                        (string? content) content
@@ -159,8 +168,8 @@
     (cond-> (merge {:role role} replay-data)
       (some? text-content) (assoc :content text-content)
       (seq tool-calls) (assoc :tool_calls tool-calls)
-      tool-call-id (assoc :tool_call_id tool-call-id))))
-
+      tool-call-id (assoc :tool_call_id tool-call-id)
+      tool-name (assoc :name tool-name))))
 
 (defn- tool->openai [profile tool]
   (case (:type tool)
@@ -411,41 +420,6 @@
     (builder profile request "/chat/completions")
     (str (:profile/base-url profile) "/chat/completions")))
 
-(def ^:private protected-extra-body-keys
-  [:model :messages :stream])
-
-(defn- protected-extra-body-error!
-  [profile field canonical-value provided-value]
-  (throw
-   (ex-info
-    (str "Provider extra_body cannot override canonical " (name field))
-    {:provider (:profile/id profile)
-     :field field
-     :canonical-value canonical-value
-     :provided-value provided-value
-     :error/type :request/protected-extra-body-override})))
-
-(defn- prepare-provider-extra-body [profile extra-body canonical-values]
-  (when-not (or (nil? extra-body) (map? extra-body))
-    (throw
-     (ex-info "Provider extra_body must be a map"
-              {:provider (:profile/id profile)
-               :error/type :request/invalid-extra-body})))
-  (doseq [field protected-extra-body-keys
-          spelling [field (name field)]
-          :when (contains? extra-body spelling)]
-    (protected-extra-body-error! profile field
-                                 (get canonical-values field)
-                                 (get extra-body spelling)))
-  (reduce-kv
-   (fn [prepared k value]
-     (let [wire-key (if (string? k) (keyword k) k)]
-       (if (contains? #{:model :messages :stream} wire-key)
-         prepared
-         (assoc prepared wire-key value))))
-   {}
-   (or extra-body {})))
-
 (defn- wire-value [m k]
   (if (contains? m k)
     (get m k)
@@ -490,12 +464,7 @@
                 (mapv #(tool->openai profile %) (:request/tools request)))
         reasoning-body (build-reasoning-body profile request)
         provider-extra-body
-        (prepare-provider-extra-body
-         profile
-         (get-in request [:request/provider-options :extra_body])
-         {:model wire-model
-          :messages messages
-          :stream (boolean (:request/stream? request))})
+        (get-in request [:request/provider-options :extra_body])
         cache-on? (cache/cache-enabled? request)
         cache-decision (when cache-on?
                          (cache/decide-strategy profile model
@@ -540,7 +509,11 @@
            {:metadata (:request/metadata request)})
          (when (:request/stream? request)
            {:stream true}))
-        body (merge base-body reasoning-body provider-extra-body)
+        body (t/merge-extra-body
+              (:profile/id profile)
+              (merge base-body reasoning-body)
+              provider-extra-body
+              #{:model :messages :stream})
         body (if (and (:request/stream? request)
                       (or (= :openai (:profile/id profile))
                           (true? (get-in profile
@@ -861,7 +834,8 @@
     (usage/normalize-usage (:profile/id profile) raw))
 
   (request-capabilities [_]
-    #{:chat :streaming :tools :json-schema :reasoning :cache}))
+    #{:chat :streaming :tools :json-schema :reasoning :cache :multimodal
+      :file-attachments}))
 
 (defn make-transport []
   (->OpenAIChatTransport))
@@ -879,6 +853,7 @@
      :env-var-names            vector of env-var name strings
      :auth-strategy            defaults :bearer
      :auth-header-name         only with :api-key-header
+     :auth-query-param         required with :api-key-query
      :default-headers          optional map
      :capabilities             defaults #{:chat :streaming :tools}
      :quirks                   optional map:
@@ -905,6 +880,8 @@
            :profile/transport-constructor make-transport}
     (:auth-header-name spec)
     (assoc :profile/auth-header-name (:auth-header-name spec))
+    (:auth-query-param spec)
+    (assoc :profile/auth-query-param (:auth-query-param spec))
     (:supported-params spec)
     (assoc :profile/supported-params (:supported-params spec))))
 
@@ -912,25 +889,6 @@
   "Register an OpenAI-compat alias profile in one call."
   [spec]
   (provider/register-provider (build-alias-profile spec)))
-
-;; ---------------------------------------------------------------------------
-;; Attach the OpenAI-chat transport constructor to every built-in
-;; OpenAI-compat profile registered by llm.sdk.provider.
-;;
-;; Listing the ids explicitly (rather than scanning by protocol-family)
-;; matches the project's other adapter files — and means new entries
-;; in provider.clj need a one-line addition here too, which is the
-;; same place reviewers will look. The kimi-specific latent bug
-;; (profile but no constructor) is fixed by including it in the list.
-;; ---------------------------------------------------------------------------
-
-(def ^:private compat-provider-ids
-  (into [:openai :openrouter] openai-aliases/chat-alias-ids))
-
-(doseq [pid compat-provider-ids]
-  (when-let [p (provider/get-provider pid)]
-    (provider/register-provider
-     (assoc p :profile/transport-constructor make-transport))))
 
 ;; ---------------------------------------------------------------------------
 ;; Azure OpenAI deployment routing

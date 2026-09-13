@@ -1,12 +1,11 @@
 (ns llm.sdk.live-adapters-test
-  "Live smoke tests for Codex, Anthropic OAuth, and OpenRouter.
-   Gated by presence of respective API keys/tokens in environment."
+  "Live smoke tests for API-key Codex, Anthropic OAuth, and OpenRouter.
+   ChatGPT OAuth transport coverage lives in llm.sdk.live-codex-test."
   (:require [clojure.string :as str]
             [cheshire.core :as json]
             [clojure.test :refer [deftest is testing]]
             [llm.sdk :as sdk]
-            [llm.sdk.provider :as provider]
-            [llm.sdk.providers.codex :as codex]))
+            [llm.sdk.provider :as provider]))
 
 (defn- has-creds? [env-var]
   (boolean (System/getenv env-var)))
@@ -31,27 +30,6 @@
             (str "Expected 'pong' in parts: " (:response/parts resp)))))))
 
 ;; ---------------------------------------------------------------------------
-;; Codex Backend (chatgpt.com/backend-api/codex)
-;; Uses OAuth tokens from ~/.codex/auth.json
-;; ---------------------------------------------------------------------------
-
-(deftest ^:live test-codex-backend-smoke
-  (when (codex/codex-backend-available?)
-    (testing "Codex backend (chatgpt.com) smoke test"
-      (let [req {:request/model "gpt-5.5"
-                 :request/messages [{:message/role :system
-                                     :message/content "You are a helpful assistant."}
-                                    {:message/role :user
-                                     :message/content "Say exactly 'pong' and nothing else."}]}
-            resp (sdk/complete :codex-backend req)]
-        (is (= :codex-backend (:response/provider resp)))
-        (is (= :stop (:response/finish-reason resp)))
-        (is (pos? (get-in resp [:response/usage :usage/input-tokens] 0)))
-        (is (some #(= "pong" (str/lower-case (:text %)))
-                  (:response/parts resp))
-            (str "Expected 'pong' in parts: " (:response/parts resp)))))))
-
-;; ---------------------------------------------------------------------------
 ;; Anthropic OAuth (Claude OAT token)
 ;; Uses CLAUDE_OAT_TOKEN with Bearer auth + Claude Code identity.
 ;; A 429 is a failure here; this test proves the full live path works.
@@ -68,7 +46,7 @@
                            :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning :cache :thinking-blocks}
                            :profile/default-headers {"anthropic-version" "2023-06-01"}
                            :profile/transport-constructor
-                           (fn [] ((requiring-resolve 'llm.sdk.providers.anthropic/make-transport)))}
+                           (fn [] ((requiring-resolve 'llm.sdk.providers.anthropic.chat/make-transport)))}
             _ (provider/register-provider oauth-profile)
             req {:request/model "claude-sonnet-4-20250514"
                  :request/messages [{:message/role :user

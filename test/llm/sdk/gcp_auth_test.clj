@@ -8,7 +8,7 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [llm.sdk.gcp-auth :as gcp-auth]
             [llm.sdk.provider :as provider]
-            [llm.sdk.providers.vertex-gemini :as vertex])
+            [llm.sdk.providers.gemini.vertex :as vertex])
   (:import (java.security KeyPairGenerator)
            (java.util Base64)))
 
@@ -45,11 +45,14 @@
 (defn- gen-authorized-user-json-file
   "Generate an authorized_user JSON file matching what
    `gcloud auth application-default login` writes."
-  [& {:keys [quota-project]}]
+  [& {:keys [quota-project client-id client-secret refresh-token]
+      :or {client-id "32555940559.apps.googleusercontent.com"
+           client-secret "fake-secret"
+           refresh-token "1//fake-refresh"}}]
   (let [u (cond-> {:type "authorized_user"
-                   :client_id "32555940559.apps.googleusercontent.com"
-                   :client_secret "fake-secret"
-                   :refresh_token "1//fake-refresh"}
+                   :client_id client-id
+                   :client_secret client-secret
+                   :refresh_token refresh-token}
             quota-project (assoc :quota_project_id quota-project))
         tmp (java.io.File/createTempFile "user-test" ".json")]
     (.deleteOnExit tmp)
@@ -80,8 +83,21 @@
 (deftest resolve-token-prefers-provider-options-bearer
   (let [token (gcp-auth/resolve-access-token
                {:request/provider-options {:vertex {:access-token "from-opts"}}}
-               {:profile/id :vertex-gemini})]
+               {:profile/id :vertex-gemini
+                :profile/auth-token "from-runtime"})]
     (is (= "from-opts" token))))
+
+(deftest resolve-token-uses-runtime-profile-before-adc
+  (binding [gcp-auth/*well-known-path* "/nonexistent"
+            gcp-auth/*metadata-fetch-fn*
+            (fn [] (throw (ex-info "ADC metadata should not be used" {})))
+            gcp-auth/*token-endpoint-fn*
+            (fn [_] (throw (ex-info "ADC exchange should not be used" {})))]
+    (is (= "from-runtime"
+           (gcp-auth/resolve-access-token
+            {}
+            {:profile/id :vertex-gemini
+             :profile/auth-token "from-runtime"})))))
 
 ;; ---------------------------------------------------------------------------
 ;; Proper ADC step 1: GOOGLE_APPLICATION_CREDENTIALS → SA JSON
@@ -223,6 +239,59 @@
         (reset! fake-now (+ @fake-now 3600))
         (let [t3 (gcp-auth/resolve-access-token req {:profile/id :vertex-gemini})]
           (is (= "sa-tok-2" t3) "cache evicts past expiry"))))))
+
+(deftest credential-file-rotation-invalidates-parsed-and-token-caches
+  (let [user-path (gen-authorized-user-json-file
+                   :client-secret "old-secret"
+                   :refresh-token "old-refresh")
+        request {:request/provider-options
+                 {:vertex {:credentials-file user-path}}}
+        calls (atom [])]
+    (binding [gcp-auth/*well-known-path* "/nonexistent"
+              gcp-auth/*metadata-fetch-fn* (constantly nil)
+              gcp-auth/*token-endpoint-fn*
+              (fn [body]
+                (swap! calls conj body)
+                {:access_token (str "token-for-" (:refresh_token body))
+                 :expires_in 3600})]
+      (is (= "token-for-old-refresh"
+             (gcp-auth/resolve-access-token
+              request {:profile/id :vertex-gemini})))
+      (spit user-path
+            (json/generate-string
+             {:type "authorized_user"
+              :client_id "32555940559.apps.googleusercontent.com"
+              :client_secret "new-secret"
+              :refresh_token "new-refresh"}))
+      (is (= "token-for-new-refresh"
+             (gcp-auth/resolve-access-token
+              request {:profile/id :vertex-gemini})))
+      (is (= ["old-secret" "new-secret"] (mapv :client_secret @calls)))
+      (is (= 2 (count @calls))))))
+
+(deftest authorized-users-sharing-client-id-have-distinct-token-caches
+  (let [first-path (gen-authorized-user-json-file
+                    :refresh-token "first-refresh")
+        second-path (gen-authorized-user-json-file
+                     :refresh-token "second-refresh")
+        calls (atom 0)
+        resolve-path
+        (fn [path]
+          (gcp-auth/resolve-access-token
+           {:request/provider-options {:vertex {:credentials-file path}}}
+           {:profile/id :vertex-gemini}))]
+    (binding [gcp-auth/*well-known-path* "/nonexistent"
+              gcp-auth/*metadata-fetch-fn* (constantly nil)
+              gcp-auth/*token-endpoint-fn*
+              (fn [body]
+                (swap! calls inc)
+                {:access_token (str "token-for-" (:refresh_token body))
+                 :expires_in 3600})]
+      (is (= "token-for-first-refresh" (resolve-path first-path)))
+      (is (= "token-for-second-refresh" (resolve-path second-path)))
+      (is (= "token-for-first-refresh" (resolve-path first-path)))
+      (is (= "token-for-second-refresh" (resolve-path second-path)))
+      (is (= 2 @calls)))))
 
 (deftest user-token-cache-separate-from-sa-cache
   (let [sa-path (gen-sa-json-file)

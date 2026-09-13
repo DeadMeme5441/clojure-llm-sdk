@@ -4,8 +4,8 @@
             [clojure.string :as str]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.codex :as codex]
-            [llm.sdk.providers.codex.responses :as codex-impl]))
+            [llm.sdk.providers.codex.auth :as auth]
+            [llm.sdk.providers.codex.responses :as codex]))
 
 (defn- temp-auth-file []
   (let [dir (doto (java.io.File/createTempFile "codex-auth-test" "")
@@ -39,7 +39,7 @@
     (is (sequential? (get-in built [:body :input])))
     (is (= "user" (:role (first (get-in built [:body :input])))))
     (is (not (contains? (:body built) :stream)))))
- 
+
 (deftest test-build-request-standard-stream-flag
   (let [built (transport/build-request
                (codex/make-transport)
@@ -108,11 +108,11 @@
         provider-data {:codex (:provider-state/data event)}
         build (fn [text]
                 (:input (:body (codex/build-request-codex
-                                 profile
-                                 {:request/model "gpt-6-astra"
-                                  :request/messages
-                                  [{:message/role :assistant :message/content text
-                                    :message/provider-data provider-data}]}))))]
+                                profile
+                                {:request/model "gpt-6-astra"
+                                 :request/messages
+                                 [{:message/role :assistant :message/content text
+                                   :message/provider-data provider-data}]}))))]
     (is (= [item] (build "Original"))
         "Preserved output metadata must not duplicate canonical assistant text")
     (is (= [{:type "message" :role "assistant" :status "completed"
@@ -212,23 +212,22 @@
         original-slurp slurp
         reads (atom 0)]
     (try
-      (reset! @#'codex/codex-auth-cache nil)
+      (reset! @#'auth/codex-auth-cache nil)
       (write-auth! file "tok-1" "ref-1")
-      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
-                       #'codex-impl/codex-auth-file-path (constantly path)
+      (with-redefs-fn {#'auth/codex-auth-file-path (constantly path)
                        #'clojure.core/slurp (fn [& args]
                                               (swap! reads inc)
                                               (apply original-slurp args))}
         (fn []
-          (is (= "tok-1" (:access-token (codex/read-codex-auth))))
-          (is (= "tok-1" (:access-token (codex/read-codex-auth))))
+          (is (= "tok-1" (:access-token (auth/read-codex-auth))))
+          (is (= "tok-1" (:access-token (auth/read-codex-auth))))
           (is (= 1 @reads) "stable auth file should only be read once")
           (write-auth! file "tok-2" "ref-2")
           (.setLastModified file (+ 5000 (.lastModified file)))
-          (is (= "tok-2" (:access-token (codex/read-codex-auth))))
+          (is (= "tok-2" (:access-token (auth/read-codex-auth))))
           (is (= 2 @reads) "auth file should be reread after mtime/length changes")))
       (finally
-        (reset! @#'codex/codex-auth-cache nil)
+        (reset! @#'auth/codex-auth-cache nil)
         (.delete file)
         (.delete dir)))))
 
@@ -236,18 +235,17 @@
   (let [[dir file] (temp-auth-file)
         path (.getPath file)]
     (try
-      (reset! @#'codex/codex-auth-cache nil)
+      (reset! @#'auth/codex-auth-cache nil)
       (write-auth! file "tok-1" "ref-1" "acct-123")
-      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
-                       #'codex-impl/codex-auth-file-path (constantly path)}
+      (with-redefs-fn {#'auth/codex-auth-file-path (constantly path)}
         (fn []
-          (let [auth (codex/read-codex-auth)
-                headers (codex/codex-backend-auth-headers)]
+          (let [auth (auth/read-codex-auth)
+                headers (auth/codex-backend-auth-headers)]
             (is (= "acct-123" (:account-id auth)))
             (is (= "Bearer tok-1" (get headers "Authorization")))
             (is (= "acct-123" (get headers "ChatGPT-Account-ID"))))))
       (finally
-        (reset! @#'codex/codex-auth-cache nil)
+        (reset! @#'auth/codex-auth-cache nil)
         (.delete file)
         (.delete dir)))))
 
@@ -255,20 +253,19 @@
   (let [[dir file] (temp-auth-file)
         path (.getPath file)]
     (try
-      (reset! @#'codex/codex-auth-cache nil)
+      (reset! @#'auth/codex-auth-cache nil)
       (spit file
             (json/generate-string
              {:auth_mode "chatgpt"
               :tokens {:refresh_token "ref-1"
                        :account_id "acct-123"}}))
-      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
-                       #'codex-impl/codex-auth-file-path (constantly path)}
+      (with-redefs-fn {#'auth/codex-auth-file-path (constantly path)}
         (fn []
-          (is (nil? (codex/read-codex-auth)))
-          (is (nil? (codex/codex-backend-auth-headers)))
-          (is (false? (codex/codex-backend-available?)))))
+          (is (nil? (auth/read-codex-auth)))
+          (is (nil? (auth/codex-backend-auth-headers)))
+          (is (false? (auth/codex-backend-available?)))))
       (finally
-        (reset! @#'codex/codex-auth-cache nil)
+        (reset! @#'auth/codex-auth-cache nil)
         (.delete file)
         (.delete dir)))))
 
@@ -281,17 +278,16 @@
              :request/messages [{:message/role :user
                                  :message/content "hi"}]}]
     (try
-      (reset! @#'codex/codex-auth-cache nil)
+      (reset! @#'auth/codex-auth-cache nil)
       (spit file (json/generate-string {:auth_mode "chatgpt" :tokens {}}))
-      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
-                       #'codex-impl/codex-auth-file-path (constantly path)}
+      (with-redefs-fn {#'auth/codex-auth-file-path (constantly path)}
         (fn []
           (is (thrown-with-msg?
                clojure.lang.ExceptionInfo
                #"Codex backend OAuth credentials are unavailable"
                (transport/build-request t profile req)))))
       (finally
-        (reset! @#'codex/codex-auth-cache nil)
+        (reset! @#'auth/codex-auth-cache nil)
         (.delete file)
         (.delete dir)))))
 
@@ -308,10 +304,9 @@
              :request/max-tokens 16
              :request/cache {:scope-id "session-123"}}]
     (try
-      (reset! @#'codex/codex-auth-cache nil)
+      (reset! @#'auth/codex-auth-cache nil)
       (write-auth! file "tok-1" "ref-1" "acct-123")
-      (with-redefs-fn {#'codex/codex-auth-file-path (constantly path)
-                       #'codex-impl/codex-auth-file-path (constantly path)}
+      (with-redefs-fn {#'auth/codex-auth-file-path (constantly path)}
         (fn []
           (let [built (transport/build-request t profile req)]
             (is (= "https://chatgpt.com/backend-api/codex/responses" (:url built)))
@@ -319,7 +314,7 @@
             (is (= "acct-123" (get-in built [:headers "ChatGPT-Account-ID"])))
             (is (= "text/event-stream" (get-in built [:headers "Accept"])))
             (is (= "codex_cli_rs" (get-in built [:headers "originator"])))
-            (is (= "session-123" (get-in built [:headers "session_id"])))
+            (is (= "session-123" (get-in built [:headers "session-id"])))
             (is (= "session-123" (get-in built [:headers "x-client-request-id"])))
             (is (= "session-123" (get-in built [:body :prompt_cache_key])))
             (is (= true (get-in built [:body :stream])))
@@ -327,14 +322,14 @@
                 "Codex backend rejects max_output_tokens; transport must suppress it")
             (is (= "Sys" (get-in built [:body :instructions]))))))
       (finally
-        (reset! @#'codex/codex-auth-cache nil)
+        (reset! @#'auth/codex-auth-cache nil)
         (.delete file)
         (.delete dir)))))
 
 (deftest test-build-request-codex-backend-default-instructions-keep-user-input
-  (with-redefs [codex-impl/codex-backend-auth-headers
-                (fn [] {"Authorization" "Bearer test-token"
-                        "ChatGPT-Account-ID" "acct-123"})]
+  (with-redefs [auth/request-auth
+                (fn [_] {:headers {"Authorization" "Bearer test-token"
+                                   "ChatGPT-Account-ID" "acct-123"}})]
     (let [built (transport/build-request
                  (codex/make-transport)
                  (provider/get-provider :codex-backend)
@@ -346,11 +341,10 @@
       (is (= "user" (get-in built [:body :input 0 :role])))
       (is (= "hi" (get-in built [:body :input 0 :content 0 :text]))))))
 
-
 (deftest test-build-request-codex-backend-replays-streamed-reasoning
-  (with-redefs [codex-impl/codex-backend-auth-headers
-                (fn [] {"Authorization" "Bearer test-token"
-                        "ChatGPT-Account-ID" "acct-123"})]
+  (with-redefs [auth/request-auth
+                (fn [_] {:headers {"Authorization" "Bearer test-token"
+                                   "ChatGPT-Account-ID" "acct-123"}})]
     (let [reasoning-item {:type "reasoning"
                           :id "reasoning-item-1"
                           :encrypted_content "encrypted-thinking"}
@@ -831,3 +825,58 @@
              :request/messages [{:message/role :user :message/content "Hi"}]}
         built (transport/build-request t profile req)]
     (is (nil? (get-in built [:body :prompt_cache_key])))))
+
+(deftest typed-tool-results-preserve-function-and-custom-wire-kinds
+  (doseq [custom? [false true]]
+    (let [call {:part/type :tool-call :tool-call/id "call_probe"
+                :tool-call/name "probe" :tool-call/arguments "{}"
+                :tool-call/provider-data {:wire_type (if custom? "custom_tool_call" "function_call")}}
+          built (transport/build-request
+                 (codex/make-transport)
+                 (assoc (provider/get-provider :codex-backend)
+                        :profile/auth-token "synthetic-token")
+                 {:request/model "gpt-5.6-luna"
+                  :request/messages
+                  [{:message/role :assistant :message/tool-calls [call]}
+                   {:message/role :tool
+                    :message/content [{:part/type :tool-result
+                                       :tool-result/id "call_probe"
+                                       :tool-result/name "probe"
+                                       :tool-result/content "42"}]}]})]
+      (is (= {:type (if custom? "custom_tool_call_output" "function_call_output")
+              :call_id "call_probe" :output "42"}
+             (last (get-in built [:body :input])))))))
+
+(deftest codex-protects-canonical-routing-and-generation-fields
+  (doseq [field [:model "input" :store "stream"]]
+    (let [error (try
+                  (transport/build-request
+                   (codex/make-transport)
+                   (assoc (provider/get-provider :codex-backend)
+                          :profile/auth-token "synthetic-token")
+                   {:request/model "gpt-5.6-luna"
+                    :request/messages [{:message/role :user :message/content "probe"}]
+                    :request/provider-options {:extra_body {field false}}})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+      (is (= {:provider :codex-backend
+              :field (keyword field)
+              :error/type :request/protected-extra-body-override}
+             error)))))
+
+(deftest codex-inline-image-data-and-default-reasoning-remain-replayable
+  (let [built (transport/build-request
+               (codex/make-transport)
+               (assoc (provider/get-provider :codex-backend)
+                      :profile/auth-token "synthetic-token")
+               {:request/model "gpt-5.6-luna"
+                :request/messages [{:message/role :user
+                                    :message/content [{:part/type :image
+                                                       :image/data "aW1hZ2U="
+                                                       :image/mime-type "image/png"}]}]
+                :request/cache {:scope-id "synthetic-session"}})]
+    (is (= "data:image/png;base64,aW1hZ2U="
+           (get-in built [:body :input 0 :content 0 :image_url])))
+    (is (= ["reasoning.encrypted_content"] (get-in built [:body :include])))
+    (is (= "synthetic-session" (get-in built [:headers "session-id"])))
+    (is (= "synthetic-session" (get-in built [:headers "thread-id"])))))

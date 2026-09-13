@@ -14,8 +14,7 @@
             [llm.sdk.gcp-auth :as gcp-auth]
             [llm.sdk.http :as http]
             [llm.sdk.models-dev :as mdev]
-            [llm.sdk.providers.codex :as codex]
-            [llm.sdk.providers.codex.responses :as codex-impl]
+            [llm.sdk.providers.codex.auth :as auth]
             [llm.sdk.registry :as registry]
             [llm.sdk.schema :as schema])
   (:import [java.io ByteArrayInputStream]))
@@ -126,10 +125,8 @@
       {:model/cost {:input-per-million 1.0
                     :output-per-million 2.0
                     :cache-read-per-million 0.2}})
-     (with-redefs [codex/codex-backend-auth-headers
-                   (fn [] {"Authorization" "Bearer test-token"})
-                   codex-impl/codex-backend-auth-headers
-                   (fn [] {"Authorization" "Bearer test-token"})
+     (with-redefs [auth/request-auth
+                   (fn [_] {:headers {"Authorization" "Bearer test-token"}})
                    http/sse-response
                    (fn [_]
                      {:status 200
@@ -218,9 +215,9 @@
          (is (canonical-shape-ok? resp :perplexity))
          (is (= "perplexity/sonar" (:response/model resp)))
          (is (= "ok" (->> (:response/parts resp)
-                           (filter #(= :text (:part/type %)))
-                           first
-                           :text)))
+                          (filter #(= :text (:part/type %)))
+                          first
+                          :text)))
          (is (= 1 (count (filter #(= :citation (:part/type %))
                                  (:response/parts resp)))))
          (is (= 1 (get-in resp [:response/usage :usage/search-queries])))

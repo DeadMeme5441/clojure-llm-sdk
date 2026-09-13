@@ -2,7 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.openrouter :as openrouter]
+            [llm.sdk.providers.openrouter.chat :as openrouter]
             [llm.sdk.providers.openrouter.image :as openrouter-image]))
 
 (deftest test-build-request-basic
@@ -265,9 +265,9 @@
                :request/cache {:ttl "5m"}}
           built (transport/build-request t profile req)
           msgs (get-in built [:body :messages])]
-      (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (first msgs))))
+      (is (= {:type "ephemeral"} (:cache_control (first msgs))))
       ;; tail messages marked
-      (is (= {:type "ephemeral" :ttl "5m"} (:cache_control (last msgs)))))))
+      (is (= {:type "ephemeral"} (:cache_control (last msgs)))))))
 
 (deftest test-cache-session-routing
   (testing "cache scope-id maps to OpenRouter's documented session_id"

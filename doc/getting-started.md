@@ -4,12 +4,11 @@ This guide is for application authors using `clojure-llm-sdk` as a library. The 
 
 ## Install
 
-Add the library to `deps.edn`:
+Add the same Maven coordinate used by the README to `deps.edn`:
 
 ```clojure
-{:deps {com.deadmeme5441/clojure-llm-sdk
-        {:git/url "https://github.com/DeadMeme5441/clojure-llm-sdk"
-         :git/sha "LATEST_SHA"}}}
+{:deps {net.clojars.deadmeme5441/clojure-llm-sdk
+        {:mvn/version "0.6.0"}}}
 ```
 
 Then require the public namespace:
@@ -54,9 +53,9 @@ The response is canonical:
  :response/parts [{:part/type :text
                    :text "ok"}]
  :response/finish-reason :stop
- :response/usage {...}
- :response/cost {...}
- :response/cache {...}
+ :response/usage {...}       ; optional; reported totals remain authoritative
+ :response/cost {...}        ; optional; provider-reported cost wins
+ :response/cache {...}       ; hit/miss/unknown when stamped
  :response/raw {...}}
 ```
 
@@ -64,21 +63,52 @@ See [canonical-response.md](canonical-response.md) for the full response contrac
 
 ## Streaming
 
-Pass `:stream? true` and optionally `:on-event`:
+Pass `:stream? true`. Without a callback, `sdk/complete` returns an
+`llm.sdk.StreamHandle` implementing `Seqable`, `java.io.Closeable`,
+`clojure.lang.IReduce`, and `clojure.lang.IReduceInit`:
 
 ```clojure
-(sdk/complete
-  :openai
-  {:request/model "gpt-4o-mini"
-   :request/messages [{:message/role :user
-                       :message/content "Count to three"}]}
-  :stream? true
-  :on-event (fn [event]
-              (when (= :stream/content-delta (:event/type event))
-                (print (:event/delta event)))))
+(with-open [events (sdk/complete
+                     :openai
+                     {:request/model "gpt-4o-mini"
+                      :request/messages
+                      [{:message/role :user
+                        :message/content "Count to three"}]}
+                     :stream? true)]
+  (doseq [event events]
+    (when (= :stream/content-delta (:event/type event))
+      (print (:event/delta event)))))
 ```
 
-Stream events use a provider-neutral taxonomy: content deltas, reasoning deltas, tool-call deltas, citations, usage, provider-state, errors, and end events. The final response is still stamped with usage, cost, and cache data when the provider reports enough information.
+Use `with-open` for sequence operations that may stop before EOF. Direct
+`reduce` closes the stream after full consumption, errors, or early `reduced`
+termination.
+
+The handle is single-pass and single-consumer: sequence operations and
+`reduce` advance the same cursor, and consumed events are released. Retain any
+events you need later instead of trying to replay or concurrently consume the
+same handle.
+
+Alternatively, pass `:on-event`. The callback runs once for each canonical
+event as it arrives, and `sdk/complete` returns the accumulated response after
+the terminal event:
+
+```clojure
+(def response
+  (sdk/complete
+    :openai
+    {:request/model "gpt-4o-mini"
+     :request/messages [{:message/role :user
+                         :message/content "Count to three"}]}
+    :stream? true
+    :on-event #(when (= :stream/content-delta (:event/type %))
+                 (print (:event/delta %)))))
+```
+
+Stream events use a provider-neutral taxonomy: content deltas, reasoning
+deltas, tool-call deltas, citations, usage, provider-state, errors, and end
+events. Reported usage, cost, and totals remain authoritative; fields the
+provider omits remain absent or unknown.
 
 ## Tool Calls
 
@@ -116,12 +146,20 @@ When `:response/finish-reason` is `:tool-calls`, execute the requested tool in y
        :message/content ""
        :message/tool-calls (:response/tool-calls first-turn)}
       {:message/role :tool
-       :message/tool-call-id (:tool-call/id call)
-       :message/content "{\"temperature\":72,\"condition\":\"clear\"}"}]
+       :message/content
+       [{:part/type :tool-result
+         :tool-result/id (:tool-call/id call)
+         :tool-result/name (:tool-call/name call)
+         :tool-result/content "{\"temperature\":72,\"condition\":\"clear\"}"
+         :tool-result/is-error false}]}]
      :request/tools [weather-tool]}))
 ```
 
 The SDK preserves provider-specific tool-call ids and replay fields so multi-turn requests can be reconstructed correctly.
+
+Typed tool results keep id, name, content, and error status together. Providers
+with a native error-status field preserve `:tool-result/is-error`; providers
+without one reject an error result rather than silently sending it as success.
 
 ## Other Modalities
 

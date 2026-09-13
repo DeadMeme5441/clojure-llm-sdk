@@ -4,7 +4,7 @@
    command-r-plus) with a single-sentence prompt to keep cost minimal.
 
    To run only this suite:
-     source .env && clj -M:test -n llm.sdk.live-cohere-chat-test"
+     clojure -M:live-test -n llm.sdk.live-cohere-chat-test"
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk :as sdk]))
 

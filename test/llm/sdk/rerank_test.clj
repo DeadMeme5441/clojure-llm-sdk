@@ -42,17 +42,17 @@
 
 (deftest test-rerank-unknown-provider
   (is (thrown-with-msg? Exception #"Unknown provider"
-        (sdk/rerank :no-such-provider
-                    {:rerank/model "m"
-                     :rerank/query "q"
-                     :rerank/documents ["a"]}))))
+                        (sdk/rerank :no-such-provider
+                                    {:rerank/model "m"
+                                     :rerank/query "q"
+                                     :rerank/documents ["a"]}))))
 
 (deftest test-rerank-provider-without-rerank-support
   (is (thrown-with-msg? Exception #"Rerank not supported"
-        (sdk/rerank :openai
-                    {:rerank/model "x"
-                     :rerank/query "q"
-                     :rerank/documents ["a"]}))))
+                        (sdk/rerank :openai
+                                    {:rerank/model "x"
+                                     :rerank/query "q"
+                                     :rerank/documents ["a"]}))))
 
 (deftest test-rerank-driver-4xx
   (with-redefs [http/request
@@ -101,11 +101,3 @@
         (is (= {:rerank/index 0 :rerank/score 0.875}
                (first (:rerank/results resp))))
         (is (= raw (:rerank/raw resp)))))))
-
-;; ---------------------------------------------------------------------------
-;; Public API surface
-;; ---------------------------------------------------------------------------
-
-(deftest test-public-api-exposes-rerank
-  (is (some? (resolve 'llm.sdk/rerank)))
-  (is (fn? @(resolve 'llm.sdk/rerank))))

@@ -3,26 +3,27 @@
 [![CI](https://github.com/DeadMeme5441/clojure-llm-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/DeadMeme5441/clojure-llm-sdk/actions/workflows/ci.yml)
 [![Clojars Project](https://img.shields.io/clojars/v/net.clojars.deadmeme5441/clojure-llm-sdk.svg)](https://clojars.org/net.clojars.deadmeme5441/clojure-llm-sdk)
 
-A production-quality Clojure SDK for LLM providers: one canonical API for chat, embeddings, moderation, rerank, image generation, audio transcription, and text-to-speech.
+A Clojure SDK for LLM providers: one canonical API for chat, embeddings, moderation, rerank, image generation, audio transcription, and text-to-speech.
 
 This is a provider SDK, not an agent framework or proxy server. It owns provider wire-format differences so your application does not have to. It does not include credential pools, budget routing, plugin loading, vector stores, MCP clients, observability sinks, or secret managers.
 
 ## Installation
 
-Add the library to `deps.edn` (released to [Clojars](https://clojars.org/net.clojars.deadmeme5441/clojure-llm-sdk)):
+Add the library coordinate to `deps.edn`:
 
 ```clojure
-{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.5.0"}}}
+{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.6.0"}}}
 ```
 
 Or with Leiningen / `project.clj`:
 
 ```clojure
-[net.clojars.deadmeme5441/clojure-llm-sdk "0.5.0"]
+[net.clojars.deadmeme5441/clojure-llm-sdk "0.6.0"]
 ```
 
-**Upgrading from 0.4.x:** 0.5.0 includes breaking provider, streaming, and usage
-changes. Review the [migration notes](CHANGELOG.md#050) before upgrading.
+**Upgrading to 0.6.0:** review the [migration notes](CHANGELOG.md#060) for
+provider, streaming, registry, and model-resolution changes. Upgrading from
+0.4.x also requires the [0.5.0 migration](CHANGELOG.md#050).
 
 Then require the public namespace:
 
@@ -48,9 +49,9 @@ Responses use the same canonical shape across providers:
  :response/parts [{:part/type :text
                    :text "ok"}]
  :response/finish-reason :stop
- :response/usage {...}
- :response/cost {...}
- :response/cache {...}
+ :response/usage {...}       ; optional; reported totals remain authoritative
+ :response/cost {...}        ; optional; provider-reported cost wins
+ :response/cache {...}       ; hit/miss/unknown when stamped
  :response/provider-data {...}
  :response/raw {...}}
 ```
@@ -68,6 +69,32 @@ Streaming uses the same request shape:
               (when (= :stream/content-delta (:event/type event))
                 (print (:event/delta event)))))
 ```
+
+Without `:on-event`, streaming returns an `llm.sdk.StreamHandle`: a `Seqable`,
+`Closeable`, reducible stream owner. Use `with-open` when consuming it as a
+sequence:
+
+```clojure
+(with-open [events (sdk/complete
+                     :openai
+                     {:request/model "gpt-4o-mini"
+                      :request/messages
+                      [{:message/role :user
+                        :message/content "Count to three"}]}
+                     :stream? true)]
+  (doseq [event events]
+    (when (= :stream/content-delta (:event/type event))
+      (print (:event/delta event)))))
+```
+
+`reduce` also closes the stream, including on early `reduced` termination.
+With `:on-event`, the callback runs incrementally and `sdk/complete` returns
+the accumulated canonical response after the stream ends.
+
+The handle is single-pass and single-consumer: `seq` and `reduce` advance the
+same cursor, and consumed events are released rather than retained for replay.
+Retain any events your application needs later; do not consume one handle
+concurrently.
 
 ## Documentation
 
@@ -108,13 +135,13 @@ See [Providers](doc/providers.md) for the full provider matrix and credential
 list. These rows describe implemented constructors, not a promise that every
 catalog model is currently served or enabled for an account or region.
 
-Offline model and pricing lookup merges bundled snapshots generated from
-[LiteLLM revision `b1a61f5`](https://github.com/BerriAI/litellm/blob/b1a61f510c90ce7e4533e89247c941fa201ada4f/model_prices_and_context_window.json)
-and [models.dev revision `a2a6739`](https://github.com/anomalyco/models.dev/tree/a2a673950c6e09af0dbcb4744116401fc1ee0048).
-Entries retain source provenance;
-missing usage or rates remain unknown rather than becoming zero or borrowing a
-rate from another modality. Live listing is available only for providers with a
-supported model-list endpoint and reports that endpoint's account-visible view.
+Offline model and pricing lookup merges bundled LiteLLM and models.dev
+snapshots. Entries retain source provenance and, when available, revision,
+freshness, availability, all contributing sources, and the pricing source.
+Missing usage or rates remain unknown rather than becoming zero or borrowing a
+rate from another modality. Live listing is available only for providers with
+a supported model-list endpoint and reports that endpoint's account-visible
+view; a failed refresh retains the previous live slice and marks it stale.
 
 OpenAI, OpenRouter, and Bedrock image calls require an explicit
 `:image/model`; none of these providers selects a billable image model
@@ -141,7 +168,7 @@ Some provider names are intentionally distinct:
 - `:vertex-gemini` uses Google Application Default Credentials or `GOOGLE_OAUTH_ACCESS_TOKEN`.
 - `:zai` uses Z.AI's OpenAI-compatible GLM endpoint and reads `ZAI_API_KEY`.
 - `:vertex-anthropic` serves Claude models through Google Vertex AI using the same GCP credentials as `:vertex-gemini`, not an `ANTHROPIC_API_KEY`.
-- `:codex-backend` reads OAuth data from the official Codex CLI auth file. HTTP/SSE remains the latency-oriented default; `:config {:transport :websocket}` enables persistent Responses WebSockets with incremental history reuse. `:openai` and API-key `:codex` are unchanged.
+- `:codex-backend` uses ChatGPT OAuth over HTTP/SSE (default) or Responses WebSocket V2 (`:config {:transport :websocket}`). Managed Codex CLI file credentials refresh automatically; caller-managed `:auth-token` and `:account-id` bypass file storage. See [OAuth configuration and live verification](doc/provider-configuration.md#chatgpt-oauth). `:openai` and API-key `:codex` remain separate.
 
 Applications that manage secrets outside environment variables can pass per-call runtime config:
 
@@ -156,9 +183,10 @@ Applications that manage secrets outside environment variables can pass per-call
 
 - Canonical response parts preserve text, images, tool calls, citations, reasoning, safety data, and provider-native state.
 - Provider-specific replay data is not flattened away. Thinking signatures, encrypted reasoning items, Gemini thought signatures, citations, and tool-call ids stay available for later turns.
-- Unknown cost and cache data are explicit. Missing pricing returns `:cost/usd :unknown`; missing cache telemetry returns `:cache/status :unknown`.
+- Unreported usage remains absent. Unattributable cost stays absent or `:unknown`, never zero; reported token totals and costs remain authoritative.
+- All modalities share the same pooled default HTTP client and accept an injected `:http-client` plus connect and request timeouts.
 - Default tests are offline-only. Live provider calls are opt-in.
-- Custom OpenAI-compatible providers can be registered without writing a new transport.
+- Custom OpenAI-compatible providers can be registered without writing a new transport; complete profiles are validated and operation capabilities are derived from their constructors.
 
 ## Examples
 
@@ -216,16 +244,24 @@ Custom OpenAI-compatible alias:
    :capabilities #{:chat :streaming :tools}})
 ```
 
-Provider implementations are split by provider family, such as `llm.sdk.providers.openai.chat`, `llm.sdk.providers.anthropic.chat`, `llm.sdk.providers.gemini.embeddings`, `llm.sdk.providers.zai.chat`, and `llm.sdk.providers.openrouter.chat`. Older flat namespaces remain compatibility shims for existing code.
+Provider-family namespaces such as `llm.sdk.providers.openai.chat`, `llm.sdk.providers.anthropic.chat`, `llm.sdk.providers.gemini.embeddings`, `llm.sdk.providers.zai.chat`, and `llm.sdk.providers.openrouter.chat` are the sole provider implementations. The former flat namespaces have been removed.
 
 ## Validation
 
-The public CI workflow runs:
+The public CI workflow runs the offline checks on JDK 17 and 21:
 
 ```bash
 clj-kondo --lint src test
 clojure -M:test
+python3 -m unittest discover -s test -p '*_test.py'
 clojure -T:build jar
+```
+
+Release publishing uses one build task and one `RELEASE_VERSION` for the jar,
+POM, and deployment:
+
+```bash
+RELEASE_VERSION=x.y.z clojure -T:build deploy
 ```
 
 Live tests are explicit:

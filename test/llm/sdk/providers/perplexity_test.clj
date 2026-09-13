@@ -5,7 +5,7 @@
             [clojure.java.io :as io]
             [clojure.test :refer [deftest is]]
             [llm.sdk.provider :as provider]
-            [llm.sdk.providers.perplexity :as ppx]
+            [llm.sdk.providers.perplexity.chat :as ppx]
             [llm.sdk.schema :as schema]
             [llm.sdk.stream :as stream]
             [llm.sdk.transport :as transport]))
@@ -405,12 +405,12 @@
                    [:response/provider-data :perplexity :agent/events 0])))
     (is (= "Searching primary sources"
            (:event/delta (first (filter #(= :stream/reasoning-delta
-                                             (:event/type %))
+                                            (:event/type %))
                                         events)))))
     (is (= "https://example.com/clojure" (:citation/url citation)))
     (is (= "call_save" (:tool-call/id call)))
     (is (= "sig" (get-in call [:tool-call/provider-data
-                                :thought_signature])))
+                               :thought_signature])))
     (is (= 1 (get-in response [:response/usage :usage/search-queries])))
     (is (= 0.005014 (get-in response [:response/cost :cost/usd])))
     (is (= :tool-calls (:response/finish-reason response)))
@@ -435,3 +435,28 @@
                401
                {:error {:message "Bad key"}})]
     (is (= :auth (:error/reason error)))))
+
+(deftest usage-normalization-keeps-sparse-and-zero-counters-honest
+  (let [t (ppx/make-transport)
+        profile (provider/get-provider :perplexity)
+        sparse
+        (transport/normalize-usage
+         t profile
+         {:input_tokens "malformed"
+          :output_tokens 4
+          :input_tokens_details {:cache_read_input_tokens "bad"}})
+        zero
+        (transport/normalize-usage
+         t profile
+         {:input_tokens 0
+          :output_tokens 0
+          :total_tokens 0
+          :tool_calls_details {:web_search {:invocation 0}}})]
+    (is (= 4 (:usage/output-tokens sparse)))
+    (is (not (contains? sparse :usage/input-tokens)))
+    (is (not (contains? sparse :usage/total-tokens)))
+    (is (not (contains? sparse :usage/cached-input-tokens)))
+    (is (= 0 (:usage/input-tokens zero)))
+    (is (= 0 (:usage/output-tokens zero)))
+    (is (= 0 (:usage/total-tokens zero)))
+    (is (= 0 (:usage/search-queries zero)))))

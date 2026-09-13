@@ -17,9 +17,9 @@
   (:require [clojure.string :as str]
             [cheshire.core :as json]
             [llm.sdk.transport :as t]
-            [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
             [llm.sdk.cache :as cache]
+            [llm.sdk.usage :as usage]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
@@ -93,29 +93,23 @@
 ;; Usage normalization
 ;; ---------------------------------------------------------------------------
 
-(defn- ->int [x]
-  (cond
-    (int? x) x
-    (number? x) (int x)
-    :else 0))
-
-(defn- present-int [m k]
-  (when (contains? m k)
-    (->int (get m k))))
-
 (defn- normalize-bedrock-usage [u]
-  (let [input-total (->int (:inputTokens u))
-        output (->int (:outputTokens u))
-        total (present-int u :totalTokens)
-        cache-read (present-int u :cacheReadInputTokens)
-        cache-write (present-int u :cacheWriteInputTokens)]
-    (cond-> {:usage/input-tokens input-total
-             :usage/output-tokens output
-             :usage/total-tokens (or total (+ input-total output))
-             :usage/request-count 1
-             :usage/provider-raw u}
-      (some? cache-read) (assoc :usage/cached-input-tokens cache-read)
-      (some? cache-write) (assoc :usage/cache-write-tokens cache-write))))
+  (when u
+    (let [input-total (usage/->int (:inputTokens u))
+          output (usage/->int (:outputTokens u))
+          reported-total (usage/->int (:totalTokens u))
+          total (or reported-total
+                    (when (and (some? input-total) (some? output))
+                      (+ input-total output)))
+          cache-read (usage/->int (:cacheReadInputTokens u))
+          cache-write (usage/->int (:cacheWriteInputTokens u))]
+      (cond-> {:usage/request-count 1
+               :usage/provider-raw u}
+        (some? input-total) (assoc :usage/input-tokens input-total)
+        (some? output) (assoc :usage/output-tokens output)
+        (some? total) (assoc :usage/total-tokens total)
+        (some? cache-read) (assoc :usage/cached-input-tokens cache-read)
+        (some? cache-write) (assoc :usage/cache-write-tokens cache-write)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Finish reason mapping
@@ -353,16 +347,17 @@
   (let [role (:message/role msg)]
     (cond
       (= role :tool)
-      {:role "user"
-       :content [{:toolResult
-                  (cond-> {:toolUseId (or (:message/tool-call-id msg) "tool_0")
-                           :content [{:text (t/content->string
-                                             (:message/content msg))}]}
-                    (some? (get-in msg [:message/provider-data
-                                       :bedrock/status]))
-                    (assoc :status
-                           (get-in msg [:message/provider-data
-                                       :bedrock/status])))}]}
+      (let [result (t/extract-tool-result :bedrock msg)
+            result (update result :tool-result/id #(or % "tool_0"))
+            block (tool-result->bedrock result)
+            provider-status (get-in msg [:message/provider-data
+                                         :bedrock/status])
+            block (if (and (some? provider-status)
+                           (not (contains? (:toolResult block) :status)))
+                    (assoc-in block [:toolResult :status] provider-status)
+                    block)]
+        {:role "user"
+         :content [block]})
 
       (contains? #{:user :assistant} role)
       (let [_ (when (and (seq (:message/tool-calls msg))
@@ -627,7 +622,6 @@
                #"(?i)^(https?://)bedrock-runtime(?=[.-])"
                "$1bedrock-agent-runtime"))
 
-
 (defn- signing-region [profile options base-url]
   (or (endpoint-region base-url)
       (:aws-region options)
@@ -811,8 +805,8 @@
      :headers (cond-> {"Content-Type" "application/json"
                        "Accept" "application/json"}
                 stream? (assoc "Accept" "application/vnd.amazon.eventstream"))
-     :llm.sdk.providers.bedrock/aws-service "bedrock"
-     :llm.sdk.providers.bedrock/aws-region region
+     :llm.sdk.providers.bedrock.converse/aws-service "bedrock"
+     :llm.sdk.providers.bedrock.converse/aws-region region
      :body body}))
 
 ;; ---------------------------------------------------------------------------
@@ -1088,18 +1082,3 @@
 (defn make-transport []
   (->BedrockTransport))
 
-;; Register
-(provider/register-provider
- {:profile/id :bedrock
-  :profile/protocol-family :bedrock
-  :profile/base-url (str "https://bedrock-runtime." (aws-region)
-                         ".amazonaws.com")
-  :profile/auth-strategy :aws-sigv4
-  :profile/aws-service "bedrock"
-  :profile/aws-region (aws-region)
-  :profile/supports-model-listing false
-  :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning
-                          :guardrails :cache :multimodal :file-attachments}
-  :profile/env-var-names ["AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_REGION"]
-  :profile/binary-stream :aws-eventstream
-  :profile/transport-constructor make-transport})

@@ -5,7 +5,7 @@
             [llm.sdk.schema :as schema]
             [llm.sdk.stream :as stream]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.gemini-native :as gemini]))
+            [llm.sdk.providers.gemini.native :as gemini]))
 
 (deftest test-build-request-basic
   (let [t (gemini/make-transport)
@@ -102,6 +102,55 @@
     (is (false? (:store body)))
     (is (= "BLOCK_ONLY_HIGH"
            (get-in body [:safetySettings 0 :threshold])))))
+
+(deftest test-extra-body-rejects-gemini-protected-fields
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        base-request
+        {:request/model "gemini-3.5-flash"
+         :request/messages [{:message/role :user :message/content "Hi"}]
+         :request/response-format {:type :json_object}}]
+    (doseq [[extra-body expected-field]
+            [[{"model" "wrong"} :model]
+             [{:messages []} :messages]
+             [{"stream" true} :stream]
+             [{:contents []} :contents]
+             [{:generationConfig {"responseMimeType" "text/plain"}}
+              :responseMimeType]]]
+      (let [error
+            (try
+              (transport/build-request
+               t profile
+               (assoc-in base-request
+                         [:request/provider-options :extra_body]
+                         extra-body))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :request/protected-extra-body-override
+               (:error/type (ex-data error))))
+        (is (= expected-field (:field (ex-data error))))
+        (is (= :gemini-native (:provider (ex-data error))))))))
+
+(deftest test-build-request-preserves-typed-tool-result
+  (let [t (gemini/make-transport)
+        profile (provider/get-provider :gemini-native)
+        response
+        (get-in
+         (transport/build-request
+          t profile
+          {:request/model "gemini-2.5-flash"
+           :request/messages
+           [{:message/role :tool
+             :message/content
+             [{:part/type :tool-result
+               :tool-result/id "call-1"
+               :tool-result/name "lookup"
+               :tool-result/content "not found"
+               :tool-result/is-error true}]}]})
+         [:body :contents 0 :parts 0 :functionResponse])]
+    (is (= "call-1" (:id response)))
+    (is (= "lookup" (:name response)))
+    (is (= {:error "not found"} (:response response)))))
 
 (deftest test-build-request-current-thinking-controls
   (let [t (gemini/make-transport)
@@ -301,10 +350,10 @@
         line (str "data: "
                   (cheshire.core/generate-string
                    {:candidates [{:content {:parts [{:functionCall
-                                                      {:id "gemini_call_1"
-                                                       :name "get_weather"
-                                                       :args {:location "NYC"}}
-                                                      :thoughtSignature "sig-1"}]}}]}))
+                                                     {:id "gemini_call_1"
+                                                      :name "get_weather"
+                                                      :args {:location "NYC"}}
+                                                     :thoughtSignature "sig-1"}]}}]}))
         events (transport/parse-stream-event t {} line)]
     (is (= [:stream/tool-call-start
             :stream/tool-call-delta
@@ -329,10 +378,10 @@
               (str "data: " (cheshire.core/generate-string payload)))
         chunks
         [{:candidates [{:content {:parts [{:text "Plan "
-                                          :thought true}]}}]}
+                                           :thought true}]}}]}
          {:candidates [{:content {:parts [{:text "carefully"
-                                          :thought true
-                                          :thoughtSignature "thought-sig"}]}}]}
+                                           :thought true
+                                           :thoughtSignature "thought-sig"}]}}]}
          {:candidates [{:content
                         {:parts [{:functionCall {:id "call-a"
                                                  :name "first_tool"
@@ -348,7 +397,7 @@
         events (mapcat #(transport/parse-stream-event t profile (sse %))
                        chunks)
         response (stream/events->response events :gemini-native
-                                         "gemini-3.5-flash")
+                                          "gemini-3.5-flash")
         rebuilt (transport/build-request
                  t profile
                  {:request/model "gemini-3.5-flash"
@@ -396,7 +445,7 @@
                                 :thoughtSignature "output-sig"}]}}]}))
         events (transport/parse-stream-event t profile line)
         response (stream/events->response events :gemini-native
-                                         "gemini-3.5-flash")
+                                          "gemini-3.5-flash")
         rebuilt (transport/build-request
                  t profile
                  {:request/model "gemini-3.5-flash"
@@ -505,7 +554,7 @@
 (deftest test-parse-response-text
   (let [t (gemini/make-transport)
         raw {:candidates [{:content {:parts [{:text "Hello!"}]}
-                          :finishReason "STOP"}]
+                           :finishReason "STOP"}]
              :usageMetadata {:promptTokenCount 10
                              :candidatesTokenCount 5
                              :totalTokenCount 15}}
@@ -518,7 +567,7 @@
   (let [t (gemini/make-transport)
         raw {:candidates [{:content {:parts [{:functionCall {:name "get_weather"
                                                              :args {:location "NYC"}}}]}
-                          :finishReason "STOP"}]
+                           :finishReason "STOP"}]
              :usageMetadata {:promptTokenCount 20 :candidatesTokenCount 10}}
         resp (transport/parse-response t {} raw)]
     (is (= 1 (count (:response/tool-calls resp))))
@@ -531,8 +580,8 @@
         raw {:candidates [{:content {:parts [{:functionCall {:id "call_from_provider"
                                                              :name "get_weather"
                                                              :args {:location "NYC"}}
-                                             :thoughtSignature "sig-1"}]}
-                          :finishReason "STOP"}]}
+                                              :thoughtSignature "sig-1"}]}
+                           :finishReason "STOP"}]}
         resp (transport/parse-response t {} raw)]
     (is (= "call_from_provider"
            (get-in resp [:response/tool-calls 0 :tool-call/id])))

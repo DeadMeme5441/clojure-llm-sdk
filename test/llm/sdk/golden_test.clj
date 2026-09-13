@@ -2,7 +2,7 @@
   "Golden fixture tests — verify parsing against sanitized documented-shape examples."
   (:require [clojure.test :refer [deftest is]]
             [cheshire.core :as json]
-            [llm.sdk.providers.openai-chat :as openai]
+            [llm.sdk.providers.openai.chat :as openai]
             [llm.sdk.transport :as transport]
             [llm.sdk.stream :as stream]))
 

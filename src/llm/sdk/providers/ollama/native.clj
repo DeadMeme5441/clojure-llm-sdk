@@ -2,11 +2,11 @@
   "Native Ollama adapter — /api/chat (chat) and /api/embed (embeddings).
 
    Ollama also exposes an OpenAI-compat /v1/chat/completions endpoint
-   that the existing :ollama profile (registered) targets.
-   This namespace registers a sibling :ollama-native profile for callers
-   who want the native shape — older Ollama versions, vision input via
-   the native :images field, or workflows that need the native
-   :options keys (e.g. :num_ctx, :num_predict, :mirostat).
+   targeted by the existing :ollama profile. This namespace implements the
+   sibling :ollama-native transport for callers who want the native shape —
+   older Ollama versions, vision input via the native :images field, or
+   workflows that need native :options keys (e.g. :num_ctx, :num_predict,
+   :mirostat).
 
    Streaming: Ollama uses NDJSON (one JSON object per line), NOT
    SSE. We re-use the http/sse-request line reader and parse each line
@@ -15,8 +15,8 @@
             [cheshire.core :as json]
             [llm.sdk.transport :as t]
             [llm.sdk.transport.embed :as et]
-            [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
+            [llm.sdk.usage :as usage]
             [llm.sdk.errors :as errors]))
 
 (defn- base-url [profile]
@@ -206,13 +206,14 @@
       native-type (assoc :type native-type)
       (:tool-call/id tc) (assoc :id (:tool-call/id tc)))))
 
-(defn- tool-result-part
-  [parts]
-  (first (filter #(= :tool-result (:part/type %)) parts)))
 
 (defn- message->ollama
   [msg parts tool-calls tool-name-by-id]
   (let [role (:message/role msg)
+        tool-result
+        (when (= role :tool)
+          (->> (t/extract-tool-result :ollama-native msg)
+               (t/reject-error-tool-result! :ollama-native)))
         wire-role (case role
                     (:system :developer) "system"
                     :user "user"
@@ -223,7 +224,9 @@
                       (str "Ollama native does not support message role " role)
                       {:provider :ollama-native
                        :message/role role})))
-        text (content-text msg parts)
+        text (if tool-result
+               (:tool-result/content tool-result)
+               (content-text msg parts))
         reasoning (->> parts
                        (filter #(= :reasoning (:part/type %)))
                        (map :reasoning/text)
@@ -238,11 +241,10 @@
         {:provider :ollama-native
          :message/role role})))
     (if (= role :tool)
-      (let [result-part (tool-result-part parts)
-            tool-call-id (or (:message/tool-call-id msg)
-                             (:tool-result/id result-part))
-            tool-name (or (:message/name msg)
-                          (:tool-result/name result-part)
+      (let [tool-call-id (or (:tool-result/id tool-result)
+                             (:message/tool-call-id msg))
+            tool-name (or (:tool-result/name tool-result)
+                          (:message/name msg)
                           (get tool-name-by-id tool-call-id))]
         (when (str/blank? tool-name)
           (throw
@@ -396,39 +398,34 @@
 
 (defn- usage-from
   [raw]
-  (when (or (contains? raw :prompt_eval_count)
-            (contains? raw :prompt_eval_cached_count)
-            (contains? raw :eval_count))
-    (let [prompt-total (long (or (:prompt_eval_count raw) 0))
-          cached-present? (contains? raw :prompt_eval_cached_count)
-          cached (long (or (:prompt_eval_cached_count raw) 0))
-          input (max 0 (- prompt-total cached))
-          output (long (or (:eval_count raw) 0))]
-      (cond-> {:usage/input-tokens input
-               :usage/output-tokens output
-               :usage/total-tokens (+ prompt-total output)
-               :usage/request-count 1
+  (let [prompt-total (usage/->int (:prompt_eval_count raw))
+        cached (usage/->int (:prompt_eval_cached_count raw))
+        output (usage/->int (:eval_count raw))
+        input (when (some? prompt-total)
+                (max 0 (- prompt-total (or cached 0))))
+        total (when (and (some? prompt-total) (some? output))
+                (+ prompt-total output))]
+    (when (some some? [prompt-total cached output])
+      (cond-> {:usage/request-count 1
                :usage/provider-raw (select-keys raw usage-raw-keys)}
-        cached-present?
-        (assoc :usage/cached-input-tokens cached)))))
+        (some? input) (assoc :usage/input-tokens input)
+        (some? cached) (assoc :usage/cached-input-tokens cached)
+        (some? output) (assoc :usage/output-tokens output)
+        (some? total) (assoc :usage/total-tokens total)))))
 
 (defn- stream-usage-from
   [raw]
-  (let [prompt-present? (contains? raw :prompt_eval_count)
-        cached-present? (contains? raw :prompt_eval_cached_count)
-        output-present? (contains? raw :eval_count)
-        prompt-total (long (or (:prompt_eval_count raw) 0))
-        cached (long (or (:prompt_eval_cached_count raw) 0))]
-    (when (or prompt-present? cached-present? output-present?)
+  (let [prompt-total (usage/->int (:prompt_eval_count raw))
+        cached (usage/->int (:prompt_eval_cached_count raw))
+        output (usage/->int (:eval_count raw))
+        input (when (some? prompt-total)
+                (max 0 (- prompt-total (or cached 0))))]
+    (when (some some? [prompt-total cached output])
       (cond-> {:usage/request-count 1
                :usage/provider-raw (select-keys raw usage-raw-keys)}
-        prompt-present?
-        (assoc :usage/input-tokens
-               (max 0 (- prompt-total cached)))
-        cached-present?
-        (assoc :usage/cached-input-tokens cached)
-        output-present?
-        (assoc :usage/output-tokens (long (or (:eval_count raw) 0)))))))
+        (some? input) (assoc :usage/input-tokens input)
+        (some? cached) (assoc :usage/cached-input-tokens cached)
+        (some? output) (assoc :usage/output-tokens output)))))
 
 (defn- tool-call-arguments-string
   [arguments]
@@ -568,14 +565,16 @@
      :body body}))
 
 (defn- embed-usage-from [raw]
-  (when (or (:prompt_eval_count raw) (:total_duration raw))
-    (let [input (or (:prompt_eval_count raw) 0)]
-      {:usage/input-tokens input
-       :usage/output-tokens 0
-       :usage/total-tokens input
-       :usage/request-count 1
-       :usage/provider-raw
-       (select-keys raw [:total_duration :load_duration])})))
+  (when (some #(contains? raw %)
+              [:prompt_eval_count :total_duration :load_duration])
+    (let [input (usage/->int (:prompt_eval_count raw))]
+      (cond-> {:usage/request-count 1
+               :usage/provider-raw
+               (select-keys raw
+                            [:prompt_eval_count :total_duration
+                             :load_duration])}
+        (some? input) (assoc :usage/input-tokens input
+                             :usage/total-tokens input)))))
 
 (defn parse-embed-response-ollama
   [_profile raw]
@@ -620,17 +619,3 @@
 
 (defn make-embed-transport [] (->OllamaNativeEmbedTransport))
 
-;; Register :ollama-native — the OpenAI-compat :ollama profile lives
-;; on as the default for new Ollama installs; :ollama-native is opt-in.
-(provider/register-provider
- {:profile/id :ollama-native
-  :profile/protocol-family :ollama-native
-  :profile/base-url (or (System/getenv "OLLAMA_BASE_URL")
-                        "http://localhost:11434")
-  :profile/auth-strategy :none
-  :profile/supports-model-listing false
-  :profile/capabilities #{:chat :streaming :tools :embedding :multimodal
-                          :json-schema :reasoning}
-  :profile/env-var-names []
-  :profile/transport-constructor make-transport
-  :profile/embed-transport-constructor make-embed-transport})

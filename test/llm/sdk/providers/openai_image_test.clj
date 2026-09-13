@@ -5,7 +5,7 @@
             [cheshire.core :as json]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.image :as it]
-            [llm.sdk.providers.openai-image :as oai-img]))
+            [llm.sdk.providers.openai.image :as oai-img]))
 
 (defn- load-fixture [path]
   (-> (io/resource path) slurp (json/parse-string true)))

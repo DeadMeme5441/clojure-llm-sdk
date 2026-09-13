@@ -41,15 +41,3 @@
   [& {:keys [response-fn]}]
   (->FakeTransport response-fn))
 
-;; Register fake provider
-(require '[llm.sdk.provider :as provider])
-
-(provider/register-provider
- {:profile/id :fake
-  :profile/protocol-family :fake
-  :profile/base-url "https://fake.local"
-  :profile/auth-strategy :none
-  :profile/supports-model-listing false
-  :profile/capabilities #{:chat}
-  :profile/env-var-names []
-  :profile/transport-constructor make-fake-transport})

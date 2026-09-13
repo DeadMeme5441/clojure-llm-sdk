@@ -50,6 +50,29 @@
       (is (= ["bytedance"]
              (get-in built [:body :provider :only]))))))
 
+(deftest test-extra-body-rejects-image-model-and-prompt
+  (let [transport (openrouter-image/make-transport)
+        profile (provider/get-provider :openrouter)
+        base-request {:image/model "canonical-model"
+                      :image/prompt "canonical prompt"}]
+    (doseq [[provided-key expected-field provided-value]
+            [["model" :model "other-model"]
+             [:prompt :prompt "other prompt"]]]
+      (let [error
+            (try
+              (with-redefs [provider/resolve-auth-token (constantly "stub")]
+                (it/build-image-request
+                 transport profile
+                 (assoc base-request
+                        :image/provider-options
+                        {:extra_body {provided-key provided-value}})))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :request/protected-extra-body-override
+               (:error/type (ex-data error))))
+        (is (= expected-field (:field (ex-data error))))
+        (is (= :openrouter (:provider (ex-data error))))))))
+
 (deftest test-parse-image-response
   (let [t (openrouter-image/make-transport)
         profile (provider/get-provider :openrouter)
@@ -78,6 +101,14 @@
            (get-in parsed [:response/cost :cost/breakdown :cost_details])))
     (is (false? (get-in parsed
                         [:response/cost :cost/breakdown :is_byok])))))
+
+(deftest test-openrouter-preserves-url-image-output
+  (let [parsed (it/parse-image-response
+                (openrouter-image/make-transport)
+                (provider/get-provider :openrouter)
+                {:data [{:url "https://images.example/result.png"}]})]
+    (is (= [{:image/url "https://images.example/result.png"}]
+           (:image/images parsed)))))
 
 (deftest test-openrouter-native-image-requires-model-before-http
   (let [called? (atom false)

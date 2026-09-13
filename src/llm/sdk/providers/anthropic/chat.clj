@@ -162,16 +162,6 @@
           {:error/type :anthropic/unsupported-content-part
            :part/type (:part/type part)})))
 
-(defn- text-content! [content error-type description]
-  (when (and (sequential? content)
-             (some #(not= :text (:part/type %)) content))
-    (throw (ex-info description
-                    {:error/type error-type})))
-  (let [text (t/content->string content)]
-    (when-not (string? text)
-      (throw (ex-info description
-                      {:error/type error-type})))
-    text))
 
 (defn- content->anthropic-blocks [content]
   (cond
@@ -240,13 +230,14 @@
                "user")]
     (cond
       (= (:message/role msg) :tool)
-      {:role "user"
-       :content [{:type "tool_result"
-                  :tool_use_id (or (:message/tool-call-id msg) "tool_0")
-                  :content (text-content!
-                            (:message/content msg)
-                            :anthropic/unsupported-tool-result-content
-                            "Anthropic tool result messages require text content.")}]}
+      (let [result (t/extract-tool-result :anthropic msg)]
+        {:role "user"
+         :content
+         [(cond-> {:type "tool_result"
+                   :tool_use_id (or (:tool-result/id result) "tool_0")
+                   :content (:tool-result/content result)}
+            (contains? result :tool-result/is-error)
+            (assoc :is_error (:tool-result/is-error result)))]})
 
       (seq (:message/tool-calls msg))
       {:role "assistant"
@@ -782,26 +773,20 @@
 
 (defn- normalize-stream-usage [usage-raw]
   (let [output-details (:output_tokens_details usage-raw)
-        server-tool-use (:server_tool_use usage-raw)]
+        server-tool-use (:server_tool_use usage-raw)
+        input (usage/->int (:input_tokens usage-raw))
+        output (usage/->int (:output_tokens usage-raw))
+        cache-read (usage/->int (:cache_read_input_tokens usage-raw))
+        cache-write (usage/->int (:cache_creation_input_tokens usage-raw))
+        reasoning (usage/->int (:thinking_tokens output-details))
+        searches (usage/->int (:web_search_requests server-tool-use))]
     (cond-> {:usage/provider-raw usage-raw}
-      (contains? usage-raw :input_tokens)
-      (assoc :usage/input-tokens (usage/->int (:input_tokens usage-raw)))
-      (contains? usage-raw :output_tokens)
-      (assoc :usage/output-tokens (usage/->int (:output_tokens usage-raw)))
-      (contains? usage-raw :cache_read_input_tokens)
-      (assoc :usage/cached-input-tokens
-             (usage/->int (:cache_read_input_tokens usage-raw)))
-      (contains? usage-raw :cache_creation_input_tokens)
-      (assoc :usage/cache-write-tokens
-             (usage/->int (:cache_creation_input_tokens usage-raw)))
-      (and (map? output-details)
-           (contains? output-details :thinking_tokens))
-      (assoc :usage/reasoning-tokens
-             (usage/->int (:thinking_tokens output-details)))
-      (and (map? server-tool-use)
-           (contains? server-tool-use :web_search_requests))
-      (assoc :usage/search-queries
-             (usage/->int (:web_search_requests server-tool-use))))))
+      (some? input) (assoc :usage/input-tokens input)
+      (some? output) (assoc :usage/output-tokens output)
+      (some? cache-read) (assoc :usage/cached-input-tokens cache-read)
+      (some? cache-write) (assoc :usage/cache-write-tokens cache-write)
+      (some? reasoning) (assoc :usage/reasoning-tokens reasoning)
+      (some? searches) (assoc :usage/search-queries searches))))
 
 (defn parse-stream-event-anthropic
   [_profile line]
@@ -912,12 +897,8 @@
 
   (request-capabilities [_]
     #{:chat :streaming :tools :json-schema :reasoning :cache :thinking-blocks
-      :file-attachments}))
+      :file-attachments :multimodal}))
 
 (defn make-transport []
   (->AnthropicTransport))
 
-;; Register
-(when-let [p (provider/get-provider :anthropic)]
-  (provider/register-provider
-   (assoc p :profile/transport-constructor make-transport)))

@@ -1,20 +1,17 @@
 (ns llm.sdk.cache.markers
-  "Provider-native context cache marker transforms.")
+  "Provider-native context cache marker transforms."
+  (:require [llm.sdk.cache.request :as request]))
 
 (defn marker
-  "Build a cache_control marker for the given TTL ('5m' or '1h').
+  "Build a cache_control marker for a supported TTL.
 
-  The ttl is emitted *explicitly* for both known durations. We used to omit it
-  for '5m' and lean on the provider's implicit ephemeral default — but Anthropic
-  silently changed that default from 1h to 5m on 2026-03-06, which silently
-  shortened the cache lifetime of every consumer that relied on it. Pinning the
-  ttl in cache_control makes the requested duration explicit and immune to future
-  default shifts. An unrecognized ttl falls back to a bare marker (the provider
-  default) rather than sending an invalid value."
+  The provider default is five minutes, so the default and explicit \"5m\"
+  forms use a bare ephemeral marker. Only \"1h\" needs a wire-level ttl."
   ([] (marker "5m"))
   ([ttl]
-   (cond-> {:type "ephemeral"}
-     (#{"5m" "1h"} ttl) (assoc :ttl ttl))))
+   (case (request/validate-ttl! ttl)
+     "5m" {:type "ephemeral"}
+     "1h" {:type "ephemeral" :ttl "1h"})))
 
 (defn- apply-marker-to-blocks
   "Add cache_control to the last content block of a list."
@@ -57,26 +54,27 @@
   ([messages] (apply-system-and-3 messages {}))
   ([messages {:keys [ttl layout breakpoints]
               :or {ttl "5m" layout :native breakpoints 4}}]
-   (if (or (empty? messages) (zero? breakpoints))
-     (vec messages)
-     (let [mk (marker ttl)
-           messages (vec messages)
-           sys? (= (:role (first messages)) "system")
-           used (if sys? 1 0)
-           remaining (- breakpoints used)
-           non-sys-indices (vec (keep-indexed
-                                 (fn [i m] (when (not= (:role m) "system") i))
-                                 messages))
-           pick (when (pos? remaining)
-                  (set (take-last remaining non-sys-indices)))
-           with-sys (if sys?
-                      (assoc messages 0 (apply-marker-to-message
-                                          (first messages) mk layout))
-                      messages)]
-       (reduce (fn [acc i]
-                 (assoc acc i (apply-marker-to-message (nth acc i) mk layout)))
-               with-sys
-               pick)))))
+   (let [breakpoints (request/validate-breakpoints! breakpoints)]
+     (if (or (empty? messages) (zero? breakpoints))
+       (vec messages)
+       (let [mk (marker ttl)
+             messages (vec messages)
+             sys? (= (:role (first messages)) "system")
+             used (if sys? 1 0)
+             remaining (- breakpoints used)
+             non-sys-indices (vec (keep-indexed
+                                   (fn [i m] (when (not= (:role m) "system") i))
+                                   messages))
+             pick (when (pos? remaining)
+                    (set (take-last remaining non-sys-indices)))
+             with-sys (if sys?
+                        (assoc messages 0 (apply-marker-to-message
+                                           (first messages) mk layout))
+                        messages)]
+         (reduce (fn [acc i]
+                   (assoc acc i (apply-marker-to-message (nth acc i) mk layout)))
+                 with-sys
+                 pick))))))
 
 (defn apply-system-blocks-cache
   "Place cache_control on the last Anthropic system content block."

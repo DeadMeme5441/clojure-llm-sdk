@@ -25,8 +25,9 @@
    — those credentials require an STS exchange that varies by source
    (AWS, Azure, OIDC). Throw a clear error if encountered.
 
-   Two convenience layers sit *above* the proper ADC chain:
+   Three convenience layers sit *above* the proper ADC chain:
      - request opts :vertex :access-token (caller override)
+     - :profile/auth-token (runtime configuration)
      - GOOGLE_OAUTH_ACCESS_TOKEN env (pre-resolved bearer)
 
    These are documented escape hatches; they do not replace ADC.
@@ -39,7 +40,7 @@
             [clojure.string :as str]
             [hato.client :as hc])
   (:import (java.net URLEncoder)
-           (java.security KeyFactory Signature)
+           (java.security KeyFactory MessageDigest Signature)
            (java.security.spec PKCS8EncodedKeySpec)
            (java.util Base64)))
 
@@ -93,6 +94,34 @@
 ;; ---------------------------------------------------------------------------
 
 (defonce ^:private cred-cache (atom {}))
+(defonce ^:private token-cache (atom {}))
+(defonce ^:private coordination-locks
+  ;; Fixed stripes keep refresh coordination bounded while allowing
+  ;; unrelated credentials to exchange tokens concurrently.
+  (vec (repeatedly 64 #(Object.))))
+
+(defn- coordination-lock [identity]
+  (nth coordination-locks (mod (hash identity) (count coordination-locks))))
+
+(defn- sha256 [^String value]
+  (->> (.digest (MessageDigest/getInstance "SHA-256")
+                (.getBytes value "UTF-8"))
+       b64url-bytes))
+
+(defn- credential-fingerprint [type-kw parsed]
+  (sha256
+   (pr-str
+    (case type-kw
+      :service_account
+      (mapv parsed [:client_email :private_key :token_uri])
+
+      :authorized_user
+      (mapv parsed [:client_id :client_secret :refresh_token :token_uri])
+
+      parsed))))
+
+(defn- cache-key-for [entry]
+  (str (name (:type entry)) ":" (:credential-fingerprint entry)))
 
 (defn- detect-cred-type [parsed]
   (or (some-> parsed :type str/lower-case keyword)
@@ -104,46 +133,70 @@
 
 (defn- read-cred-file
   "Load + parse a credentials file. Caches the parsed map (and, for
-   service accounts, the materialized private key) by absolute path.
-   Returns nil when path is nil/missing/unreadable."
+   service accounts, the materialized private key) by canonical path
+   and content fingerprint. Returns nil when path is nil/missing/unreadable."
   [path]
-  (when (and path (try (.exists (io/file path)) (catch Exception _ false)))
-    (or (get @cred-cache path)
-        (when-let [parsed (try (json/parse-string (slurp path) true)
-                               (catch Exception _ nil))]
-          (let [type-kw (detect-cred-type parsed)
-                pk (when (and (= :service_account type-kw)
-                              (:private_key parsed))
-                     (try (load-rsa-private-key (:private_key parsed))
-                          (catch Exception _ nil)))
-                entry (cond-> {:path path :json parsed :type type-kw}
-                        pk (assoc :private-key pk))]
-            (swap! cred-cache assoc path entry)
-            entry)))))
+  (when path
+    (let [file (io/file path)
+          cache-path (try (.getCanonicalPath file)
+                          (catch Exception _ (.getAbsolutePath file)))
+          shared-lock (coordination-lock cache-path)]
+      (locking shared-lock
+        (if-not (try (.exists file) (catch Exception _ false))
+          (do (swap! cred-cache dissoc cache-path) nil)
+          (if-let [contents (try (slurp file) (catch Exception _ nil))]
+            (let [file-fingerprint (sha256 contents)
+                  cached (get @cred-cache cache-path)]
+              (if (= file-fingerprint (:file-fingerprint cached))
+                cached
+                (if-let [parsed (try (json/parse-string contents true)
+                                     (catch Exception _ nil))]
+                  (let [type-kw (detect-cred-type parsed)
+                        credential-id
+                        (credential-fingerprint type-kw parsed)
+                        same-credential?
+                        (= credential-id (:credential-fingerprint cached))
+                        pk (when (and (= :service_account type-kw)
+                                      (:private_key parsed))
+                             (or (when same-credential?
+                                   (:private-key cached))
+                                 (try
+                                   (load-rsa-private-key (:private_key parsed))
+                                   (catch Exception _ nil))))
+                        entry (cond-> {:path cache-path
+                                       :json parsed
+                                       :type type-kw
+                                       :file-fingerprint file-fingerprint
+                                       :credential-fingerprint credential-id}
+                                pk (assoc :private-key pk))]
+                    (swap! cred-cache assoc cache-path entry)
+                    entry)
+                  (do
+                    (swap! cred-cache dissoc cache-path)
+                    nil))))
+            (do (swap! cred-cache dissoc cache-path) nil)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Access-token cache (keyed by credential identity)
 ;; ---------------------------------------------------------------------------
 
-(defonce ^:private token-cache (atom {}))
-
-(defn- cache-key-for [entry]
-  (case (:type entry)
-    :service_account (str "sa:" (get-in entry [:json :client_email]))
-    :authorized_user (str "user:" (get-in entry [:json :client_id]))
-    (str "other:" (:path entry))))
+(defn- cached-token [k now]
+  (let [cached (get @token-cache k)]
+    (when (and cached (< now (- (:expires-at cached) 60)))
+      (:access-token cached))))
 
 (defn- cached-or [entry produce-fn]
-  (let [k (cache-key-for entry)
-        cached (get @token-cache k)
-        now (*now-seconds-fn*)]
-    (if (and cached (< now (- (:expires-at cached) 60)))
-      (:access-token cached)
-      (let [{:keys [access-token expires-in]} (produce-fn)]
-        (swap! token-cache assoc k
-               {:access-token access-token
-                :expires-at (+ now (or expires-in 3600))})
-        access-token))))
+  (let [k (cache-key-for entry)]
+    (or (cached-token k (*now-seconds-fn*))
+        (let [shared-lock (coordination-lock k)]
+          (locking shared-lock
+            (or (cached-token k (*now-seconds-fn*))
+                (let [{:keys [access-token expires-in]} (produce-fn)
+                      now (*now-seconds-fn*)]
+                  (swap! token-cache assoc k
+                         {:access-token access-token
+                          :expires-at (+ now (or expires-in 3600))})
+                  access-token)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; HTTP — token endpoint + metadata server
@@ -295,10 +348,13 @@
    metadata server reachable)."
   [request profile]
   (or
-   ;; Convenience layer 1: caller passed a bearer directly.
+   ;; Caller-provided bearer remains the most explicit override.
    (get-in request [:request/provider-options :vertex :access-token])
 
-   ;; Convenience layer 2: pre-resolved bearer in env.
+   ;; Runtime configuration is already resolved and must not require ADC.
+   (:profile/auth-token profile)
+
+   ;; Pre-resolved bearer in env.
    (System/getenv "GOOGLE_OAUTH_ACCESS_TOKEN")
 
    ;; Proper ADC step 1: GOOGLE_APPLICATION_CREDENTIALS env var.
@@ -321,6 +377,7 @@
    (throw (ex-info
            (str "GCP credentials not found. Tried (in order): "
                 "request opts :vertex :access-token, "
+                "runtime profile :profile/auth-token, "
                 "GOOGLE_OAUTH_ACCESS_TOKEN env, "
                 "GOOGLE_APPLICATION_CREDENTIALS env var, "
                 "well-known file at " *well-known-path* ", "
@@ -328,6 +385,7 @@
                 "For local dev, run `gcloud auth application-default login`.")
            {:error/type :auth/missing-credentials
             :attempted [:provider-options
+                        :profile/auth-token
                         :GOOGLE_OAUTH_ACCESS_TOKEN
                         :GOOGLE_APPLICATION_CREDENTIALS
                         :well-known-file

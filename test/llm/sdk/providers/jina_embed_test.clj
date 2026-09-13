@@ -131,3 +131,11 @@
            (:embed/provider-data parsed)))
     (is (= 4 (get-in parsed [:response/usage :usage/video-tokens])))
     (is (= 10 (get-in parsed [:response/usage :usage/total-tokens])))))
+
+(deftest test-jina-usage-does-not-invent-missing-token-counts
+  (let [usage (jina/normalize-jina-embedding-usage
+               {:usage {:image_tokens 3}})]
+    (is (= 3 (:usage/image-tokens usage)))
+    (is (= 0 (:usage/output-tokens usage)))
+    (is (not (contains? usage :usage/input-tokens)))
+    (is (not (contains? usage :usage/total-tokens)))))

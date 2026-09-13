@@ -8,10 +8,8 @@
 
    Providers without a moderation transport throw ex-info rather
    than NullPointer."
-  (:require [llm.sdk.provider :as provider]
+  (:require [llm.sdk.operation :as operation]
             [llm.sdk.schema :as schema]
-            [llm.sdk.http :as http]
-            [llm.sdk.errors :as errors]
             [llm.sdk.transport.moderate :as mt]))
 
 (defn moderate
@@ -22,36 +20,31 @@
    :image_url \"https://...\"} maps. The OpenAI omni-moderation models
    accept the multi-modal shape."
   [provider-id request & {:keys [config]}]
-  (let [profile (some-> (provider/get-provider provider-id)
-                        (provider/apply-runtime-config config))
-        profile (or profile
-                    (throw (ex-info "Unknown provider"
-                                    {:provider provider-id})))
-        _ (when-not (schema/validate-moderation-request request)
-            (throw (ex-info "Invalid llm.sdk moderation request"
-                            {:error/type :schema/invalid-moderation-request
-                             :schema/explain (schema/explain-moderation-request request)})))
-        ctor (:profile/moderation-transport-constructor profile)
-        _ (when-not ctor
-            (throw (ex-info "Moderation not supported by provider"
-                            {:provider provider-id})))
-        transport (ctor)
-        req (mt/build-moderation-request transport profile request)
-        req (provider/apply-http-options profile req)
-        resp (try
-               (http/request req)
-               (catch Exception e
-                 (throw (ex-info "Provider moderation transport error"
-                                 {:error (errors/classify-error e :provider provider-id)
-                                  :provider provider-id}
-                                 e))))
-        status (:status resp)
-        body (:body resp)]
-    (if (>= status 400)
-      (let [err (mt/parse-moderation-error transport profile status body)]
-        (throw (ex-info "Provider moderation API error"
-                        {:error err
-                         :status status
-                         :body body
-                         :provider provider-id})))
-      (mt/parse-moderation-response transport profile body))))
+  (let [parsed
+        (operation/run
+         {:provider-id provider-id
+          :request request
+          :config config
+          :validate-request schema/validate-moderation-request
+          :explain-request schema/explain-moderation-request
+          :invalid-error-type :schema/invalid-moderation-request
+          :invalid-message "Invalid llm.sdk moderation request"
+          :constructor-key :profile/moderation-transport-constructor
+          :unsupported-message "Moderation not supported by provider"
+          :build-request mt/build-moderation-request
+          :parse-response
+          (fn [transport profile response]
+            (let [parsed (mt/parse-moderation-response
+                          transport profile (:body response))]
+              (when-not (seq (:moderation/results parsed))
+                (throw
+                 (ex-info "Provider returned an empty moderation response"
+                          {:provider provider-id
+                           :error/type :provider/invalid-moderation-response
+                           :response parsed})))
+              parsed))
+          :parse-error mt/parse-moderation-error
+          :transport-error-message "Provider moderation transport error"
+          :api-error-message "Provider moderation API error"})]
+    (update parsed :moderation/model
+            #(or % (:moderation/model request)))))

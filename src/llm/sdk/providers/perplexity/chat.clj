@@ -23,7 +23,7 @@
   (some-> (wire-name x) (str/replace "_" "-") keyword))
 
 (defn- integer-value [x]
-  (when (number? x) (int x)))
+  (usage/->int x))
 
 (defn- web-search-invocations [raw]
   (let [details (:tool_calls_details raw)
@@ -37,14 +37,18 @@
         cache-read (integer-value (:cache_read_input_tokens details))
         cache-write (integer-value (:cache_creation_input_tokens details))
         total-input (usage/->int (:input_tokens raw))
-        search-queries (web-search-invocations raw)]
-    (cond-> (assoc base :usage/input-tokens
-                   (max 0 (- total-input (or cache-read 0) (or cache-write 0))))
+        search-queries (web-search-invocations raw)
+        reasoning (usage/->int (:reasoning_tokens raw))]
+    (cond-> base
+      (some? total-input)
+      (assoc :usage/input-tokens
+             (max 0 (- total-input
+                       (or cache-read 0)
+                       (or cache-write 0))))
       (some? cache-read) (assoc :usage/cached-input-tokens cache-read)
       (some? cache-write) (assoc :usage/cache-write-tokens cache-write)
       (some? search-queries) (assoc :usage/search-queries search-queries)
-      (some? (:reasoning_tokens raw))
-      (assoc :usage/reasoning-tokens (usage/->int (:reasoning_tokens raw))))))
+      (some? reasoning) (assoc :usage/reasoning-tokens reasoning))))
 
 (defn- reported-cost [usage-raw]
   (let [cost (:cost usage-raw)]
@@ -792,39 +796,61 @@
   "Estimate from catalog pricing when an Agent response did not report its
    authoritative usage.cost. Search-query pricing is added when present."
   [{:keys [_provider _model usage pricing]}]
-  (let [base ((requiring-resolve 'llm.sdk.pricing/estimate-cost) usage pricing)
-        search-queries (or (:usage/search-queries usage)
-                           (get-in usage [:usage/provider-raw
-                                          :tool_calls_details
-                                          :web_search
-                                          :invocation])
-                           0)
-        per-call (some-> pricing :search-cost-per-call bigdec)
-        addend (if (and per-call (pos? search-queries))
-                 (.multiply (bigdec search-queries) per-call)
-                 0M)
-        search-only-cost? (and per-call
-                               (pos? (.signum ^java.math.BigDecimal addend))
-                               (nil? (:cost/amount-usd base)))
-        amount (cond
-                 (and (:cost/amount-usd base)
-                      (pos? (.signum ^java.math.BigDecimal addend)))
-                 (.add ^java.math.BigDecimal
-                       (bigdec (:cost/amount-usd base)) addend)
-                 (:cost/amount-usd base) (:cost/amount-usd base)
-                 (pos? (.signum ^java.math.BigDecimal addend)) addend
-                 :else nil)
-        status (if (or (= :actual (:cost/status base)) search-only-cost?)
-                 :actual
-                 (:cost/status base))]
-    (-> base
-        (assoc :cost/amount-usd amount :cost/status status)
-        (update :cost/notes (fnil conj [])
-                (str "Perplexity search queries: " search-queries
-                     (when per-call (str " @ $" per-call " each")))))))
+  (let [estimate-cost
+        (requiring-resolve 'llm.sdk.pricing/estimate-cost)
+        cost-result
+        (requiring-resolve 'llm.sdk.pricing/cost-result)
+        base (estimate-cost usage pricing)
+        search-queries
+        (or (integer-value (:usage/search-queries usage))
+            (integer-value
+             (get-in usage [:usage/provider-raw
+                            :tool_calls_details
+                            :web_search
+                            :invocation])))
+        raw-rate (:search-cost-per-call pricing)
+        search-priced? (some? raw-rate)
+        per-call (when (number? raw-rate)
+                   (try
+                     (let [rate (bigdec raw-rate)]
+                       (when-not (neg? rate) rate))
+                     (catch Exception _ nil)))
+        token-priced?
+        (some #(number? (get pricing %))
+              [:input-cost-per-million
+               :output-cost-per-million
+               :cache-read-cost-per-million
+               :cache-write-cost-per-million
+               :image-input-cost-per-million
+               :image-output-cost-per-million
+               :audio-input-cost-per-million
+               :audio-output-cost-per-million])
+        search-complete? (and per-call (some? search-queries))
+        addend (when search-complete?
+                 (.multiply (bigdec search-queries) per-call))
+        base-complete? (and (= :actual (:cost/status base))
+                            (some? (:cost/amount-usd base)))
+        result
+        (cond
+          (not search-priced?)
+          base
 
-(when-let [p (provider/get-provider :perplexity)]
-  (provider/register-provider
-   (assoc p
-          :profile/transport-constructor make-transport
-          :profile/cost-calculator perplexity-cost-calculator)))
+          (not search-complete?)
+          (cost-result nil :estimated (:source pricing)
+                       "Missing search-query usage or pricing")
+
+          (not token-priced?)
+          (cost-result addend :actual (:source pricing)
+                       "Perplexity search-query pricing")
+
+          base-complete?
+          (assoc base :cost/amount-usd
+                 (.add (bigdec (:cost/amount-usd base)) addend))
+
+          :else
+          base)]
+    (update result :cost/notes (fnil conj [])
+            (str "Perplexity search queries: "
+                 (if (some? search-queries) search-queries "unknown")
+                 (when per-call (str " @ $" per-call " each"))))))
+

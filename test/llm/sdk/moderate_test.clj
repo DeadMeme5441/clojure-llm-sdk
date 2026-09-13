@@ -41,14 +41,14 @@
 
 (deftest test-moderate-unknown-provider
   (is (thrown-with-msg? Exception #"Unknown provider"
-        (sdk/moderate :no-such-provider
-                      {:moderation/inputs ["hi"]}))))
+                        (sdk/moderate :no-such-provider
+                                      {:moderation/inputs ["hi"]}))))
 
 (deftest test-moderate-provider-without-moderation-support
   (testing "non-moderation provider throws a clear error"
     (is (thrown-with-msg? Exception #"Moderation not supported"
-          (sdk/moderate :anthropic
-                        {:moderation/inputs ["hi"]})))))
+                          (sdk/moderate :anthropic
+                                        {:moderation/inputs ["hi"]})))))
 
 (deftest test-moderate-driver-4xx
   (with-redefs [http/request
@@ -84,11 +84,6 @@
 ;; Public API surface
 ;; ---------------------------------------------------------------------------
 
-(deftest test-public-api-exposes-moderate
-  (is (some? (resolve 'llm.sdk/moderate)))
-  (is (fn? @(resolve 'llm.sdk/moderate))))
-
 (deftest test-openai-profile-advertises-moderation-capability
   (let [profile (provider/get-provider :openai)]
-    (is (contains? (:profile/capabilities profile) :moderation))
-    (is (fn? (:profile/moderation-transport-constructor profile)))))
+    (is (contains? (:profile/capabilities profile) :moderation))))

@@ -10,6 +10,7 @@
             [llm.sdk.transport.embed :as et]
             [llm.sdk.provider :as provider]
             [llm.sdk.usage :as usage]
+            [llm.sdk.transport :as transport]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@
                  (and (not mistral?) (:embed/user request))
                  (assoc :user (:embed/user request)))
           extra (get-in request [:embed/provider-options :extra_body])
-          body (if (seq extra) (merge body extra) body)]
+          body (transport/merge-extra-body provider-id body extra)]
       {:method :post
        :url (embed-url profile request)
        :headers (cond-> (provider/default-headers
@@ -133,20 +134,3 @@
 
 (defn make-transport [] (->OpenAIEmbedTransport))
 
-;; ---------------------------------------------------------------------------
-;; Attach to providers that ship the OpenAI /embeddings wire shape
-;;
-;; Mistral and Together register chat profiles too (under :openai-chat
-;; protocol family) — adding the embed transport is purely additive.
-;; Voyage and Jina are embedding-first; the protocol-family on their
-;; profile is :openai-embed.
-;;
-;; Cohere has its own embed shape and lives in providers/cohere-embed.
-;; ---------------------------------------------------------------------------
-
-(doseq [pid [:openai :mistral :together :voyage :jina :openrouter :nebius]]
-  (when-let [p (provider/get-provider pid)]
-    (provider/register-provider
-     (-> p
-         (assoc :profile/embed-transport-constructor make-transport)
-         (update :profile/capabilities (fnil conj #{}) :embedding)))))

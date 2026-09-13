@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Until the first stable release, security fixes target `main` and the latest published Git SHA. After versioned releases begin, this file will list supported release lines explicitly.
+Security fixes target `main` and the most recent version documented in the README. Older release lines may require upgrading before a fix is applied.
 
 ## Reporting a Vulnerability
 
@@ -20,3 +20,15 @@ Please do not include provider API keys, OAuth tokens, service-account JSON, `.c
 ## Secret Handling
 
 The SDK reads credentials from environment variables or caller-provided profile configuration. It does not intentionally log authorization headers or token values. Issues, PRs, test fixtures, and docs must use redacted or synthetic credentials only.
+
+ChatGPT OAuth (`:codex-backend`) can read managed Codex CLI `auth.json` credentials
+or accept a caller-managed bearer and account id. Managed refresh preserves
+unrelated file fields and replaces rotated credentials atomically with owner-only
+permissions. Refresh failures do not log token responses. Authentication helpers
+return credential values to callers; do not log those maps.
+
+Use one managed credential file per runner. SDK calls in one process coordinate
+refreshes, but this does not serialize independent Codex CLI or other application
+processes. For shared or keyring-backed authentication, supply caller-managed
+tokens and let that credential owner handle rotation. Never commit `auth.json`,
+its backups, OAuth refresh responses, or live HTTP authorization headers.

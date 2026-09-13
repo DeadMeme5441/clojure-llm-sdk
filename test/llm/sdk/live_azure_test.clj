@@ -9,7 +9,7 @@
      source .env && clj -M:live-test -n llm.sdk.live-azure-test"
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk :as sdk]
-            [llm.sdk.providers.openai-chat :as openai]))
+            [llm.sdk.providers.openai.chat :as openai]))
 
 (defn- has-creds? []
   (and (System/getenv "AZURE_OPENAI_API_KEY")

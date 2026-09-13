@@ -11,12 +11,12 @@
             [llm.sdk.errors :as errors]
             [llm.sdk.sse :as sse]
             [llm.sdk.stream :as stream]
+            [llm.sdk.transport :as transport]
             [llm.sdk.usage :as usage]))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
 ;; ---------------------------------------------------------------------------
-
 
 (defn- gpt-image-2-model? [model]
   (str/starts-with? model "gpt-image-2"))
@@ -206,9 +206,9 @@
           (:image/user request)
           (assoc :user (:image/user request)))
         extra (get-in request [:image/provider-options :extra_body])
-        body (-> (if (seq extra)
-                   (merge canonical-body (dissoc extra :model :prompt))
-                   canonical-body)
+        body (-> (transport/merge-extra-body (:profile/id profile)
+                                             canonical-body
+                                             extra)
                  normalize-enums)
         _ (validate-image-body! model family body)]
     {:method :post
@@ -311,9 +311,3 @@
 
 (defn make-transport [] (->OpenAIImageTransport))
 
-;; Attach
-(when-let [p (provider/get-provider :openai)]
-  (provider/register-provider
-   (-> p
-       (assoc :profile/image-transport-constructor make-transport)
-       (update :profile/capabilities (fnil conj #{}) :image-generation))))

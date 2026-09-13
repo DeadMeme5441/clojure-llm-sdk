@@ -1,7 +1,10 @@
 (ns llm.sdk.errors
   "Structured error classification.
    Ported from Hermes error_classifier.py with simplified pipeline."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str])
+  (:import [java.net SocketTimeoutException]
+           [java.net.http HttpTimeoutException]
+           [java.util.concurrent TimeoutException]))
 
 ;; ---------------------------------------------------------------------------
 ;; Error taxonomy
@@ -57,7 +60,8 @@
     "no endpoints available matching your data policy"
     "no endpoints found matching your data policy"})
 
-(def ^:private timeout-types
+(def ^:private timeout-type-names
+  ;; Retained for callers that explicitly supply an exception type name.
   #{"ReadTimeout" "ConnectTimeout" "PoolTimeout"
     "ConnectError" "RemoteProtocolError"
     "ConnectionError" "ConnectionResetError"
@@ -65,7 +69,34 @@
     "TimeoutError" "ReadError" "ServerDisconnectedError"
     "SSLError" "SSLZeroReturnError" "SSLWantReadError"
     "SSLWantWriteError" "SSLEOFError" "SSLSyscallError"
-    "APIConnectionError" "APITimeoutError"})
+    "APIConnectionError" "APITimeoutError"
+    "SocketTimeoutException" "HttpTimeoutException"
+    "HttpConnectTimeoutException" "TimeoutException"})
+
+(def ^:private timeout-classes
+  [SocketTimeoutException HttpTimeoutException TimeoutException])
+
+(defn- timeout-type?
+  [error-type]
+  (cond
+    (class? error-type)
+    (some #(.isAssignableFrom ^Class % ^Class error-type) timeout-classes)
+
+    (string? error-type)
+    (contains? timeout-type-names
+               (last (str/split error-type #"\.")))
+
+    :else false))
+
+(defn- timeout-exception?
+  [e error-type]
+  ;; An explicitly supplied type has always taken precedence over inference.
+  (if (some? error-type)
+    (timeout-type? error-type)
+    (loop [cause (when (instance? Throwable e) e)]
+      (when cause
+        (or (some #(.isInstance ^Class % cause) timeout-classes)
+            (recur (.getCause ^Throwable cause)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Extractors
@@ -142,215 +173,213 @@
      :body       Response body (map or string)
      :provider   Provider keyword
      :model      Model string
-     :error-type Exception type name string"
+     :error-type Explicit exception type override (Class or type-name string)"
   [e & {:keys [status body error-type provider]}]
-  (let [msg (str/lower-case (str e " " (error-body->msg body)))
-        type-name (or error-type (type e))]
-
+  (let [msg (str/lower-case (str e " " (error-body->msg body)))]
     ;; 1. Provider-specific highest-priority patterns
     (with-provider-message
       (cond
-      (and (= status 400)
-           (str/includes? msg "signature")
-           (str/includes? msg "thinking"))
-      {:error/reason :invalid-request
-       :error/retryable true
-       :error/message "Invalid thinking signature"
-       :error/should-strip-thinking true}
+        (and (= status 400)
+             (str/includes? msg "signature")
+             (str/includes? msg "thinking"))
+        {:error/reason :invalid-request
+         :error/retryable true
+         :error/message "Invalid thinking signature"
+         :error/should-strip-thinking true}
 
-      (and (= status 429)
-           (str/includes? msg "extra usage")
-           (str/includes? msg "long context"))
-      {:error/reason :rate-limit
-       :error/retryable true
-       :error/message "Long context tier rate limit"
-       :error/should-compress true}
+        (and (= status 429)
+             (str/includes? msg "extra usage")
+             (str/includes? msg "long context"))
+        {:error/reason :rate-limit
+         :error/retryable true
+         :error/message "Long context tier rate limit"
+         :error/should-compress true}
 
-      (and (= status 400)
-           (str/includes? msg "long context beta")
-           (str/includes? msg "not yet available"))
-      {:error/reason :invalid-request
-       :error/retryable true
-       :error/message "Long context beta not available"
-       :error/disable-beta true}
+        (and (= status 400)
+             (str/includes? msg "long context beta")
+             (str/includes? msg "not yet available"))
+        {:error/reason :invalid-request
+         :error/retryable true
+         :error/message "Long context beta not available"
+         :error/disable-beta true}
 
-      (or (str/includes? msg "do not have an active grok subscription")
-          (and (str/includes? msg "out of available resources")
-               (str/includes? msg "grok")))
-      {:error/reason :auth
-       :error/retryable false
-       :error/message "Grok subscription entitlement failure"
-       :error/should-fallback true}
+        (or (str/includes? msg "do not have an active grok subscription")
+            (and (str/includes? msg "out of available resources")
+                 (str/includes? msg "grok")))
+        {:error/reason :auth
+         :error/retryable false
+         :error/message "Grok subscription entitlement failure"
+         :error/should-fallback true}
 
       ;; 2. Status code classification
-      (= status 401)
-      {:error/reason :auth
-       :error/retryable false
-       :error/message "Authentication failed"
-       :error/should-rotate-credential true}
-
-      (= status 403)
-      {:error/reason :auth
-       :error/retryable false
-       :error/message "Forbidden"
-       :error/should-fallback true}
-
-      (= status 402)
-      (if (and (matches-any? msg #{"usage limit" "quota" "limit exceeded"})
-               (matches-any? msg #{"try again" "retry" "resets at" "reset in" "wait"}))
-        {:error/reason :rate-limit
-         :error/retryable true
-         :error/message "Transient usage limit"}
-        {:error/reason :quota
+        (= status 401)
+        {:error/reason :auth
          :error/retryable false
-         :error/message "Billing/quota exhausted"
-         :error/should-fallback true})
+         :error/message "Authentication failed"
+         :error/should-rotate-credential true}
 
-      (= status 404)
-      (cond
-        (matches-any? msg provider-policy-patterns)
-        {:error/reason :invalid-request
+        (= status 403)
+        {:error/reason :auth
          :error/retryable false
-         :error/message "Provider policy blocked"
-         :error/should-fallback false}
-        (matches-any? msg model-not-found-patterns)
-        {:error/reason :invalid-request
-         :error/retryable false
-         :error/message "Model not found"
+         :error/message "Forbidden"
          :error/should-fallback true}
-        :else
-        {:error/reason :unknown
-         :error/retryable true})
 
-      (= status 408)
-      {:error/reason :timeout
-       :error/retryable true
-       :error/message "Request timed out"}
-
-      (= status 524)
-      {:error/reason :timeout
-       :error/retryable true
-       :error/message "Request timed out"}
-
-      (= status 422)
-      {:error/reason :invalid-request
-       :error/retryable false
-       :error/message "Validation failed"
-       :error/should-fallback true}
-
-      (and (= provider :bedrock) (= status 424))
-      (let [original-status (bedrock-original-status body)]
-        (cond
-          (#{408 504 524} original-status)
-          {:error/reason :timeout
-           :error/retryable true
-           :error/message "Model request timed out"}
-
-          (= original-status 429)
+        (= status 402)
+        (if (and (matches-any? msg #{"usage limit" "quota" "limit exceeded"})
+                 (matches-any? msg #{"try again" "retry" "resets at" "reset in" "wait"}))
           {:error/reason :rate-limit
            :error/retryable true
-           :error/message "Model rate limited"}
+           :error/message "Transient usage limit"}
+          {:error/reason :quota
+           :error/retryable false
+           :error/message "Billing/quota exhausted"
+           :error/should-fallback true})
 
-          (and original-status (<= 400 original-status 499))
+        (= status 404)
+        (cond
+          (matches-any? msg provider-policy-patterns)
           {:error/reason :invalid-request
            :error/retryable false
-           :error/message "Model rejected request"
+           :error/message "Provider policy blocked"
+           :error/should-fallback false}
+          (matches-any? msg model-not-found-patterns)
+          {:error/reason :invalid-request
+           :error/retryable false
+           :error/message "Model not found"
            :error/should-fallback true}
-
           :else
-          {:error/reason :provider-bug
-           :error/retryable true
-           :error/message "Model processing failed"}))
+          {:error/reason :unknown
+           :error/retryable true})
 
-      (= status 413)
-      {:error/reason :invalid-request
-       :error/retryable true
-       :error/message "Payload too large"
-       :error/should-compress true}
+        (= status 408)
+        {:error/reason :timeout
+         :error/retryable true
+         :error/message "Request timed out"}
 
-      (= status 429)
-      {:error/reason :rate-limit
-       :error/retryable true
-       :error/message "Rate limited"
-       :error/should-rotate-credential true}
+        (= status 524)
+        {:error/reason :timeout
+         :error/retryable true
+         :error/message "Request timed out"}
 
-      (= status 400)
-      (cond
-        (matches-any? msg context-overflow-patterns)
+        (= status 422)
+        {:error/reason :invalid-request
+         :error/retryable false
+         :error/message "Validation failed"
+         :error/should-fallback true}
+
+        (and (= provider :bedrock) (= status 424))
+        (let [original-status (bedrock-original-status body)]
+          (cond
+            (#{408 504 524} original-status)
+            {:error/reason :timeout
+             :error/retryable true
+             :error/message "Model request timed out"}
+
+            (= original-status 429)
+            {:error/reason :rate-limit
+             :error/retryable true
+             :error/message "Model rate limited"}
+
+            (and original-status (<= 400 original-status 499))
+            {:error/reason :invalid-request
+             :error/retryable false
+             :error/message "Model rejected request"
+             :error/should-fallback true}
+
+            :else
+            {:error/reason :provider-bug
+             :error/retryable true
+             :error/message "Model processing failed"}))
+
+        (= status 413)
         {:error/reason :invalid-request
          :error/retryable true
-         :error/message "Context overflow"
+         :error/message "Payload too large"
          :error/should-compress true}
-        (matches-any? msg rate-limit-patterns)
+
+        (= status 429)
         {:error/reason :rate-limit
-         :error/retryable true}
+         :error/retryable true
+         :error/message "Rate limited"
+         :error/should-rotate-credential true}
+
+        (= status 400)
+        (cond
+          (matches-any? msg context-overflow-patterns)
+          {:error/reason :invalid-request
+           :error/retryable true
+           :error/message "Context overflow"
+           :error/should-compress true}
+          (matches-any? msg rate-limit-patterns)
+          {:error/reason :rate-limit
+           :error/retryable true}
+          (matches-any? msg billing-patterns)
+          {:error/reason :quota
+           :error/retryable false
+           :error/should-fallback true}
+          :else
+          {:error/reason :invalid-request
+           :error/retryable false
+           :error/message "Bad request"
+           :error/should-fallback true})
+
+        (and (integer? status) (<= 400 status 499))
+        {:error/reason :invalid-request
+         :error/retryable false
+         :error/message "Client request failed"
+         :error/should-fallback true}
+
+        (#{500 502} status)
+        {:error/reason :server
+         :error/retryable true
+         :error/message "Server error"}
+
+        (#{503 529} status)
+        {:error/reason :overloaded
+         :error/retryable true
+         :error/message "Provider overloaded"}
+
+      ;; 3. Error type / message classification (no status code)
         (matches-any? msg billing-patterns)
         {:error/reason :quota
          :error/retryable false
          :error/should-fallback true}
-        :else
+
+        (matches-any? msg rate-limit-patterns)
+        {:error/reason :rate-limit
+         :error/retryable true}
+
+        (matches-any? msg context-overflow-patterns)
+        {:error/reason :invalid-request
+         :error/retryable true
+         :error/should-compress true}
+
+        (matches-any? msg auth-patterns)
+        {:error/reason :auth
+         :error/retryable false
+         :error/should-rotate-credential true
+         :error/should-fallback true}
+
+        (matches-any? msg provider-policy-patterns)
         {:error/reason :invalid-request
          :error/retryable false
-         :error/message "Bad request"
-         :error/should-fallback true})
+         :error/should-fallback false}
 
-      (and (integer? status) (<= 400 status 499))
-      {:error/reason :invalid-request
-       :error/retryable false
-       :error/message "Client request failed"
-       :error/should-fallback true}
+        (matches-any? msg model-not-found-patterns)
+        {:error/reason :invalid-request
+         :error/retryable false
+         :error/should-fallback true}
 
-      (#{500 502} status)
-      {:error/reason :server
-       :error/retryable true
-       :error/message "Server error"}
-
-      (#{503 529} status)
-      {:error/reason :overloaded
-       :error/retryable true
-       :error/message "Provider overloaded"}
-
-      ;; 3. Error type / message classification (no status code)
-      (matches-any? msg billing-patterns)
-      {:error/reason :quota
-       :error/retryable false
-       :error/should-fallback true}
-
-      (matches-any? msg rate-limit-patterns)
-      {:error/reason :rate-limit
-       :error/retryable true}
-
-      (matches-any? msg context-overflow-patterns)
-      {:error/reason :invalid-request
-       :error/retryable true
-       :error/should-compress true}
-
-      (matches-any? msg auth-patterns)
-      {:error/reason :auth
-       :error/retryable false
-       :error/should-rotate-credential true
-       :error/should-fallback true}
-
-      (matches-any? msg provider-policy-patterns)
-      {:error/reason :invalid-request
-       :error/retryable false
-       :error/should-fallback false}
-
-      (matches-any? msg model-not-found-patterns)
-      {:error/reason :invalid-request
-       :error/retryable false
-       :error/should-fallback true}
-
-      (timeout-types type-name)
-      {:error/reason :timeout
-       :error/retryable true}
+        (timeout-exception? e error-type)
+        {:error/reason :timeout
+         :error/retryable true}
 
       ;; 4. Fallback
-      :else
-      {:error/reason :unknown
-       :error/retryable true
-       :error/message "Unclassified error"})
-     body)))
+        :else
+        {:error/reason :unknown
+         :error/retryable true
+         :error/message "Unclassified error"})
+      body)))
 
 (defn classify-api-error
   "Classify a provider HTTP API error with a consistent exception label."

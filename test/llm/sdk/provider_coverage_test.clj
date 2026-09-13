@@ -4,8 +4,7 @@
             [llm.sdk.gcp-auth :as gcp-auth]
             [llm.sdk.provider :as provider]
             [llm.sdk.provider-coverage :as coverage]
-            [llm.sdk.providers.codex :as codex]
-            [llm.sdk.providers.codex.responses :as codex-impl]
+            [llm.sdk.providers.codex.auth :as auth]
             [llm.sdk.transport :as transport]
             [llm.sdk.transport.embed :as embed-transport]
             [llm.sdk.transport.image :as image-transport]
@@ -133,10 +132,8 @@
   (with-redefs [provider/resolve-auth-token (constantly "stub-token")
                 gcp-auth/resolve-access-token (constantly "stub-token")
                 gcp-auth/resolve-project (constantly "test-project")
-                codex/codex-backend-auth-headers
-                (constantly {"Authorization" "Bearer stub-token"})
-                codex-impl/codex-backend-auth-headers
-                (constantly {"Authorization" "Bearer stub-token"})]
+                auth/request-auth
+                (constantly {:headers {"Authorization" "Bearer stub-token"}})]
     (doseq [[provider-id row] coverage/provider-coverage
             surface (sort (set/intersection buildable-surfaces
                                             (:surfaces row)))]

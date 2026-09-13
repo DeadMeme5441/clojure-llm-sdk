@@ -87,15 +87,21 @@
                   (mapv keyword v)]))
           m)))
 
-(defn- parse-result [r]
-  (cond-> {:moderation/flagged? (boolean (:flagged r))}
-    (:categories r)
-    (assoc :moderation/categories (->bool-map (:categories r)))
-    (:category_scores r)
-    (assoc :moderation/scores (->number-map (:category_scores r)))
-    (:category_applied_input_types r)
+(defn- parse-result [result]
+  (when-not (boolean? (:flagged result))
+    (throw
+     (ex-info "Moderation result is missing a boolean flagged value"
+              {:provider :openai
+               :error/type :provider/invalid-moderation-response
+               :result result})))
+  (cond-> {:moderation/flagged? (:flagged result)}
+    (:categories result)
+    (assoc :moderation/categories (->bool-map (:categories result)))
+    (:category_scores result)
+    (assoc :moderation/scores (->number-map (:category_scores result)))
+    (:category_applied_input_types result)
     (assoc :moderation/categories-applied
-           (->applied-types-map (:category_applied_input_types r)))))
+           (->applied-types-map (:category_applied_input_types result)))))
 
 (defn parse-moderation-response-openai
   [profile raw]
@@ -132,12 +138,3 @@
 
 (defn make-transport [] (->OpenAIModerationTransport))
 
-;; ---------------------------------------------------------------------------
-;; Attach
-;; ---------------------------------------------------------------------------
-
-(when-let [p (provider/get-provider :openai)]
-  (provider/register-provider
-   (-> p
-       (assoc :profile/moderation-transport-constructor make-transport)
-       (update :profile/capabilities (fnil conj #{}) :moderation))))

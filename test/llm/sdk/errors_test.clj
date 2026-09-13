@@ -1,6 +1,8 @@
 (ns llm.sdk.errors-test
   (:require [clojure.test :refer [deftest is]]
-            [llm.sdk.errors :as errors]))
+            [llm.sdk.errors :as errors])
+  (:import [java.net SocketTimeoutException]
+           [java.net.http HttpTimeoutException]))
 
 (deftest test-auth-classification
   (let [e (errors/classify-error (Exception. "Invalid API key")
@@ -46,11 +48,27 @@
     (is (= :invalid-request (:error/reason e)))
     (is (:error/retryable e))))
 
-(deftest test-timeout-type
-  (let [e (errors/classify-error (Exception. "Read timeout")
-                                 :error-type "ReadTimeout")]
-    (is (= :timeout (:error/reason e)))
-    (is (:error/retryable e))))
+(deftest test-timeout-exception-types
+  (let [socket-timeout (SocketTimeoutException. "Socket timed out")
+        http-timeout (HttpTimeoutException. "HTTP timed out")
+        wrapped-http-timeout (Exception. "Request failed" http-timeout)
+        socket-result (errors/classify-error socket-timeout)
+        http-result (errors/classify-error http-timeout)
+        wrapped-result (errors/classify-error wrapped-http-timeout)]
+    (is (= :timeout (:error/reason socket-result)))
+    (is (:error/retryable socket-result))
+    (is (= :timeout (:error/reason http-result)))
+    (is (:error/retryable http-result))
+    (is (= :timeout (:error/reason wrapped-result)))
+    (is (:error/retryable wrapped-result))
+    (is (= :auth
+           (:error/reason
+            (errors/classify-error socket-timeout :status 401)))
+        "HTTP status classification retains precedence over exception type")
+    (is (= :unknown
+           (:error/reason
+            (errors/classify-error socket-timeout :error-type Exception)))
+        "an explicit type continues to override inferred exception types")))
 
 (deftest test-http-timeout-statuses
   (let [bedrock (errors/classify-api-error

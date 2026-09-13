@@ -160,7 +160,7 @@
         :notes "OpenRouter is first-class, not an alias; pricing is billing-route pricing.")
 
    :codex
-   (cov :surfaces #{:complete :streaming :tools :reasoning
+   (cov :surfaces #{:complete :streaming :tools :json-schema :multimodal :reasoning
                     :encrypted-reasoning :file-attachments}
         :cache #{:prompt-key :canonical-cache-stamp}
         :metrics #{:codex-usage :canonical-chat-stamp}
@@ -174,7 +174,7 @@
         :live-smoke :env-gated)
 
    :codex-backend
-   (cov :surfaces #{:complete :streaming :tools :reasoning
+   (cov :surfaces #{:complete :streaming :tools :json-schema :multimodal :reasoning
                     :encrypted-reasoning :file-attachments}
         :cache #{:prompt-key :canonical-cache-stamp}
         :metrics #{:codex-backend-usage :canonical-chat-stamp}
@@ -182,8 +182,8 @@
         :models #{:snapshot-only}
         :request #{:codex-backend-golden :responses-file-golden}
         :response #{:codex-backend-sse-fixture}
-        :stream #{:codex-backend-sse-fixture}
-        :auth #{:codex-cli-auth-json :oauth-external}
+        :stream #{:codex-backend-sse-fixture :responses-websocket-loopback}
+        :auth #{:codex-cli-auth-json :oauth-external :oauth-refresh-regression}
         :errors #{:shared-classifier}
         :live-smoke :env-gated)
 

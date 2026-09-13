@@ -3,7 +3,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.bedrock :as bedrock]))
+            [llm.sdk.providers.bedrock.converse :as bedrock]))
 
 (defn- request-error [request]
   (try
@@ -47,7 +47,7 @@
     (is (.endsWith ^String (:url built) "/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse"))
     (is (= "Sys" (get-in built [:body :system 0 :text])))
     (is (= 1 (count (get-in built [:body :messages]))))
-    (is (= "bedrock" (get built :llm.sdk.providers.bedrock/aws-service)))))
+    (is (= "bedrock" (get built :llm.sdk.providers.bedrock.converse/aws-service)))))
 
 (deftest test-build-request-stream-url
   (let [t (bedrock/make-transport)
@@ -207,7 +207,7 @@
                   :message/content (:response/parts parsed)
                   :message/tool-calls (:response/tool-calls parsed)}]})
         tool-uses (keep :toolUse
-                       (get-in built [:body :messages 0 :content]))]
+                        (get-in built [:body :messages 0 :content]))]
     (is (= {:toolUseId "tool_1"
             :name "fetch_weather"
             :input {:city "NYC"}}
@@ -245,8 +245,7 @@
          ^String (:url built)
          "https://bedrock-runtime.eu-west-1.amazonaws.com/model/"))
     (is (= "eu-west-1"
-           (:llm.sdk.providers.bedrock/aws-region built)))))
-
+           (:llm.sdk.providers.bedrock.converse/aws-region built)))))
 
 (deftest test-cache-point-default-on-when-cache-enabled
   (testing "Bedrock injects cachePoint sentinel after system and final user content"
@@ -541,6 +540,27 @@
     (is (= "failed" (get-in content [0 :toolResult :content 0 :text])))
     (is (= "guard only this"
            (get-in content [1 :guardContent :text :text])))))
+
+(deftest test-build-tool-message-preserves-typed-result
+  (let [t (bedrock/make-transport)
+        profile (provider/get-provider :bedrock)
+        result
+        (get-in
+         (transport/build-request
+          t profile
+          {:request/model "nova-pro"
+           :request/messages
+           [{:message/role :tool
+             :message/content
+             [{:part/type :tool-result
+               :tool-result/id "tool-7"
+               :tool-result/name "lookup"
+               :tool-result/content "failed"
+               :tool-result/is-error true}]}]})
+         [:body :messages 0 :content 0 :toolResult])]
+    (is (= "tool-7" (:toolUseId result)))
+    (is (= [{:text "failed"}] (:content result)))
+    (is (= "error" (:status result)))))
 
 (deftest test-parse-current-converse-content
   (let [t (bedrock/make-transport)

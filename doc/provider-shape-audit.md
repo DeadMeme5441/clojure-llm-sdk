@@ -144,6 +144,12 @@ provider owners, not only a metadata coverage pass:
   cache semantics apply, Gemini accepts explicit `cachedContent`, Bedrock uses
   Converse `cachePoint`, Z.AI normalizes provider-reported cached input tokens,
   and unsupported providers explicitly report no cache strategy.
+- Canonical typed tool-result parts keep id, name, content, and error status
+  together. Providers with a native status lower it explicitly; providers
+  without one reject error results rather than silently changing their meaning.
+- The shared `extra_body` merge rejects protected and canonical wire-key
+  collisions after normalizing string/keyword spelling, while otherwise
+  preserving JSON field case.
 - Cost attribution is wired in the public drivers for chat, embeddings, rerank,
   image generation, transcription, and TTS. Unknown pricing remains explicit and
   is not treated as zero.

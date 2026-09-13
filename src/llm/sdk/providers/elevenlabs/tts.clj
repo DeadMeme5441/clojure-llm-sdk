@@ -7,6 +7,7 @@
   (:require [clojure.string :as str]
             [llm.sdk.transport.speak :as st]
             [llm.sdk.provider :as provider]
+            [llm.sdk.transport :as transport]
             [llm.sdk.errors :as errors])
   (:import [java.net URLEncoder]))
 
@@ -73,9 +74,10 @@
                              :enable_logging
                              :optimize_streaming_latency
                              :voice_settings)
-        body (cond-> (merge {:text input
-                             :model_id model}
-                            body-options)
+        body (cond-> (transport/merge-extra-body
+                      (:profile/id profile)
+                      {:text input :model_id model}
+                      body-options)
                (or (contains? options :voice_settings)
                    (contains? request :speak/speed))
                (assoc :voice_settings voice-settings))
@@ -113,13 +115,3 @@
 
 (defn make-transport [] (->ElevenLabsSpeakTransport))
 
-(provider/register-provider
- {:profile/id :elevenlabs
-  :profile/protocol-family :elevenlabs
-  :profile/base-url "https://api.elevenlabs.io"
-  :profile/auth-strategy :api-key-header
-  :profile/auth-header-name "xi-api-key"
-  :profile/supports-model-listing false
-  :profile/capabilities #{:tts}
-  :profile/env-var-names ["ELEVENLABS_API_KEY"]
-  :profile/speak-transport-constructor make-transport})

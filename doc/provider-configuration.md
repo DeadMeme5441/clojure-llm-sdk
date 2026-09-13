@@ -13,6 +13,16 @@ Inspect the registered providers at runtime:
 
 The profile exposes auth strategy, base URL, supported capabilities, model-listing support, and transport constructors. Treat it as read-only unless you are registering a custom provider.
 
+Built-ins are assembled and published atomically on the first registry lookup;
+requiring an adapter namespace does not register anything. Explicit
+`llm.sdk.provider/register-provider` calls must supply a complete profile that
+passes `llm.sdk.schema/ProviderProfile`, including identity, protocol, base URL,
+auth strategy, model-listing flag, and at least one modality transport
+constructor. Registration validates before publishing. The registry derives
+the operation capabilities from installed constructors rather than trusting
+caller-supplied `:chat`, `:embedding`, `:moderation`, `:rerank`,
+`:image-generation`, `:transcription`, or `:tts` claims.
+
 ## Credentials
 
 The SDK reads provider credentials from environment variables. It does not load `.env` files directly.
@@ -44,7 +54,7 @@ See [.env.example](../.env.example) for the full credential template across chat
 
 ## Per-Call Runtime Config
 
-Applications can override provider configuration for a single call without changing the global provider registry. Every public modality accepts `:config`:
+Applications can override provider configuration for a single call without changing the global provider registry. Every public modality accepts the same `:config` transport options:
 
 ```clojure
 (sdk/complete
@@ -65,88 +75,140 @@ Supported config keys:
 |---|---|
 | `:api-key` / `:auth-token` | Auth token for this call. |
 | `:base-url` | Provider base URL override. |
-| `:headers` | Extra headers merged into the provider defaults. |
-| `:http-client` | Caller-managed hato Java HTTP client. |
-| `:connect-timeout-ms` | HTTP connect timeout; WebSocket upgrade timeout. |
-| `:timeout-ms` | HTTP request timeout; WebSocket server/consumer inactivity timeout (default 120000 ms). |
+| `:headers` | Extra headers; merged case-insensitively and applied last, after provider, adapter, and auth headers. |
+| `:http-client` | Caller-managed hato `java.net.http.HttpClient`, shared by every modality. |
+| `:connect-timeout-ms` | HTTP connect timeout; WebSocket upgrade timeout. Without this or an injected client, the shared default pool uses 30000 ms. |
+| `:timeout-ms` | HTTP request deadline plus streamed-body inactivity timeout; WebSocket server/consumer inactivity timeout. Defaults to 120000 ms. |
 | `:transport` | ChatGPT OAuth only: `:sse` (default) or `:websocket`. |
 | `:incremental?` | ChatGPT OAuth WebSockets: automatic continuation is enabled; `false` always sends full history. |
+| `:account-id` | Optional ChatGPT account id for caller-managed OAuth credentials. |
 
-## ChatGPT OAuth WebSockets
+Without `:http-client` or a custom connect timeout, calls share one lazily
+created connection pool. Supplying `:connect-timeout-ms` builds a separate
+client; supplying `:http-client` uses the caller-owned client. Runtime headers
+win even when their spelling differs only by case.
 
-`:codex-backend` reads the official Codex CLI OAuth credentials. HTTP/SSE is the
-default: live `gpt-6-astra` / low-effort conversation benchmarks had lower
-first-output latency over SSE, even after WebSocket connection/history reuse.
-This is a measured default, not a guarantee for every model or network.
+Custom complete profiles may use `:profile/auth-strategy :api-key-query` with
+a non-empty `:profile/auth-query-param`; the resolved runtime, profile, or
+environment token is added to that query parameter. Registration rejects
+query-auth profiles without the parameter name.
 
-Select `:config {:transport :websocket}` to use
-`wss://chatgpt.com/backend-api/codex/responses`. Both buffered `complete` and
-`:stream? true` then use `response.create` with `stream: true`, matching the
-official Codex client. The API-key `:codex` and `:openai` transports are unchanged.
+## ChatGPT OAuth
+
+Use `:codex-backend`, not the API-key `:codex` provider. Both supported
+Responses completion transports are available:
+
+| Config | Wire transport |
+|---|---|
+| `{:transport :sse}` (default) | HTTPS `POST /backend-api/codex/responses`, streamed SSE events. |
+| `{:transport :websocket}` | WSS on the same Responses endpoint, `responses_websockets=2026-02-06` and `response.create` frames. |
+
+Blocking `complete`, callback streaming, and closeable pull streaming work
+with both. Realtime audio/WebRTC is a different API, not another transport
+for these chat completions. `:openai` and API-key `:codex` remain separate.
 
 ```clojure
 (sdk/complete
   :codex-backend
-  {:request/model "gpt-6-astra"
+  {:request/model "gpt-5.6-luna"
    :request/messages [{:message/role :user :message/content "Hello"}]
    :request/reasoning {:enabled true :effort :low}
    :request/cache {:enabled? true :scope-id "conversation-42"}}
   :stream? true
-  :on-event prn
-  :config {:transport :websocket :connect-timeout-ms 10000 :timeout-ms 120000})
+  :on-event (fn [event]
+              (when (= :stream/content-delta (:event/type event))
+                (print (:event/delta event))))
+  :config {:transport :websocket :connect-timeout-ms 15000 :timeout-ms 120000})
 ```
 
-Fully consumed successful responses return their connection to a pool of up to
-eight idle sockets, expiring after 60 seconds. Connections are isolated by URL,
-headers (including OAuth credentials, account and cache scope), HTTP client and
-timeout configuration. Concurrent calls lease separate connections rather than
-waiting for another response. Keep `:scope-id` stable within a conversation for
-prompt-cache affinity; changing handshake headers prevents connection reuse.
+### Managed and caller-managed credentials
 
-WebSocket follow-ups automatically send `previous_response_id` and only new input
-when the full canonical history exactly extends the previous request plus its
-completed output. Instructions, tools, model and other generation settings must
-remain unchanged. The pool prefers the connection holding that conversation's
-baseline. History edits, compaction, unsupported output shapes and reconnects
-fall back to a full request; the SDK never guesses which messages to omit.
+By default, the SDK reads the Codex CLI's ChatGPT OAuth file at
+`$CODEX_HOME/auth.json`, or `~/.codex/auth.json`. Managed credentials refresh
+when the access JWT expires within five minutes or `last_refresh` is older
+than eight days. Successful refresh preserves unrelated fields and replaces
+the file atomically with owner-only permissions.
 
-Preserve `:response/provider-data` as `:message/provider-data` on assistant
-messages, alongside canonical content and tool calls. Keep each tool call's
-`:tool-call/provider-data` as well: it may carry custom/provider-native
-identity required for replay. Together these fields retain encrypted
-reasoning, tool identity, and message phase needed for exact continuation.
-Replayed assistant message items are not duplicated, and edited canonical text
-wins over stale provider text. `:config {:incremental? false}` disables history
-optimization.
+A rejected HTTP request or WebSocket upgrade can refresh credentials and
+retry once before generation. Recovery reloads the file first, adopts a
+new token only for the same account, and refuses a mid-request account
+switch. Permanent failures raise `:auth/reauthentication-required`; log in
+again with the Codex CLI. Transient refresh failures raise
+`:auth/refresh-failed` without discarding stored credentials.
 
-Only the latest completed request/output is retained per connection, and only
-after its terminal bytes have been consumed. Streamed `response.output_item.done`
-items are authoritative: the Codex backend can leave the terminal `output` array
-empty. Unchanged system instructions and tool definitions are still sent on every
-turn, as required by the protocol. Smaller payloads do not guarantee lower
-model-generation latency.
+For host-managed credentials, pass `:config {:auth-token access-token
+:account-id account-id}`. An explicit Bearer authorization header is also
+host-managed. These modes do not read or refresh the CLI file; the caller
+owns rotation. The SDK does not open OS keyrings or start an interactive
+login. Use caller-managed tokens when the credential owner uses keyring
+storage. Do not share one managed credential file among independent
+concurrent processes; in-process refresh coordination is not a cross-process
+credential manager.
 
-Partial responses are never automatically replayed, even with `:retry true`.
-An automatically generated continuation rejected with `previous_response_not_found`
-may resend the full original request once, only before any lifecycle or generation
-event has arrived. Explicit caller-provided response IDs and partial generations
-are never retried by this recovery path.
-Handshake/provider errors and premature disconnects throw structured exceptions;
-legitimate incomplete responses retain their canonical finish reason. Buffers and
-message sizes are bounded. Abandoned lazy streams expire on inactivity; prefer
-`:on-event` for deterministic cleanup, including when your callback throws.
+Authentication helpers live in `llm.sdk.providers.codex.auth`. They return
+credential values and must never be logged.
 
-To use HTTP/SSE explicitly, pass `:config {:transport :sse}`. There is no silent
-fallback after a WebSocket failure. A caller-managed `:http-client` must be a
-`java.net.http.HttpClient` (as returned by hato). To dispose active and idle sockets:
+### Replay, reuse, and safe recovery
+
+Fully consumed successful responses return their WebSocket connection to a
+pool of up to eight idle sockets, expiring after 60 seconds. Connections are
+isolated by URL, headers, HTTP client, and timeout configuration. Concurrent
+calls lease separate connections.
+
+Keep `:request/cache :scope-id` stable within a conversation for prompt-cache
+affinity. It also supplies the official `session-id` and `thread-id` headers.
+Changing handshake headers prevents connection reuse.
+
+Always pass full canonical history. Preserve `:response/provider-data` as
+`:message/provider-data` on assistant messages, alongside content, tool calls,
+and each call's `:tool-call/provider-data`. The SDK requests encrypted replay
+state even when reasoning effort is left at the model default.
+
+WebSocket follow-ups automatically send `previous_response_id` and only new
+input when history exactly extends the previous completed request and output.
+Instructions, tools, model, and generation settings must remain unchanged.
+History edits, unsupported output shapes, and reconnects send full history;
+the SDK never guesses which messages to omit. Set `:incremental? false` to
+disable this optimization.
+
+An automatically generated continuation rejected with
+`previous_response_not_found` can resend the original full request once.
+An explicit `websocket_connection_limit_reached` rejection replaces the
+expired connection and sends the original full request. A pre-generation
+401 frame can refresh managed credentials and use a new connection. These
+recoveries share one attempt per lease and are forbidden after any provider
+event has been observed. Partial generations, ordinary rate limits, ambiguous
+network failures, and explicit caller response ids are not automatically
+replayed by continuation recovery.
+
+There is no silent WebSocket-to-SSE fallback. Choose `:transport :sse`
+explicitly if required. Premature EOF is `:incomplete`, not a successful
+completion. Streamed HTTP bodies and WebSocket leases expire on inactivity;
+use `with-open`, direct reduction, or callbacks for deterministic cleanup.
 
 ```clojure
 (require '[llm.sdk.websocket :as websocket])
 (websocket/close-connections!)
 ```
 
-Wire protocol references: [Codex WebSocket endpoint](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/responses_websocket.rs)
-and [Codex client protocol selection](https://github.com/openai/codex/blob/main/codex-rs/core/src/client.rs).
+### Live verification
+
+```bash
+clojure -M:live-test -n llm.sdk.live-codex-test
+```
+
+The suite defaults to `gpt-5.6-luna`; set `CODEX_TEST_MODEL` for another
+account-visible model. It exercises both transports, structured output,
+function/custom tools, typed results, encrypted reasoning replay, inline
+images/files, continuation, reconnects, cancellation, concurrency, and
+caller-managed credentials. The managed-refresh test deliberately sends
+one rejected request and performs a real token refresh, updating the
+Codex auth file. Live tests are excluded from `clojure -M:test`.
+
+Protocol references at the audited Codex revision:
+[Responses HTTP](https://github.com/openai/codex/blob/516f2780fd227a80cd9fe89488f5039245090b71/codex-rs/codex-api/src/endpoint/responses.rs),
+[Responses WebSocket](https://github.com/openai/codex/blob/516f2780fd227a80cd9fe89488f5039245090b71/codex-rs/codex-api/src/endpoint/responses_websocket.rs),
+and [authentication lifecycle](https://github.com/openai/codex/blob/516f2780fd227a80cd9fe89488f5039245090b71/codex-rs/login/src/auth/manager.rs).
 
 ## OpenAI-Compatible Alias Options
 
@@ -164,10 +226,18 @@ escape-hatch spelling implemented by the shared adapter:
  {:extra_body {:native_field "value"}}}
 ```
 
-Keys inside `:extra_body` are native wire keys and are not renamed.
-`:model`, `:messages`, and `:stream` are protected and cannot be overridden
-through this map. OpenRouter has a dedicated adapter: put routing preferences
-directly at `:request/provider-options :provider`, Pareto routing at
+Keys inside `:extra_body` are native wire keys and are not renamed. The common
+merge helper normalizes string/keyword spelling and rejects collisions with
+protected fields (`model`, `messages`, and `stream`) or fields already owned by
+the canonical request. It never silently drops the extra value or lets it
+override canonical data. JSON field case is otherwise preserved.
+
+Collision exceptions carry
+`:error/type :request/protected-extra-body-override`, the canonical `:field`,
+and the `:provider` id.
+
+OpenRouter has a dedicated adapter: put routing preferences directly at
+`:request/provider-options :provider`, Pareto routing at
 `:request/provider-options :pareto :min-coding-score`, and metadata header
 selection at `:request/provider-options :metadata-level`; canonical reasoning
 stays under `:request/reasoning`.
@@ -276,11 +346,12 @@ access must be confirmed against the live Agent API.
 
 Vertex Gemini uses Application Default Credentials. Resolution order:
 
-1. Request-level provider option for a bearer token.
-2. `GOOGLE_OAUTH_ACCESS_TOKEN`.
-3. `GOOGLE_APPLICATION_CREDENTIALS` service-account or authorized-user file.
-4. The gcloud well-known ADC file.
-5. GCP metadata server.
+1. Request-level `:request/provider-options :vertex :access-token`.
+2. Per-call `:config {:auth-token "..."}` (stored on the transient profile).
+3. `GOOGLE_OAUTH_ACCESS_TOKEN`.
+4. `GOOGLE_APPLICATION_CREDENTIALS` service-account or authorized-user file.
+5. The gcloud well-known ADC file.
+6. GCP metadata server.
 
 Set `GOOGLE_CLOUD_PROJECT` and optionally `GOOGLE_CLOUD_LOCATION`. The default location is `us-central1`.
 
@@ -418,8 +489,8 @@ Chat and embeddings use `/openai/v1/chat/completions` and
 
 Both styles attach chat and embedding transports to the registered profile.
 Default Azure auth uses the `api-key` header. Use `:auth-strategy :bearer` for
-an AAD bearer token. The legacy namespace
-`llm.sdk.providers.openai-chat` forwards to the same implementation.
+an AAD bearer token. `llm.sdk.providers.openai.chat` is the sole implementation
+namespace for this helper.
 
 ## Custom OpenAI-Compatible Providers
 
@@ -438,12 +509,14 @@ For a provider that accepts OpenAI Chat Completions shape, register an alias:
 The alias reuses the OpenAI-compatible request builder, response parser,
 streaming parser, and usage normalizer. Registration keys are `:id`,
 `:base-url`, `:env-var-names`, `:auth-strategy`, `:auth-header-name`,
-`:default-headers`, `:capabilities`, `:quirks`,
-`:supports-model-listing?`, and `:supported-params`. Quirk keys implemented by
-the adapter are `:drops`, `:reasoning-mode`, `:reasoning-replay-field`,
-`:stream-usage`, `:max-completion-tokens`, and `:custom-tools`. These are
-profile construction options, not request-native fields; only set behavior
-your endpoint actually implements.
+`:auth-query-param`, `:default-headers`, `:capabilities`, `:quirks`,
+`:supports-model-listing?`, and `:supported-params`. Query auth requires both
+`:auth-strategy :api-key-query` and a non-empty `:auth-query-param`. Quirk keys
+implemented by the adapter are `:drops`, `:reasoning-mode`,
+`:reasoning-replay-field`, `:stream-usage`, `:max-completion-tokens`, and
+`:custom-tools`. These are profile construction options, not request-native
+fields; only set behavior your endpoint actually implements. The resulting
+complete profile is validated before it replaces any existing value.
 
 ## Live Model Listing
 
@@ -458,5 +531,9 @@ Refresh every supported provider:
 ```clojure
 (sdk/refresh-models!)
 ```
+
+A successful refresh replaces the provider's entire live slice atomically.
+Failed fetching or validation preserves the previous slice, marks it stale,
+and reports the error.
 
 Providers without a stable model-list endpoint, such as `:kimi-code`, still participate in the offline registry through bundled snapshots when available.

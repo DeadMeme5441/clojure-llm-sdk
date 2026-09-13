@@ -6,12 +6,11 @@
    :profile/image-transport-constructor, builds and sends the request,
    returns a canonical ImageGenResponse. Providers without image
    support throw a clear ex-info."
-  (:require [llm.sdk.provider :as provider]
-            [llm.sdk.schema :as schema]
-            [llm.sdk.http :as http]
-            [llm.sdk.errors :as errors]
-            [llm.sdk.pricing :as pricing]
+  (:require [clojure.string :as str]
             [llm.sdk.aws-sigv4 :as aws-sigv4]
+            [llm.sdk.operation :as operation]
+            [llm.sdk.pricing :as pricing]
+            [llm.sdk.schema :as schema]
             [llm.sdk.transport.image :as it]))
 
 (defn- parse-size [s]
@@ -48,9 +47,9 @@
 (defn- usable-image? [image]
   (and (map? image)
        (or (and (string? (:image/url image))
-                (not-empty (:image/url image)))
+                (not (str/blank? (:image/url image))))
            (and (string? (:image/b64 image))
-                (not-empty (:image/b64 image))))))
+                (not (str/blank? (:image/b64 image)))))))
 
 (defn- validate-provider-response! [provider-id status body parsed]
   (when-not (and (map? parsed)
@@ -75,42 +74,29 @@
    The canonical response includes :image/images — a vector of
    {:image/url? :image/b64? :image/revised-prompt?}."
   [provider-id request & {:keys [config]}]
-  (let [profile (some-> (provider/get-provider provider-id)
-                        (provider/apply-runtime-config config))
-        profile (or profile
-                    (throw (ex-info "Unknown provider"
-                                    {:provider provider-id})))
-        _ (when-not (schema/validate-image-gen-request request)
-            (throw (ex-info "Invalid llm.sdk image generation request"
-                            {:error/type :schema/invalid-image-request
-                             :schema/explain (schema/explain-image-gen-request request)})))
-        ctor (:profile/image-transport-constructor profile)
-        _ (when-not ctor
-            (throw (ex-info "Image generation not supported by provider"
-                            {:provider provider-id})))
-        transport (ctor)
-        req (it/build-image-request transport profile request)
-        req (provider/apply-http-options profile req)
-        req (aws-sigv4/maybe-sign profile req)
-        resp (try
-               (http/request req)
-               (catch Exception e
-                 (throw (ex-info "Provider image transport error"
-                                 {:error (errors/classify-error e :provider provider-id)
-                                  :provider provider-id}
-                                 e))))
-        status (:status resp)
-        body (:body resp)]
-    (if-not (<= 200 status 299)
-      (let [err (it/parse-image-error transport profile status body)]
-        (throw (ex-info "Provider image API error"
-                        {:error err
-                         :status status
-                         :body body
-                         :provider provider-id})))
-      (let [parsed (it/parse-image-response transport profile body)
-            model (or (:image/model parsed) (:image/model request))
-            parsed (cond-> parsed
-                     model (assoc :image/model model))]
-        (validate-provider-response! provider-id status body parsed)
-        (stamp-image-cost provider-id request parsed)))))
+  (let [parsed
+        (operation/run
+         {:provider-id provider-id
+          :request request
+          :config config
+          :validate-request schema/validate-image-gen-request
+          :explain-request schema/explain-image-gen-request
+          :invalid-error-type :schema/invalid-image-request
+          :invalid-message "Invalid llm.sdk image generation request"
+          :constructor-key :profile/image-transport-constructor
+          :unsupported-message "Image generation not supported by provider"
+          :build-request it/build-image-request
+          :sign-request aws-sigv4/maybe-sign
+          :parse-response
+          (fn [transport profile response]
+            (let [parsed (it/parse-image-response
+                          transport profile (:body response))
+                  model (or (:image/model parsed) (:image/model request))
+                  parsed (cond-> parsed model (assoc :image/model model))]
+              (validate-provider-response!
+               provider-id (:status response) (:body response) parsed)
+              parsed))
+          :parse-error it/parse-image-error
+          :transport-error-message "Provider image transport error"
+          :api-error-message "Provider image API error"})]
+    (stamp-image-cost provider-id request parsed)))

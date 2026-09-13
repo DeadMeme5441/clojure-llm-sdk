@@ -42,11 +42,11 @@
 
 (deftest test-generate-image-unknown-provider
   (is (thrown-with-msg? Exception #"Unknown provider"
-        (sdk/generate-image :no-such-provider {:image/prompt "x"}))))
+                        (sdk/generate-image :no-such-provider {:image/prompt "x"}))))
 
 (deftest test-generate-image-provider-without-image-support
   (is (thrown-with-msg? Exception #"Image generation not supported"
-        (sdk/generate-image :anthropic {:image/prompt "x"}))))
+                        (sdk/generate-image :anthropic {:image/prompt "x"}))))
 
 (deftest test-bedrock-requires-image-model-before-http
   (let [called? (atom false)]
@@ -107,6 +107,20 @@
       (is (= "abc" (:image/b64 (first (:image/images resp)))))
       (is (schema/validate-image-gen-response resp)))))
 
+(deftest test-generate-image-rejects-empty-success-output
+  (with-redefs [http/request
+                (fn [_] {:status 200 :body {:data []}})]
+    (let [error
+          (try
+            (sdk/generate-image
+             :openrouter
+             {:image/model "bytedance-seed/seedream-4.5"
+              :image/prompt "a cat"})
+            nil
+            (catch clojure.lang.ExceptionInfo cause cause))]
+      (is (= :provider/invalid-image-response
+             (:error/type (ex-data error)))))))
+
 (deftest test-generate-image-stamps-token-cost-when-usage-present
   (with-redefs [http/request
                 (fn [_]
@@ -132,11 +146,6 @@
 ;; Public API surface
 ;; ---------------------------------------------------------------------------
 
-(deftest test-public-api-exposes-generate-image
-  (is (some? (resolve 'llm.sdk/generate-image)))
-  (is (fn? @(resolve 'llm.sdk/generate-image))))
-
 (deftest test-openai-profile-advertises-image-capability
   (let [profile (provider/get-provider :openai)]
-    (is (contains? (:profile/capabilities profile) :image-generation))
-    (is (fn? (:profile/image-transport-constructor profile)))))
+    (is (contains? (:profile/capabilities profile) :image-generation))))

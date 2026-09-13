@@ -1,7 +1,6 @@
 (ns llm.sdk.providers.openrouter.embeddings
   "OpenRouter embeddings transport over the OpenAI-compatible /embeddings API."
-  (:require [llm.sdk.provider :as provider]
-            [llm.sdk.providers.openai.embeddings :as openai]
+  (:require [llm.sdk.providers.openai.embeddings :as openai]
             [llm.sdk.transport.embed :as et]
             [llm.sdk.usage :as usage]))
 
@@ -53,8 +52,3 @@
 
 (defn make-transport [] (->OpenRouterEmbedTransport))
 
-(when-let [p (provider/get-provider :openrouter)]
-  (provider/register-provider
-   (-> p
-       (assoc :profile/embed-transport-constructor make-transport)
-       (update :profile/capabilities (fnil conj #{}) :embedding))))

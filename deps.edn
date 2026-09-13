@@ -1,6 +1,5 @@
 {:paths ["src" "resources"]
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
-        org.clojure/core.async {:mvn/version "1.6.681"}
         metosin/malli {:mvn/version "0.17.0"}
         hato/hato {:mvn/version "1.0.0"}
         cheshire/cheshire {:mvn/version "5.13.0"}}
@@ -32,19 +31,9 @@
                           "--include" ":integration"]
               :exec-fn cognitect.test-runner.api/test}
 
-  :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}}
-          :ns-default build}
+  :scripts {:extra-paths ["scripts"]}
 
-  ;; Publish the built jar to Clojars. Reads CLOJARS_USERNAME / CLOJARS_PASSWORD
-  ;; (a Clojars deploy token) from the environment. Build first, then deploy:
-  ;;   clojure -T:build jar
-  ;;   clojure -X:deploy :artifact '"target/clojure-llm-sdk-0.5.0.jar"'
-  ;; CI does both on a v* tag (see .github/workflows/release.yml).
-  :deploy {:replace-deps {slipset/deps-deploy {:mvn/version "0.2.2"}}
-           :exec-fn deps-deploy.deps-deploy/deploy
-           :exec-args {:installer :remote
-                       :sign-releases? false
-                       ;; b/write-pom emits the pom under the class-dir, not the
-                       ;; repo root where deps-deploy looks by default.
-                       :pom-file "target/classes/META-INF/maven/net.clojars.deadmeme5441/clojure-llm-sdk/pom.xml"
-                       :artifact "target/clojure-llm-sdk-0.5.0.jar"}}}}
+  ;; Build, install, and deploy share build.clj's RELEASE_VERSION.
+  :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}
+                 slipset/deps-deploy {:mvn/version "0.2.2"}}
+          :ns-default build}}}

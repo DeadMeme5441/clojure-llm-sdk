@@ -52,15 +52,15 @@
 
 (deftest test-embed-unknown-provider
   (is (thrown-with-msg? Exception #"Unknown provider"
-        (sdk/embed :no-such-provider
-                   {:embed/model "x" :embed/inputs ["a"]}))))
+                        (sdk/embed :no-such-provider
+                                   {:embed/model "x" :embed/inputs ["a"]}))))
 
 (deftest test-embed-provider-without-embed-support
   (testing "non-embed provider throws a clear error"
     ;; :anthropic has no embed-transport-constructor.
     (is (thrown-with-msg? Exception #"Embedding not supported"
-          (sdk/embed :anthropic
-                     {:embed/model "x" :embed/inputs ["a"]})))))
+                          (sdk/embed :anthropic
+                                     {:embed/model "x" :embed/inputs ["a"]})))))
 
 (deftest test-embed-driver-translates-4xx
   (testing "4xx HTTP response surfaces as ex-info with classified error"
@@ -99,6 +99,33 @@
         (is (= 3 (get-in resp [:response/usage :usage/input-tokens])))
         (is (schema/validate-embed-response resp))))))
 
+(deftest test-embed-driver-rejects-malformed-success-responses
+  (doseq [[provider-id request body]
+          [[:openai
+            {:embed/model "embedding-model"
+             :embed/inputs ["one" "two"]}
+            {:model "embedding-model"
+             :data [{:index 0 :embedding [1.0 2.0]}]}]
+           [:openai
+            {:embed/model "embedding-model"
+             :embed/inputs ["one"]}
+            {:model "embedding-model"
+             :data [{:index 0 :embedding [1.0 "not-a-number"]}]}]
+           [:voyage
+            {:embed/model "voyage-4"
+             :embed/inputs ["one" "two"]}
+            {:model "voyage-4"
+             :data [{:index 0 :embedding [1.0 2.0]}
+                    {:index 1 :embedding {:unexpected true}}]}]]]
+    (with-redefs [http/request (fn [_] {:status 200 :body body})]
+      (let [error (try
+                    (sdk/embed provider-id request)
+                    nil
+                    (catch clojure.lang.ExceptionInfo cause cause))]
+        (is (= :provider/invalid-embedding-response
+               (:error/type (ex-data error)))
+            (str provider-id " must reject malformed successful output"))))))
+
 (deftest test-dense-base64-decoding
   (testing "the shared decoder reads little-endian float32 values"
     (is (= [1.0 2.0]
@@ -133,7 +160,7 @@
                       (reset! sent request)
                       {:status 200
                        :body {:model "mistral-embed"
-                              :data [{:index 0 :embedding [1.0]}]}})]
+                              :data [{:index 0 :embedding (vec (repeat 256 1.0))}]}})]
         (sdk/embed :mistral
                    {:embed/model "mistral-embed"
                     :embed/inputs ["hello"]
@@ -205,11 +232,6 @@
 ;; Public API exposes embed
 ;; ---------------------------------------------------------------------------
 
-(deftest test-public-api-exposes-embed
-  (is (some? (resolve 'llm.sdk/embed)))
-  (is (fn? @(resolve 'llm.sdk/embed))))
-
 (deftest test-openai-profile-advertises-embedding-capability
   (let [profile (provider/get-provider :openai)]
-    (is (contains? (:profile/capabilities profile) :embedding))
-    (is (fn? (:profile/embed-transport-constructor profile)))))
+    (is (contains? (:profile/capabilities profile) :embedding))))

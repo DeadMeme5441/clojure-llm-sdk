@@ -177,12 +177,12 @@
    [:request/tools {:optional true} [:vector Tool]]
    [:request/tool-choice {:optional true}
     [:or [:enum :auto :none :required]
-         [:map {:closed true}
-          [:type [:= :function]]
-          [:function [:map {:closed true} [:name string?]]]]
-         [:map {:closed true}
-          [:type [:= :custom]]
-          [:custom [:map {:closed true} [:name string?]]]]]]
+     [:map {:closed true}
+      [:type [:= :function]]
+      [:function [:map {:closed true} [:name string?]]]]
+     [:map {:closed true}
+      [:type [:= :custom]]
+      [:custom [:map {:closed true} [:name string?]]]]]]
    [:request/temperature {:optional true} number?]
    [:request/top-p {:optional true} number?]
    [:request/max-tokens {:optional true} int?]
@@ -204,11 +204,12 @@
    [:request/cache {:optional true}
     [:map {:closed true}
      [:enabled? {:optional true} boolean?]
-     [:ttl {:optional true} [:enum "5m" "30m" "1h"]]
+     [:ttl {:optional true} [:enum "5m" "1h"]]
      [:strategy {:optional true} [:enum :auto :system-and-3 :explicit :none]]
      [:scope-id {:optional true} string?]
      [:cached-content-id {:optional true} string?]
-     [:breakpoints {:optional true} int?]
+     [:breakpoints {:optional true}
+      [:and int? [:fn (fn [breakpoints] (not (neg? breakpoints)))]]]
      [:tools-cache? {:optional true} boolean?]]]
    [:request/metadata {:optional true} map?]
    [:request/provider-options {:optional true} map?]])
@@ -495,7 +496,7 @@
    [:response/parts [:vector Part]]
    [:response/tool-calls {:optional true} [:vector ToolCallPart]]
    [:response/finish-reason [:enum :stop :length :tool-calls :content-filter
-                            :incomplete :unknown]]
+                             :incomplete :unknown]]
    [:response/usage {:optional true} Usage]
    [:response/cost {:optional true} Cost]
    [:response/cache {:optional true} Cache]

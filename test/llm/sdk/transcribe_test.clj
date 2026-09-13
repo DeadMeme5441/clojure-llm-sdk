@@ -1,9 +1,12 @@
 (ns llm.sdk.transcribe-test
   (:require [clojure.test :refer [deftest is]]
+            [hato.client :as hc]
+            [llm.sdk :as sdk]
+            [llm.sdk.http :as http]
             [llm.sdk.provider :as provider]
+            [llm.sdk.providers.openai.transcribe :as openai-tx]
             [llm.sdk.schema :as schema]
-            [llm.sdk.transport.transcribe :as tt]
-            [llm.sdk.providers.openai-transcribe :as openai-tx]))
+            [llm.sdk.transport.transcribe :as tt]))
 
 (deftest test-openai-build-request-shape
   (let [t (openai-tx/make-transport)
@@ -219,3 +222,78 @@
         parsed (tt/parse-transcribe-response t profile "plain transcript")]
     (is (= "plain transcript" (:transcription/text parsed)))
     (is (schema/validate-transcribe-response parsed))))
+
+(deftest test-transcribe-shared-client-and-content-type-independent-json
+  (let [client (Object.)
+        sent (atom nil)
+        response
+        (binding [http/*http-client* client]
+          (with-redefs [hc/request
+                        (fn [request]
+                          (reset! sent request)
+                          {:status 200
+                           :headers {"Content-Type" "Application/JSON"}
+                           :body "{\"text\":\"decoded\"}"})]
+            (sdk/transcribe
+             :openai
+             {:transcribe/file (.getBytes "audio")
+              :transcribe/filename "audio.wav"
+              :transcribe/model "whisper-1"})))]
+    (is (identical? client (:http-client @sent)))
+    (is (= 120000 (:timeout @sent)))
+    (is (= "decoded" (:transcription/text response)))))
+
+(deftest test-transcribe-rejects-malformed-json-success
+  (with-redefs [hc/request
+                (fn [_]
+                  {:status 200
+                   :headers {"content-type" "application/json"}
+                   :body "{\"unexpected\":true}"})]
+    (let [error
+          (try
+            (sdk/transcribe
+             :openai
+             {:transcribe/file (.getBytes "audio")
+              :transcribe/filename "audio.wav"
+              :transcribe/model "whisper-1"})
+            nil
+            (catch clojure.lang.ExceptionInfo cause cause))]
+      (is (= :provider/invalid-transcription-response
+             (:error/type (ex-data error)))))))
+
+(deftest test-transcribe-preserves-non-json-text-formats
+  (doseq [[format text]
+          [[:text "true"]
+           [:srt "1\n00:00:00,000 --> 00:00:01,000\nHello\n"]
+           [:vtt "WEBVTT\n\n00:00.000 --> 00:01.000\nHello\n"]]]
+    (with-redefs [hc/request
+                  (fn [_]
+                    {:status 200
+                     :headers {"content-type" "text/plain"}
+                     :body text})]
+      (is (= text
+             (:transcription/text
+              (sdk/transcribe
+               :openai
+               {:transcribe/file (.getBytes "audio")
+                :transcribe/filename "audio.wav"
+                :transcribe/model "whisper-1"
+                :transcribe/response-format format})))))))
+
+(deftest test-transcribe-rejects-protected-custom-multipart-fields
+  (let [transport (openai-tx/make-transport)
+        profile (provider/get-provider :openai)]
+    (doseq [field ["file" "model" "prompt"]]
+      (let [error
+            (try
+              (tt/build-transcribe-request
+               transport profile
+               {:transcribe/file (.getBytes "audio")
+                :transcribe/filename "audio.wav"
+                :transcribe/model "whisper-1"
+                :transcribe/provider-options
+                {:multipart [{:name field :content "override"}]}})
+              nil
+              (catch clojure.lang.ExceptionInfo cause cause))]
+        (is (= :request/protected-extra-body-override
+               (:error/type (ex-data error))))))))

@@ -2,14 +2,14 @@
   "Voyage text embeddings transport for POST /v1/embeddings."
   (:require [llm.sdk.errors :as errors]
             [llm.sdk.provider :as provider]
+            [llm.sdk.transport :as transport]
             [llm.sdk.transport.embed :as et]))
 
-(defn- ->int [x]
-  (cond
-    (int? x) x
-    (number? x) (int x)
-    :else 0))
-
+(defn- ->int [value]
+  (when (and (number? value)
+             (not (neg? value))
+             (Double/isFinite (double value)))
+    (int value)))
 
 (defn build-embed-request-voyage
   [profile request]
@@ -32,9 +32,9 @@
                       (if (keyword? output-dtype)
                         (name output-dtype)
                         output-dtype)))
-        body (if-let [extra (:extra_body opts)]
-               (merge body extra)
-               body)
+        body (transport/merge-extra-body (:profile/id profile)
+                                         body
+                                         (:extra_body opts))
         encoding-format (or (:encoding_format body)
                             (get body "encoding_format"))
         encoding-format (if (keyword? encoding-format)
@@ -63,13 +63,14 @@
 
 (defn normalize-voyage-embedding-usage [raw]
   (let [usage (or (:usage raw) raw)
-        input (->int (or (:prompt_tokens usage) (:total_tokens usage)))
-        total (->int (or (:total_tokens usage) input))]
-    {:usage/input-tokens input
-     :usage/output-tokens 0
-     :usage/total-tokens total
-     :usage/request-count 1
-     :usage/provider-raw usage}))
+        input (or (->int (:prompt_tokens usage))
+                  (->int (:total_tokens usage)))
+        total (or (->int (:total_tokens usage)) input)]
+    (cond-> {:usage/output-tokens 0
+             :usage/request-count 1
+             :usage/provider-raw usage}
+      (some? input) (assoc :usage/input-tokens input)
+      (some? total) (assoc :usage/total-tokens total))))
 
 (defn- dense-vector [embedding]
   (cond
@@ -120,6 +121,3 @@
 
 (defn make-transport [] (->VoyageEmbedTransport))
 
-(when-let [p (provider/get-provider :voyage)]
-  (provider/register-provider
-   (assoc p :profile/embed-transport-constructor make-transport)))

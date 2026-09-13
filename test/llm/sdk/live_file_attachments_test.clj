@@ -143,7 +143,7 @@
                                                    :file-attachments}
                            :profile/default-headers {"anthropic-version" "2023-06-01"}
                            :profile/transport-constructor
-                           (fn [] ((requiring-resolve 'llm.sdk.providers.anthropic/make-transport)))}
+                           (fn [] ((requiring-resolve 'llm.sdk.providers.anthropic.chat/make-transport)))}
             _ (provider/register-provider oauth-profile)
             resp (sdk/complete
                   :anthropic-oat-file-live

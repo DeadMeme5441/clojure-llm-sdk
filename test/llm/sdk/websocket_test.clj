@@ -4,14 +4,13 @@
             [clojure.test :refer [deftest is testing]]
             [llm.sdk :as sdk]
             [llm.sdk.http :as http]
-            [llm.sdk.providers.codex.responses :as codex]
+            [llm.sdk.providers.codex.auth :as codex-auth]
             [llm.sdk.websocket :refer [response close-connections!]])
   (:import [java.io DataInputStream EOFException InputStream OutputStream]
            [java.net InetAddress ServerSocket Socket SocketException]
            [java.nio.charset StandardCharsets]
            [java.security MessageDigest]
            [java.util Base64]))
-
 
 (defn- daemon [f]
   (doto (Thread. ^Runnable f)
@@ -44,9 +43,9 @@
         accept (.encodeToString (Base64/getEncoder) digest)
         out (.getOutputStream socket)]
     (.write out (.getBytes (str "HTTP/1.1 101 Switching Protocols\r\n"
-                               "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                               "Sec-WebSocket-Accept: " accept "\r\n\r\n")
-                          StandardCharsets/US_ASCII))
+                                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                                "Sec-WebSocket-Accept: " accept "\r\n\r\n")
+                           StandardCharsets/US_ASCII))
     (.flush out)
     handshake))
 
@@ -65,7 +64,7 @@
 
 (defn- send-json! [socket event]
   (send-frame! socket 1 true (.getBytes (json/generate-string event)
-                                      StandardCharsets/UTF_8)))
+                                        StandardCharsets/UTF_8)))
 
 (defn- read-frame [^Socket socket]
   (let [in (DataInputStream. (.getInputStream socket))
@@ -87,7 +86,7 @@
       (.readFully in data)
       (dotimes [i length]
         (aset-byte data i (unchecked-byte (bit-xor (aget data i)
-                                                  (aget mask (mod i 4))))))
+                                                   (aget mask (mod i 4))))))
       {:opcode (bit-and first-byte 15)
        :final? (pos? (bit-and first-byte 128))
        :payload data})))
@@ -113,6 +112,8 @@
         errors (atom [])
         requests (atom [])
         accepted (atom 0)
+        closed (atom #{})
+        close-monitor (Object.)
         accept-thread
         (daemon
          (fn []
@@ -131,19 +132,35 @@
                                  (loop []
                                    (when-let [body (read-request socket)]
                                      (let [request (assoc handshake :connection connection
-                                                         :body body)]
+                                                          :body body)]
                                        (swap! requests conj request)
                                        (when-not (= :close (handler socket request))
                                          (recur)))))))
                              (catch EOFException _)
                              (catch SocketException _)
                              (catch Throwable t
-                               (when-not @stopped? (swap! errors conj t)))))))))
+                               (when-not @stopped? (swap! errors conj t)))
+                             (finally
+                               (locking close-monitor
+                                 (swap! closed conj connection)
+                                 (.notifyAll close-monitor)))))))))
              (catch SocketException _)
              (catch Throwable t (swap! errors conj t)))))]
     {:url (str "http://127.0.0.1:" (.getLocalPort server) "/responses")
      :requests requests
      :accepted accepted
+     :await-closed? (fn [connection]
+                      (let [deadline (+ (System/nanoTime) 4000000000)]
+                        (locking close-monitor
+                          (loop []
+                            (if (contains? @closed connection)
+                              true
+                              (let [remaining (- deadline (System/nanoTime))]
+                                (if (pos? remaining)
+                                  (do (.wait close-monitor
+                                             (long (max 1 (/ remaining 1000000))))
+                                      (recur))
+                                  false)))))))
      :stop! (fn []
               (reset! stopped? true)
               (.close server)
@@ -166,7 +183,7 @@
   {:url (:url server)
    :headers {"authorization" "Bearer loopback-test-only"
              "chatgpt-account-id" "loopback-account"
-             "session_id" "loopback-session"}
+             "session-id" "loopback-session"}
    :body {:model (or model "loopback-model")
           :input [{:role "user" :content "Hello"}]
           :stream true :background false}
@@ -198,7 +215,7 @@
             bytes (.getBytes event StandardCharsets/UTF_8)
             ;; Split inside the UTF-8 encoding of é, not just between JSON tokens.
             split (inc (count (.getBytes (subs event 0 (.indexOf event "é"))
-                                       StandardCharsets/UTF_8)))]
+                                         StandardCharsets/UTF_8)))]
         (send-frame! socket 1 false (java.util.Arrays/copyOfRange bytes 0 split))
         (send-frame! socket 9 true (.getBytes "ping" StandardCharsets/UTF_8))
         (send-frame! socket 0 true (java.util.Arrays/copyOfRange bytes split (alength bytes)))))
@@ -214,7 +231,7 @@
         (is (= "GET /responses HTTP/1.1" (:request-line first-request)))
         (is (= "Bearer loopback-test-only" (get-in first-request [:headers "authorization"])))
         (is (= "loopback-account" (get-in first-request [:headers "chatgpt-account-id"])))
-        (is (= "loopback-session" (get-in first-request [:headers "session_id"])))
+        (is (= "loopback-session" (get-in first-request [:headers "session-id"])))
         (is (= {:type "response.create" :stream true :model "loopback-model"
                 :input [{:role "user" :content "Hello"}]}
                (:body first-request)))))))
@@ -285,7 +302,7 @@
         (let [pending (future
                         (try
                           (let [{:keys [body]} (response (assoc (request server "stall")
-                                                               :timeout-ms 500))]
+                                                                :timeout-ms 500))]
                             (with-open [body body] (slurp body)))
                           (catch Exception e e)))]
           (await! received)
@@ -323,8 +340,8 @@
       (is (= 3 @(:accepted server)) "Explicit disposal forces a new handshake"))))
 
 (defn- with-offline-sdk [f]
-  (with-redefs [codex/codex-backend-auth-headers
-                (fn [] {"Authorization" "Bearer loopback-test-only"})
+  (with-redefs [codex-auth/request-auth
+                (fn [_] {:headers {"Authorization" "Bearer loopback-test-only"}})
                 http/request
                 (fn [_] (throw (ex-info "Unexpected HTTP request in WebSocket test" {})))]
     (f sdk/complete)))
@@ -370,10 +387,10 @@
               (is (= :codex-backend (:response/provider result)))
               (is (= :tool-calls (:response/finish-reason result)))
               (is (= "Checking" (:text (first (filter #(= :text (:part/type %))
-                                                       (:response/parts result))))))
+                                                      (:response/parts result))))))
               (is (= "Need a lookup"
                      (:reasoning/text (first (filter #(= :reasoning (:part/type %))
-                                                    (:response/parts result))))))
+                                                     (:response/parts result))))))
               (is (= {:tool-call/id "call_lookup" :tool-call/name "lookup"
                       :tool-call/arguments "{\"q\":\"hello\"}"}
                      (select-keys (first (:response/tool-calls result))
@@ -396,9 +413,9 @@
         (fn [socket _]
           (send-json! socket {:type "response.output_text.delta" :delta "partial"})
           (send-json! socket {:type "response.incomplete"
-                             :response {:status "incomplete"
-                                        :incomplete_details {:reason "max_output_tokens"}
-                                        :usage {:input_tokens 3 :output_tokens 1}}}))
+                              :response {:status "incomplete"
+                                         :incomplete_details {:reason "max_output_tokens"}
+                                         :usage {:input_tokens 3 :output_tokens 1}}}))
         (fn [server]
           (let [result (complete :codex-backend (sdk-request) :config (sdk-config server))]
             (is (= :incomplete (:response/finish-reason result)))
@@ -428,7 +445,7 @@
                             (catch Exception e e))))]
             (is (identical? failure result)))
           (let [result (await! (future (complete :codex-backend (sdk-request)
-                                                :config (sdk-config server))))]
+                                                 :config (sdk-config server))))]
             (is (= :tool-calls (:response/finish-reason result))))
           (is (= 2 @(:accepted server))
               "Callback failure closes the body rather than leaking the active lease"))))))
@@ -473,7 +490,7 @@
                   ;; Arrival order is not output order.
                   (doseq [index (reverse (range (count output)))]
                     (send-json! socket {:type "response.output_item.done"
-                                       :output_index index :item (nth output index)}))
+                                        :output_index index :item (nth output index)}))
                   (send-json! socket
                               (cond-> (completed (str "r" n))
                                 (= output-source :item-done)
@@ -552,7 +569,7 @@
           (let [base (-> (request server)
                          (assoc-in [:body :instructions] "Use the tool")
                          (assoc-in [:body :tools] [{:type "function" :name "lookup"
-                                                   :parameters {:type "object"}}]))
+                                                    :parameters {:type "object"}}]))
                 next-req (change (append-input base (conj replay-input tool-result)))]
             (consume base)
             (consume next-req)
@@ -630,6 +647,175 @@
             (is (= "conversation-1" (get-in a-next [:body :previous_response_id]))))
           (is (= 2 @(:accepted server))))))))
 
+(def ^:private connection-limit
+  {:type "error"
+   :error {:code "websocket_connection_limit_reached"
+           :message "This connection reached its response limit"}})
+
+(def ^:private server-unauthorized
+  {:type "error" :status 401
+   :error {:code "unauthorized" :message "The access token expired"}})
+
+(deftest connection-limit-recovery-uses-new-socket-and-full-request
+  (let [turn (atom 0)]
+    (with-server
+      (fn [socket _]
+        (case (swap! turn inc)
+          1 (send-json! socket (completed "baseline"))
+          2 (do (send-json! socket connection-limit) :close)
+          3 (send-json! socket (completed "recovered"))))
+      (fn [server]
+        (let [base (request server)
+              next-req (append-input base [{:role "user" :content "Second"}])]
+          (consume base)
+          (is (str/includes? (consume next-req) "recovered"))
+          (let [[baseline delta retry-wire] @(:requests server)]
+            (is (= [1 1 2] (mapv :connection [baseline delta retry-wire])))
+            (is (= "baseline" (get-in delta [:body :previous_response_id])))
+            (is (= [{:role "user" :content "Second"}] (get-in delta [:body :input])))
+            (is (nil? (get-in retry-wire [:body :previous_response_id]))
+                "A replacement socket never receives continuation state from the expired one")
+            (is (= (:input (:body next-req)) (get-in retry-wire [:body :input])))))))))
+
+(deftest server-401-frame-refreshes-auth-on-consumer-and-replaces-socket
+  (let [turn (atom 0)
+        refresh-count (atom 0)
+        consumer-thread (atom nil)
+        refresh-thread (atom nil)]
+    (with-server
+      (fn [socket _]
+        (send-json! socket (if (= 1 (swap! turn inc))
+                             server-unauthorized
+                             (completed "authorized"))))
+      (fn [server]
+        (let [req (-> (request server)
+                      (assoc-in [:headers "X-OpenAI-FedRAMP"] "stale")
+                      (assoc-in [:headers "X-Request-Marker"] "preserved")
+                      (assoc :auth/recover!
+                             (fn []
+                               (swap! refresh-count inc)
+                               (reset! refresh-thread (Thread/currentThread))
+                               {"Authorization" "Bearer refreshed-loopback"
+                                "ChatGPT-Account-ID" "refreshed-account"
+                                "X-OpenAI-FedRAMP" "refreshed"})))
+              result (await!
+                      (future
+                        (reset! consumer-thread (Thread/currentThread))
+                        (let [{:keys [body]} (response req)]
+                          (with-open [body body] (slurp body)))))
+              [rejected recovered] @(:requests server)]
+          (is (str/includes? result "authorized"))
+          (is (= 1 @refresh-count))
+          (is (identical? @consumer-thread @refresh-thread)
+              "Credential refresh runs on the stream consumer, not a WebSocket callback")
+          (is (= [1 2] (mapv :connection [rejected recovered])))
+          (is (= "Bearer loopback-test-only"
+                 (get-in rejected [:headers "authorization"])))
+          (is (= "Bearer refreshed-loopback"
+                 (get-in recovered [:headers "authorization"])))
+          (is (= "refreshed-account"
+                 (get-in recovered [:headers "chatgpt-account-id"])))
+          (is (= "refreshed" (get-in recovered [:headers "x-openai-fedramp"])))
+          (is (= "preserved" (get-in recovered [:headers "x-request-marker"])))
+          (is (= "loopback-session" (get-in recovered [:headers "session-id"])))
+          (is (= (:body rejected) (:body recovered))))))))
+
+(deftest server-401-without-auth-recovery-surfaces
+  (with-server
+    (fn [socket _] (send-json! socket server-unauthorized))
+    (fn [server]
+      (let [result (try (consume (request server)) (catch Exception e e))
+            error (transport-error-data result)]
+        (is (= :response (:phase error)))
+        (is (= server-unauthorized (:body error)))
+        (is (= 1 (count @(:requests server))))
+        (is (= 1 @(:accepted server)))))))
+
+(deftest auth-recovery-failure-preserves-server-rejection
+  (with-server
+    (fn [socket _] (send-json! socket server-unauthorized))
+    (fn [server]
+      (let [refresh-failure (ex-info "synthetic refresh failure" {:refresh true})
+            result (try
+                     (consume (assoc (request server)
+                                     :auth/recover! (fn [] (throw refresh-failure))))
+                     (catch Exception e e))
+            error (transport-error-data result)]
+        (is (= :response (:phase error)))
+        (is (= server-unauthorized (:body error)))
+        (is (= 1 (count @(:requests server))))
+        (is ((:await-closed? server) 1))))))
+
+(deftest connection-limit-recovery-is-bounded
+  (with-server
+    (fn [socket _] (send-json! socket connection-limit))
+    (fn [server]
+      (let [result (try (consume (request server)) (catch Exception e e))
+            error (transport-error-data result)]
+        (is (= :response (:phase error)))
+        (is (= connection-limit (:body error)))
+        (is (= 2 (count @(:requests server))))
+        (is (= 2 @(:accepted server)))))))
+
+(deftest any-response-event-closes-the-recovery-window
+  (doseq [[label rejection with-auth?]
+          [[:connection-limit connection-limit false]
+           [:server-401 server-unauthorized true]]]
+    (testing (name label)
+      (let [refresh-count (atom 0)]
+        (with-server
+          (fn [socket _]
+            (send-json! socket {:type "response.created"
+                                :response {:id "generation-started"}})
+            (send-json! socket rejection))
+          (fn [server]
+            (let [req (cond-> (request server)
+                        with-auth?
+                        (assoc :auth/recover!
+                               (fn []
+                                 (swap! refresh-count inc)
+                                 {"Authorization" "Bearer should-not-be-used"})))
+                  result (try (consume req) (catch Exception e e))]
+              (is (= :response (:phase (transport-error-data result))))
+              (is (= 1 (count @(:requests server))))
+              (is (= 1 @(:accepted server)))
+              (is (zero? @refresh-count)))))))))
+
+(deftest replacement-connection-is-released-and-reused-after-completion
+  (let [turn (atom 0)]
+    (with-server
+      (fn [socket _]
+        (case (swap! turn inc)
+          1 (send-json! socket connection-limit)
+          2 (send-json! socket (completed "replacement"))
+          3 (send-json! socket (completed "reused"))))
+      (fn [server]
+        (is (str/includes? (consume (request server "recover")) "replacement"))
+        (is (str/includes? (consume (request server "next")) "reused"))
+        (is (= [1 2 2] (mapv :connection @(:requests server)))
+            "Terminal stream cleanup releases the replacement, not the discarded socket")
+        (is (= 2 @(:accepted server)))))))
+
+(deftest closing-stream-after-recovery-closes-the-replacement-socket
+  (let [turn (atom 0)]
+    (with-server
+      (fn [socket _]
+        (case (swap! turn inc)
+          1 (send-json! socket connection-limit)
+          2 (send-json! socket {:type "response.output_text.delta" :delta "partial"})
+          3 (send-json! socket (completed "next"))))
+      (fn [server]
+        (let [{:keys [body]} (response (request server "recover"))]
+          (try
+            (is (not= -1 (await! (future (.read ^InputStream body)))))
+            (finally
+              (.close ^InputStream body))))
+        (is ((:await-closed? server) 2)
+            "Closing the stream aborts the active replacement connection")
+        (is (str/includes? (consume (request server "next")) "next"))
+        (is (= [1 2 3] (mapv :connection @(:requests server))))
+        (is (= 3 @(:accepted server)))))))
+
 (def ^:private missing-previous
   {:type "error" :error {:code "previous_response_not_found"
                          :message "The previous response is unavailable"}})
@@ -656,7 +842,7 @@
             (is (= [third-item] (:input third-wire)))))))))
 
 (deftest incremental-recovery-never-replays-unsafe-errors
-  (doseq [mode [:repeated-missing :created :delta :generic :explicit]]
+  (doseq [mode [:repeated-missing :missing-then-limit :created :delta :generic :explicit]]
     (testing (name mode)
       (let [turn (atom 0)]
         (with-server
@@ -667,12 +853,17 @@
                 (do
                   (case mode
                     :created (send-json! socket {:type "response.created"
-                                                :response {:id "generation-started"}})
+                                                 :response {:id "generation-started"}})
                     :delta (send-json! socket {:type "response.output_text.delta" :delta "Partial"})
                     nil)
-                  (send-json! socket (if (= mode :generic)
-                                       {:type "error" :error {:code "server_error" :message "Failed"}}
-                                       missing-previous))))))
+                  (send-json! socket
+                              (cond
+                                (= mode :generic)
+                                {:type "error"
+                                 :error {:code "server_error" :message "Failed"}}
+                                (and (= mode :missing-then-limit) (= n 3))
+                                connection-limit
+                                :else missing-previous))))))
           (fn [server]
             (let [base (request server)
                   next-req (cond-> (append-input base [{:role "user" :content "Next"}])
@@ -680,7 +871,11 @@
               (consume base)
               (let [result (try (consume next-req) (catch Exception e e))]
                 (is (= :response (:phase (transport-error-data result)))))
-              (is (= (if (= mode :repeated-missing) 3 2) (count @(:requests server))))
+              (is (= (if (contains? #{:repeated-missing :missing-then-limit} mode) 3 2)
+                     (count @(:requests server))))
+              (when (= mode :missing-then-limit)
+                (is (= 1 @(:accepted server))
+                    "The continuation recovery consumes the shared recovery budget"))
               (when (= mode :explicit)
                 (is (= "user-chosen"
                        (get-in (last @(:requests server)) [:body :previous_response_id])))))))))))

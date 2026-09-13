@@ -1,6 +1,8 @@
 (ns llm.sdk.retry
   "Data-driven retry policy with jittered backoff."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str])
+  (:import [java.time Duration Instant ZonedDateTime]
+           [java.time.format DateTimeFormatter]))
 
 ;; ---------------------------------------------------------------------------
 ;; Backoff
@@ -56,15 +58,22 @@
 ;; ---------------------------------------------------------------------------
 
 (defn parse-retry-after
-  "Parse a Retry-After header value. Returns delay in milliseconds,
-   or nil if unparseable."
-  [value]
-  (when value
-    (let [v (str/trim (str value))]
-      (if-let [seconds (try (Integer/parseInt v) (catch Exception _ nil))]
-        (* seconds 1000)
-        (try
-          (let [date (java.time.Instant/parse v)
-                now (java.time.Instant/now)]
-            (max 0 (.toMillis (java.time.Duration/between now date))))
-          (catch Exception _ nil))))))
+  "Parse a Retry-After delay-seconds or RFC 1123 HTTP-date value.
+   Returns a nonnegative delay in milliseconds, or nil if unparseable.
+   The two-argument arity accepts the current Instant for deterministic use."
+  ([value]
+   (parse-retry-after value (Instant/now)))
+  ([value now]
+   (when (and value (instance? Instant now))
+     (let [v (str/trim (str value))]
+       (if (re-matches #"[0-9]+" v)
+         (try
+           (Math/multiplyExact (Long/parseLong v) 1000)
+           (catch NumberFormatException _ nil)
+           (catch ArithmeticException _ nil))
+         (try
+           (let [date (-> (ZonedDateTime/parse
+                           v DateTimeFormatter/RFC_1123_DATE_TIME)
+                          (.toInstant))]
+             (max 0 (.toMillis (Duration/between now date))))
+           (catch Exception _ nil)))))))

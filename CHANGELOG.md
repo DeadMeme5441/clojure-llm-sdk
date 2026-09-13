@@ -2,6 +2,76 @@
 
 All notable user-visible changes are tracked here.
 
+## 0.6.0
+
+### Breaking changes
+
+- Streaming `sdk/complete` without `:on-event` now returns a single-pass,
+  single-consumer `llm.sdk.StreamHandle` implementing
+  `Seqable`/`Closeable`/`IReduce` rather than a bare lazy sequence. `seq` and
+  `reduce` consume the same cursor; consumed events are released and are not
+  replayable. Use `with-open` for sequence-style consumption; `reduce` closes
+  on completion, failure, and early `reduced` termination. Callback streaming
+  still invokes the callback as events arrive and returns the accumulated
+  canonical response.
+- Removed the old flat provider namespaces. Require the provider-family owners,
+  such as `llm.sdk.providers.openai.chat`,
+  `llm.sdk.providers.anthropic.chat`, and
+  `llm.sdk.providers.gemini.native`.
+- `extra_body` now rejects string/keyword spelling collisions with protected
+  or canonical wire fields instead of silently dropping or overriding them.
+  Typed tool results are lowered from canonical `:tool-result` parts; providers
+  without an error-status field explicitly reject `:tool-result/is-error true`.
+- Provider registration now accepts only complete, validated profiles with at
+  least one transport constructor. Operation capabilities are derived from
+  those constructors rather than trusted from caller metadata.
+- `llm.sdk.catalog/resolve-model` performs exact lookup only. Ambiguous bare ids
+  throw `ExceptionInfo`; use a known `provider/model` prefix or the two-argument
+  form. It no longer guesses by substring.
+- Codex authentication helpers now live in `llm.sdk.providers.codex.auth`;
+  the Responses codec no longer owns credential storage or refresh.
+
+### Changed
+
+- Built-in provider values are assembled and published atomically on the first
+  registry lookup. Loading an adapter namespace no longer mutates the registry.
+- Every modality uses the same injected `:http-client`, connect timeout, and
+  request-timeout path. Runtime headers win last with case-insensitive matching;
+  complete custom profiles support query-parameter auth, and GCP profiles honor
+  a runtime `:auth-token`.
+- Model entries expose winning-source provenance, revision, freshness,
+  availability, all contributing sources, and the pricing source. A successful
+  live refresh atomically replaces that provider's live slice; a failed refresh
+  preserves the previous slice and marks it stale.
+- Anthropic-style cache markers use a bare ephemeral marker for the default or
+  explicit `"5m"` TTL and emit a wire TTL only for `"1h"`. Other TTLs,
+  including `"30m"`, and negative/non-integer breakpoint counts are rejected.
+- CI covers JDK 17 and 21 and runs Python snapshot-generator unit discovery.
+  Releases use `clojure -T:build deploy`, which builds and deploys the same
+  `RELEASE_VERSION`; there is no separate `:deploy` alias.
+- ChatGPT OAuth supports both HTTPS/SSE and Responses WebSocket V2, with
+  opt-in live `gpt-5.6-luna` coverage for blocking, callback, and pull-stream
+  completion; typed tools and reasoning replay; structured output; media;
+  connection reuse, reconnects, cancellation, and concurrent conversations.
+- Managed Codex CLI file credentials refresh before expiry and recover once
+  from authentication rejection. Rotated credentials are written atomically
+  with owner-only permissions. Explicit caller-managed tokens bypass file
+  storage and SDK refresh.
+- WebSocket connection-limit and eligible authentication rejections recover
+  once on a fresh connection before any provider event is observed. Partial
+  generations, ambiguous network failures, and ordinary rate limits are not replayed.
+
+### Fixed
+
+- Unknown usage remains absent, unknown cost remains unknown, and
+  provider-reported token totals and costs remain authoritative during
+  normalization, streaming accumulation, and final response stamping.
+- Codex protects canonical model/input/store/stream fields, lowers typed
+  function/custom tool results and inline images, and requests encrypted replay
+  state even when reasoning effort is left at the model default.
+- HTTP streamed bodies now enforce inactivity deadlines after response headers
+  arrive; stalled SSE and binary reads close instead of waiting indefinitely.
+
 ## 0.5.0
 
 ### Breaking changes

@@ -15,7 +15,8 @@ models.dev API response.
 LiteLLM may be overridden with argv[1], LITELLM_SOURCE, or LITELLM_REPO. The
 override may be a URL, pricing JSON path, or directory containing
 model_prices_and_context_window.json. MODELS_DEV_SOURCE may similarly point to
-a models.dev repository archive or checkout.
+a models.dev repository archive or checkout. Custom revisions are unknown
+unless LITELLM_SOURCE_REVISION or MODELS_DEV_SOURCE_REVISION supplies one.
 
 Outputs:
   resources/litellm-snapshot.json
@@ -25,6 +26,7 @@ import copy
 import io
 import json
 import os
+import re
 import sys
 import tarfile
 import tempfile
@@ -46,11 +48,23 @@ MODELS_DEV_SOURCE_URL = (
     "https://github.com/anomalyco/models.dev/archive/"
     f"{MODELS_DEV_REVISION}.tar.gz"
 )
-MODELS_DEV_TREE_URL = (
-    "https://github.com/anomalyco/models.dev/tree/"
-    f"{MODELS_DEV_REVISION}"
-)
 PRICING_FILENAME = "model_prices_and_context_window.json"
+
+def revision_from_url(url):
+    """Return an immutable 40-hex revision embedded in a URL, if present."""
+    match = re.search(r"(?<![0-9a-f])([0-9a-f]{40})(?![0-9a-f])", url,
+                      re.IGNORECASE)
+    return match.group(1).lower() if match else None
+
+
+def local_source_label(path):
+    """Describe a local input without writing machine-specific absolute paths."""
+    path = Path(path)
+    try:
+        relative = path.resolve().relative_to(Path.cwd().resolve())
+        return f"local:{relative.as_posix()}"
+    except ValueError:
+        return f"local:{path.name}"
 
 # --- LiteLLM provider name → our SDK provider keyword (as string) ---
 PROVIDER_MAP = {
@@ -316,15 +330,17 @@ def fetch_bytes(url):
         return response.read()
 
 
-def load_source(override):
-    """Load LiteLLM's pricing JSON from a URL, file, checkout, or the pin."""
+def load_source(override, known_revision=None):
+    """Load LiteLLM pricing data and return (data, source URL, revision)."""
     if not override:
         print(f"fetching {DEFAULT_SOURCE_URL}", file=sys.stderr)
-        return json.loads(fetch_bytes(DEFAULT_SOURCE_URL).decode("utf-8"))
+        data = json.loads(fetch_bytes(DEFAULT_SOURCE_URL).decode("utf-8"))
+        return data, LITELLM_BLOB_URL, LITELLM_REVISION
 
     if override.startswith(("http://", "https://")):
         print(f"fetching {override}", file=sys.stderr)
-        return json.loads(fetch_bytes(override).decode("utf-8"))
+        data = json.loads(fetch_bytes(override).decode("utf-8"))
+        return data, override, known_revision or revision_from_url(override)
 
     path = Path(override)
     if path.is_dir():
@@ -333,7 +349,8 @@ def load_source(override):
         raise FileNotFoundError(f"LiteLLM source not found: {path}")
     print(f"reading {path}", file=sys.stderr)
     with path.open() as source:
-        return json.load(source)
+        data = json.load(source)
+    return data, local_source_label(path), known_revision
 
 
 def deep_merge(base, overrides):
@@ -400,10 +417,12 @@ def load_toml_tree(root):
     return providers
 
 
-def load_models_dev_source(override):
+def load_models_dev_source(override, known_revision=None):
     if override and Path(override).is_dir():
         print(f"reading {override}", file=sys.stderr)
-        return load_toml_tree(Path(override))
+        path = Path(override)
+        return (load_toml_tree(path), local_source_label(path),
+                known_revision)
 
     source = override or MODELS_DEV_SOURCE_URL
     print(f"fetching {source}", file=sys.stderr)
@@ -417,7 +436,19 @@ def load_models_dev_source(override):
         roots = [path for path in Path(temp_dir).iterdir() if path.is_dir()]
         if len(roots) != 1:
             raise ValueError("models.dev archive must contain one repository root")
-        return load_toml_tree(roots[0])
+        data = load_toml_tree(roots[0])
+    if override:
+        source_url = (source if source.startswith(("http://", "https://"))
+                      else local_source_label(source))
+        revision = known_revision or (
+            revision_from_url(source)
+            if source.startswith(("http://", "https://"))
+            else None
+        )
+    else:
+        source_url = MODELS_DEV_SOURCE_URL
+        revision = MODELS_DEV_REVISION
+    return data, source_url, revision
 
 
 def normalize_models_dev_entry(entry):
@@ -450,11 +481,9 @@ def write_snapshot(filename, source_url, revision, providers):
         Path(__file__).resolve().parent.parent / "resources" / filename
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
+    meta = {"source_revision": revision, "source_url": source_url}
     snapshot = {
-        "_meta": {
-            "source_revision": revision,
-            "source_url": source_url,
-        },
+        "_meta": meta,
         "providers": providers,
     }
     with destination.open("w") as output:
@@ -476,7 +505,9 @@ def main():
     override = sys.argv[1] if len(sys.argv) > 1 else (
         os.environ.get("LITELLM_SOURCE") or os.environ.get("LITELLM_REPO")
     )
-    data = load_source(override)
+    data, litellm_source_url, litellm_revision = load_source(
+        override, os.environ.get("LITELLM_SOURCE_REVISION")
+    )
 
     providers = {}
     skipped = 0
@@ -493,17 +524,22 @@ def main():
 
     write_snapshot(
         "litellm-snapshot.json",
-        LITELLM_BLOB_URL,
-        LITELLM_REVISION,
+        litellm_source_url,
+        litellm_revision,
         providers,
     )
     print(f"skipped (not in PROVIDER_MAP or empty): {skipped}")
 
-    models_dev = load_models_dev_source(os.environ.get("MODELS_DEV_SOURCE"))
+    models_dev, models_dev_source_url, models_dev_revision = (
+        load_models_dev_source(
+            os.environ.get("MODELS_DEV_SOURCE"),
+            os.environ.get("MODELS_DEV_SOURCE_REVISION"),
+        )
+    )
     write_snapshot(
         "models-dev-snapshot.json",
-        MODELS_DEV_TREE_URL,
-        MODELS_DEV_REVISION,
+        models_dev_source_url,
+        models_dev_revision,
         models_dev,
     )
 

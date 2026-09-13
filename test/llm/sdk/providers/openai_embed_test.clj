@@ -9,7 +9,7 @@
             [cheshire.core :as json]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.embed :as et]
-            [llm.sdk.providers.openai-embed :as openai-embed]))
+            [llm.sdk.providers.openai.embeddings :as openai-embed]))
 
 (defn- load-fixture [path]
   (-> (io/resource path) slurp (json/parse-string true)))
@@ -75,6 +75,29 @@
                     :embed/inputs ["a"]
                     :embed/provider-options {:extra_body {:custom-flag true}}}))]
       (is (true? (get-in built [:body :custom-flag]))))))
+
+(deftest test-extra-body-rejects-embedding-identity-and-input
+  (let [transport (openai-embed/make-transport)
+        profile (provider/get-provider :openai)
+        base-request {:embed/model "canonical-model"
+                      :embed/inputs ["canonical-input"]}]
+    (doseq [[provided-key expected-field provided-value]
+            [["model" :model "other-model"]
+             [:input :input ["other-input"]]]]
+      (let [error
+            (try
+              (with-redefs [provider/resolve-auth-token (constantly "stub")]
+                (et/build-embed-request
+                 transport profile
+                 (assoc base-request
+                        :embed/provider-options
+                        {:extra_body {provided-key provided-value}})))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :request/protected-extra-body-override
+               (:error/type (ex-data error))))
+        (is (= expected-field (:field (ex-data error))))
+        (is (= :openai (:provider (ex-data error))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing — golden fixture

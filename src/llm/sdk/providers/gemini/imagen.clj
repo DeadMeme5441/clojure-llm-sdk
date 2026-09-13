@@ -6,7 +6,7 @@
    Gemini image generation over Vertex generateContent."
   (:require [clojure.string :as str]
             [llm.sdk.transport.image :as it]
-            [llm.sdk.provider :as provider]
+            [llm.sdk.transport :as transport]
             [llm.sdk.gcp-auth :as gcp-auth]
             [llm.sdk.usage :as usage]
             [llm.sdk.errors :as errors]))
@@ -118,7 +118,6 @@
       (invalid-option! model :image/n n
                        "Vertex Gemini image n must be a positive integer"))))
 
-
 (defn build-image-request-vertex-imagen
   [profile request]
   (let [model (or (:image/model request) "gemini-2.5-flash-image")
@@ -141,16 +140,33 @@
         (get model-options model
              {:aspect-ratios common-aspect-ratios
               :image-sizes #{"512" "1K" "2K" "4K"}})
-        extra-body (or (get-in request [:image/provider-options :extra_body]) {})
-        native-generation-config (:generationConfig extra-body)
-        native-image-config (:imageConfig native-generation-config)
-        ratio (or (size->aspect-ratio model (:image/size request)
-                                      aspect-ratios)
-                  (:aspectRatio native-image-config))
-        image-size (normalize-image-size
-                    (or (get-in request
-                                [:image/provider-options :gemini :image-size])
-                        (:imageSize native-image-config)))
+        extra-body (transport/merge-extra-body
+                    (:profile/id profile)
+                    {}
+                    (get-in request [:image/provider-options :extra_body])
+                    #{:model})
+        generation-extra
+        (transport/merge-extra-body (:profile/id profile)
+                                    {}
+                                    (:generationConfig extra-body))
+        native-image-config (:imageConfig generation-extra)
+        canonical-ratio (size->aspect-ratio model
+                                            (:image/size request)
+                                            aspect-ratios)
+        canonical-image-size
+        (some-> (get-in request
+                        [:image/provider-options :gemini :image-size])
+                normalize-image-size)
+        canonical-image-config
+        (cond-> {}
+          canonical-ratio (assoc :aspectRatio canonical-ratio)
+          canonical-image-size (assoc :imageSize canonical-image-size))
+        image-config
+        (transport/merge-extra-body (:profile/id profile)
+                                    canonical-image-config
+                                    native-image-config)
+        ratio (:aspectRatio image-config)
+        image-size (some-> (:imageSize image-config) normalize-image-size)
         supported-ratios (set (map first aspect-ratios))
         _ (when (and ratio (not (contains? supported-ratios ratio)))
             (invalid-option! model :aspectRatio ratio
@@ -163,17 +179,21 @@
         location (vertex-location profile request)
         host (vertex-host location)
         token (access-token profile request)
-        image-config (cond-> (or native-image-config {})
-                       ratio (assoc :aspectRatio ratio)
-                       image-size (assoc :imageSize image-size))
+        canonical-generation-config
+        {:responseModalities ["IMAGE"]
+         :candidateCount (or (:image/n request) 1)
+         :imageConfig (cond-> image-config
+                        image-size (assoc :imageSize image-size))}
         generation-config
-        (-> (or native-generation-config {})
-            (assoc :responseModalities ["IMAGE"]
-                   :candidateCount (or (:image/n request) 1)
-                   :imageConfig image-config))
-        body (assoc (merge {:contents [{:role "user"
-                                        :parts [{:text (:image/prompt request)}]}]}
-                           (dissoc extra-body :generationConfig))
+        (transport/merge-extra-body
+         (:profile/id profile)
+         canonical-generation-config
+         (dissoc generation-extra :imageConfig))
+        body (assoc (transport/merge-extra-body
+                     (:profile/id profile)
+                     {:contents [{:role "user"
+                                  :parts [{:text (:image/prompt request)}]}]}
+                     (dissoc extra-body :generationConfig))
                     :generationConfig generation-config)]
     {:method :post
      :url (str host
@@ -247,15 +267,3 @@
 
 (defn make-transport [] (->VertexImagenTransport))
 
-(provider/register-provider
- {:profile/id :vertex-imagen
-  :profile/protocol-family :gemini-native
-  :profile/base-url "https://aiplatform.googleapis.com"
-  :profile/auth-strategy :gcp-oauth
-  :profile/supports-model-listing false
-  :profile/capabilities #{:image-generation}
-  :profile/env-var-names ["GOOGLE_APPLICATION_CREDENTIALS"
-                          "GOOGLE_OAUTH_ACCESS_TOKEN"
-                          "GOOGLE_CLOUD_PROJECT"
-                          "GOOGLE_CLOUD_LOCATION"]
-  :profile/image-transport-constructor make-transport})

@@ -6,7 +6,7 @@
             [cheshire.core :as json]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.rerank :as rt]
-            [llm.sdk.providers.voyage-rerank :as vrk]))
+            [llm.sdk.providers.voyage.rerank :as vrk]))
 
 (defn- load-fixture [path]
   (-> (io/resource path) slurp (json/parse-string true)))
@@ -76,6 +76,15 @@
     (testing "Voyage usage surfaces as canonical input-tokens"
       (is (= 38 (get-in resp [:response/usage :usage/input-tokens])))
       (is (= 38 (get-in resp [:response/usage :usage/total-tokens]))))))
+
+(deftest test-voyage-rerank-preserves-explicit-zero-usage
+  (let [response
+        (rt/parse-rerank-response
+         (vrk/make-transport)
+         (provider/get-provider :voyage)
+         {:data [] :usage {:total_tokens 0}})]
+    (is (= 0 (get-in response [:response/usage :usage/input-tokens])))
+    (is (= 0 (get-in response [:response/usage :usage/total-tokens])))))
 
 (deftest test-missing-native-score-is-rejected
   (let [t (vrk/make-transport)

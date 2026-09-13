@@ -10,13 +10,13 @@
             [llm.sdk.sse :as sse]
             [llm.sdk.transport :as t]
             [llm.sdk.provider :as provider]
+            [llm.sdk.provider.auth :as provider-auth]
             [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
             [llm.sdk.cache :as cache]
+            [llm.sdk.providers.codex.auth :as auth]
             [llm.sdk.errors :as errors])
-  (:import [java.io File]
-           [java.security MessageDigest]
-           [java.util Base64]))
+  (:import [java.security MessageDigest]))
 
 (declare ^:private parse-stream-data-codex)
 
@@ -79,122 +79,6 @@
       (str "fc_" digest))))
 
 ;; ---------------------------------------------------------------------------
-;; Codex backend auth (~/.codex/auth.json)
-;; ---------------------------------------------------------------------------
-
-(defn- codex-auth-file-path []
-  (let [codex-home (or (System/getenv "CODEX_HOME")
-                       (str (System/getProperty "user.home") "/.codex"))]
-    (str codex-home "/auth.json")))
-
-(def ^:private codex-auth-cache
-  "Memoized Codex CLI auth file parse. The cache is invalidated when
-   auth.json path, mtime, or length changes. We still stat the file per
-   backend request, but avoid reparsing and rereading stable credentials."
-  (atom nil))
-
-(defn- codex-auth-file-state [path]
-  (try
-    (let [f (File. path)]
-      (when (.isFile f)
-        {:path (.getAbsolutePath f)
-         :modified-ms (.lastModified f)
-         :length (.length f)}))
-    (catch Exception _ nil)))
-
-(defn- jwt-claims [token]
-  (when (string? token)
-    (try
-      (let [parts (str/split token #"\.")
-            payload-b64 (when (> (count parts) 1)
-                          (let [p (nth parts 1)
-                                pad (mod (- 4 (mod (count p) 4)) 4)]
-                            (str p (apply str (repeat pad "=")))))
-            payload (when payload-b64
-                      (String. (.decode (Base64/getUrlDecoder) payload-b64) "UTF-8"))
-            claims (when payload (json/parse-string payload false))]
-        claims)
-      (catch Exception _ nil))))
-
-(defn- jwt-account-id [token]
-  (let [claims (jwt-claims token)]
-    (or (get-in claims ["https://api.openai.com/auth" "chatgpt_account_id"])
-        (get claims "chatgpt_account_id"))))
-
-(defn- jwt-fedramp? [token]
-  (let [claims (jwt-claims token)]
-    (true? (get-in claims ["https://api.openai.com/auth" "chatgpt_account_is_fedramp"]))))
-
-(defn- non-blank-string [x]
-  (when (and (string? x) (seq (str/trim x)))
-    (str/trim x)))
-
-(defn- parse-codex-auth-file [path]
-  (when-let [data (try (json/parse-string (slurp path) true)
-                       (catch Exception _ nil))]
-    (when-let [tokens (:tokens data)]
-      (let [access-token (non-blank-string (:access_token tokens))
-            refresh-token (non-blank-string (:refresh_token tokens))
-            id-token (:id_token tokens)]
-        (when access-token
-          {:access-token access-token
-           :refresh-token refresh-token
-           :account-id (or (non-blank-string (:account_id tokens))
-                           (when (map? id-token) (non-blank-string (:chatgpt_account_id id-token)))
-                           (jwt-account-id id-token)
-                           (jwt-account-id access-token))
-           :account-is-fedramp? (or (when (map? id-token)
-                                      (true? (:chatgpt_account_is_fedramp id-token)))
-                                    (jwt-fedramp? id-token)
-                                    (jwt-fedramp? access-token))
-           :auth-mode (:auth_mode data)})))))
-
-(defn read-codex-auth
-  "Read Codex OAuth tokens from ~/.codex/auth.json.
-   Returns a map with :access-token, :refresh-token, :account-id, :auth-mode.
-   Returns nil if the file doesn't exist or is invalid.
-
-   The parsed file is cached and invalidated by path, modified time, and
-   length so backend calls do not reread stable Codex CLI credentials on
-   every request."
-  []
-  (let [path (codex-auth-file-path)
-        state (codex-auth-file-state path)]
-    (if-not state
-      (do
-        (reset! codex-auth-cache nil)
-        nil)
-      (let [cached @codex-auth-cache]
-        (if (= state (:state cached))
-          (:auth cached)
-          (let [auth (parse-codex-auth-file path)]
-            (reset! codex-auth-cache {:state state :auth auth})
-            auth))))))
-
-(defn codex-backend-auth-headers
-  "Build headers for the chatgpt.com/backend-api/codex endpoint.
-   Includes Cloudflare bypass headers required by the Codex backend."
-  []
-  (when-let [auth (read-codex-auth)]
-    (cond-> {"Authorization" (str "Bearer " (:access-token auth))
-             "User-Agent" "codex_cli_rs/0.0.0 (clojure-llm-sdk)"
-             "originator" "codex_cli_rs"}
-      (:account-id auth) (assoc "ChatGPT-Account-ID" (:account-id auth))
-      (:account-is-fedramp? auth) (assoc "X-OpenAI-Fedramp" "true"))))
-
-(defn- require-codex-backend-auth-headers []
-  (or (codex-backend-auth-headers)
-      (throw (ex-info "Codex backend OAuth credentials are unavailable"
-                      {:error/type :auth/missing-codex-backend-token
-                       :provider :codex-backend
-                       :auth/file (codex-auth-file-path)}))))
-
-(defn codex-backend-available?
-  "Return true if valid Codex backend credentials are available."
-  []
-  (boolean (read-codex-auth)))
-
-;; ---------------------------------------------------------------------------
 ;; Message conversion
 ;; ---------------------------------------------------------------------------
 
@@ -213,7 +97,8 @@
     (mapv (fn [part]
             (case (:part/type part)
               :text {:type "input_text" :text (:text part)}
-              :image {:type "input_image" :image_url (:image/url part)}
+              :image {:type "input_image"
+                      :image_url (t/image-url-or-data-uri! :codex part)}
               :file (let [file-data (t/file-data-uri-for-input-file part)
                           file-id (:file/id part)
                           file-url (:file/url part)]
@@ -372,17 +257,25 @@
                           {:provider :codex :content content}))))
 
 (defn- tool-result->responses-input [msg calls-by-id]
-  (let [call-id (:message/tool-call-id msg)
+  (let [content (:message/content msg)
+        typed? (and (sequential? content)
+                    (some #(= :tool-result (:part/type %)) content))
+        result (when typed?
+                 (t/reject-error-tool-result!
+                  :codex (t/extract-tool-result :codex msg)))
+        call-id (or (:tool-result/id result) (:message/tool-call-id msg))
         prior-call (get calls-by-id call-id)
         item-type (if (= "custom_tool_call" (some-> prior-call response-call-type))
                     "custom_tool_call_output"
                     "function_call_output")]
     (when-not (and (string? call-id) (seq (str/trim call-id)))
       (throw (ex-info "OpenAI Responses tool results require a tool call ID"
-                      {:provider :codex :message/role :tool})))
+                      {:provider :codex
+                       :error/type :request/missing-tool-result-id
+                       :message/role :tool})))
     {:type item-type
      :call_id call-id
-     :output (tool-output (:message/content msg))}))
+     :output (tool-output (if result (:tool-result/content result) content))}))
 
 (defn- message->responses-input [msg calls-by-id]
   (case (:message/role msg)
@@ -531,8 +424,8 @@
         ;;   * api.x.ai/v1/responses        → extra_body.prompt_cache_key
         ;;                                    + x-grok-conv-id header
         ;;   * chatgpt.com Codex backend    → top-level prompt_cache_key
-        ;;                                    + session_id / x-client-request-id
-        ;;                                    extra_headers
+        ;;                                    + session-id / thread-id
+        ;;                                    / x-client-request-id headers
         ;;   * GitHub Copilot Responses     → suppressed (opt-out)
         cache-on? (cache/cache-enabled? request)
         scope-id (when cache-on? (cache/scope-id request))
@@ -541,7 +434,8 @@
         xai-extra-body (when (and prompt-cache-key xai?)
                          {:prompt_cache_key prompt-cache-key})
         codex-backend-headers (when (and prompt-cache-key backend?)
-                                {"session_id" prompt-cache-key
+                                {"session-id" prompt-cache-key
+                                 "thread-id" prompt-cache-key
                                  "x-client-request-id" prompt-cache-key})
         xai-headers (when (and prompt-cache-key xai?)
                       {"x-grok-conv-id" prompt-cache-key})
@@ -558,8 +452,12 @@
                  :parallel_tool_calls true})
               (when reasoning-enabled
                 {:reasoning {:effort (name (get reasoning-config :effort :medium))
-                             :summary "auto"}
-                 :include ["reasoning.encrypted_content"]})
+                             :summary (let [summary (get reasoning-config :summary "auto")]
+                                        (if (keyword? summary) (name summary) summary))}})
+              ;; Stateless OAuth turns need replay state even when the caller
+              ;; leaves reasoning effort at the model default.
+              (when (or backend? reasoning-enabled)
+                {:include ["reasoning.encrypted_content"]})
               ;; Codex backend does NOT support max_output_tokens
               (when (and (:request/max-tokens request) (not backend?))
                 {:max_output_tokens (:request/max-tokens request)})
@@ -577,20 +475,23 @@
               (when xai-extra-body
                 {:extra_body xai-extra-body})
               (when (:request/metadata request)
-                {:metadata (:request/metadata request)})
-              provider-extra-body)
-        ;; Auth headers
+                {:metadata (:request/metadata request)}))
+        body (t/merge-extra-body (:profile/id profile) body provider-extra-body
+                                 #{:model :input :instructions :store :stream})
+        backend-auth (when backend? (auth/request-auth profile))
         base-headers (if backend?
-                       (merge (require-codex-backend-auth-headers)
+                       (merge (:headers backend-auth)
                               {"Accept" "text/event-stream"})
                        (provider/default-headers profile
                                                  (provider/resolve-auth-token profile)))
-        headers (merge base-headers codex-backend-headers xai-headers
-                       (:profile/default-headers profile))]
-    {:method :post
-     :url (str (:profile/base-url profile) "/responses")
-     :headers headers
-     :body body}))
+        headers (provider-auth/merge-headers
+                 (:profile/default-headers profile)
+                 base-headers codex-backend-headers xai-headers)]
+    (cond-> {:method :post
+             :url (str (:profile/base-url profile) "/responses")
+             :headers headers
+             :body body}
+      (:recover! backend-auth) (assoc :auth/recover! (:recover! backend-auth)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing
@@ -699,7 +600,7 @@
   "Parse a multi-line SSE response body into a sequence of parsed data maps.
    Handles both 'data: {...}' lines and 'event: xxx\ndata: {...}' pairs."
   [sse-text]
-  (->> (str/split-lines sse-text)
+  (->> (sse/event-seq (str/split-lines sse-text))
        (keep parse-sse-line)))
 
 (defn- stream-index [data]
@@ -734,92 +635,94 @@
   ;; Handle SSE text responses (Codex backend returns SSE even for non-streaming)
   (let [provider-id (or (:profile/id profile) :codex)]
     (if (string? raw)
-    (let [data-maps (parse-sse-text raw)
-          events (mapcat #(event->seq (parse-stream-data-codex profile %)) data-maps)
+      (let [data-maps (parse-sse-text raw)
+            events (mapcat #(event->seq (parse-stream-data-codex profile %)) data-maps)
           ;; Only add a fallback end-event if the SSE didn't already include one
-          has-end? (some #(= (:event/type %) :stream/end) events)
-          events (concat [(stream/start-event)] events (when-not has-end? [(stream/end-event)]))
-          model (some #(get-in % [:response :model]) data-maps)
-          resp-id (some #(get-in % [:response :id]) data-maps)]
-      (-> (stream/reduce-events events)
-          (stream/acc->response provider-id model)
-          (assoc :response/id resp-id)
-          (assoc :response/raw raw)))
+            has-end? (some #(= (:event/type %) :stream/end) events)
+            events (concat [(stream/start-event)] events
+                           (when-not has-end?
+                             [(stream/end-event :finish-reason :incomplete)]))
+            model (some #(get-in % [:response :model]) data-maps)
+            resp-id (some #(get-in % [:response :id]) data-maps)]
+        (-> (stream/reduce-events events)
+            (stream/acc->response provider-id model)
+            (assoc :response/id resp-id)
+            (assoc :response/raw raw)))
     ;; Standard JSON response
-    (let [items (:output raw)
+      (let [items (:output raw)
           ;; Fallback: if output is empty but output_text exists, synthesize
-          items (if (and (or (nil? items) (empty? items))
-                         (string? (:output_text raw))
-                         (seq (str/trim (:output_text raw))))
-                  [{:type "message" :role "assistant" :status "completed"
-                    :content [{:type "output_text"
-                               :text (str/trim (:output_text raw))}]}]
-                  items)
-          parsed (into []
-                       (keep identity)
-                       (map-indexed parse-output-item items))
-          reasoning-details
-          (into {}
-                (keep (fn [{:keys [output-index reasoning-details]}]
-                        (when reasoning-details
-                          [output-index reasoning-details])))
-                parsed)
-          message-items
-          (into {}
-                (keep (fn [{:keys [output-index message-item]}]
-                        (when message-item
-                          [output-index message-item])))
-                parsed)
-          tool-calls (into [] (keep parsed-tool-call) parsed)
-          parts (into [] (mapcat parsed-parts) parsed)
-          status (some-> (:status raw) name str/lower-case)
-          finish-reason (if (and (= "completed" status) (seq tool-calls))
-                          :tool-calls
-                          (get status-map status :unknown))
-          provider-data (cond-> {}
-                          (seq reasoning-details)
-                          (assoc :codex_reasoning_items reasoning-details)
-                          (seq message-items)
-                          (assoc :codex_message_items message-items)
-                          (:error raw) (assoc :error (:error raw))
-                          (:incomplete_details raw)
-                          (assoc :incomplete_details (:incomplete_details raw))
-                          (:moderation raw) (assoc :moderation (:moderation raw))
-                          (:service_tier raw)
-                          (assoc :service_tier (:service_tier raw))
-                          (:conversation raw) (assoc :conversation (:conversation raw)))
-          response (cond-> {:response/id (:id raw)
-                            :response/provider provider-id
-                            :response/model (:model raw)
-                            :response/parts parts
-                            :response/finish-reason finish-reason
-                            :response/raw raw}
-                     (seq tool-calls)
-                     (assoc :response/tool-calls tool-calls)
-                     (:usage raw)
-                     (assoc :response/usage
-                            (usage/normalize-usage :codex (:usage raw)))
-                     (seq provider-data)
-                     (assoc :response/provider-data provider-data))]
-      (if (contains? #{"failed" "cancelled"} status)
-        (let [error (or (:error raw)
-                        {:message (str "Response generation " status)
-                         :status status})]
-          (try
-            (stream/events->response
-             [(stream/error-event
-               {:error/type :provider
-                :error/message (or (:message error)
-                                   "Response generation failed")
-                :error/raw raw})]
-             provider-id
-             (:model raw))
-            (catch clojure.lang.ExceptionInfo e
-              (throw (ex-info (.getMessage e)
-                              (assoc (ex-data e)
-                                     :partial-response response)
-                              e)))))
-        response)))))
+            items (if (and (or (nil? items) (empty? items))
+                           (string? (:output_text raw))
+                           (seq (str/trim (:output_text raw))))
+                    [{:type "message" :role "assistant" :status "completed"
+                      :content [{:type "output_text"
+                                 :text (str/trim (:output_text raw))}]}]
+                    items)
+            parsed (into []
+                         (keep identity)
+                         (map-indexed parse-output-item items))
+            reasoning-details
+            (into {}
+                  (keep (fn [{:keys [output-index reasoning-details]}]
+                          (when reasoning-details
+                            [output-index reasoning-details])))
+                  parsed)
+            message-items
+            (into {}
+                  (keep (fn [{:keys [output-index message-item]}]
+                          (when message-item
+                            [output-index message-item])))
+                  parsed)
+            tool-calls (into [] (keep parsed-tool-call) parsed)
+            parts (into [] (mapcat parsed-parts) parsed)
+            status (some-> (:status raw) name str/lower-case)
+            finish-reason (if (and (= "completed" status) (seq tool-calls))
+                            :tool-calls
+                            (get status-map status :unknown))
+            provider-data (cond-> {}
+                            (seq reasoning-details)
+                            (assoc :codex_reasoning_items reasoning-details)
+                            (seq message-items)
+                            (assoc :codex_message_items message-items)
+                            (:error raw) (assoc :error (:error raw))
+                            (:incomplete_details raw)
+                            (assoc :incomplete_details (:incomplete_details raw))
+                            (:moderation raw) (assoc :moderation (:moderation raw))
+                            (:service_tier raw)
+                            (assoc :service_tier (:service_tier raw))
+                            (:conversation raw) (assoc :conversation (:conversation raw)))
+            response (cond-> {:response/id (:id raw)
+                              :response/provider provider-id
+                              :response/model (:model raw)
+                              :response/parts parts
+                              :response/finish-reason finish-reason
+                              :response/raw raw}
+                       (seq tool-calls)
+                       (assoc :response/tool-calls tool-calls)
+                       (:usage raw)
+                       (assoc :response/usage
+                              (usage/normalize-usage :codex (:usage raw)))
+                       (seq provider-data)
+                       (assoc :response/provider-data provider-data))]
+        (if (contains? #{"failed" "cancelled"} status)
+          (let [error (or (:error raw)
+                          {:message (str "Response generation " status)
+                           :status status})]
+            (try
+              (stream/events->response
+               [(stream/error-event
+                 {:error/type :provider
+                  :error/message (or (:message error)
+                                     "Response generation failed")
+                  :error/raw raw})]
+               provider-id
+               (:model raw))
+              (catch clojure.lang.ExceptionInfo e
+                (throw (ex-info (.getMessage e)
+                                (assoc (ex-data e)
+                                       :partial-response response)
+                                e)))))
+          response)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stream parsing
@@ -958,28 +861,9 @@
     (usage/normalize-usage :codex raw))
 
   (request-capabilities [_]
-    #{:chat :streaming :tools :reasoning :encrypted-reasoning :file-attachments}))
+    #{:chat :streaming :tools :json-schema :multimodal :reasoning
+      :encrypted-reasoning :cache :file-attachments}))
 
 (defn make-transport []
   (->CodexTransport))
 
-;; Register
-(provider/register-provider
- {:profile/id :codex
-  :profile/protocol-family :codex
-  :profile/base-url "https://api.openai.com/v1"
-  :profile/auth-strategy :bearer
-  :profile/supports-model-listing false
-  :profile/capabilities #{:chat :streaming :tools :reasoning :encrypted-reasoning :file-attachments}
-  :profile/env-var-names ["OPENAI_API_KEY"]
-  :profile/transport-constructor make-transport})
-
-(provider/register-provider
- {:profile/id :codex-backend
-  :profile/protocol-family :codex
-  :profile/base-url "https://chatgpt.com/backend-api/codex"
-  :profile/auth-strategy :oauth-external
-  :profile/supports-model-listing false
-  :profile/capabilities #{:chat :streaming :tools :reasoning :encrypted-reasoning :file-attachments}
-  :profile/env-var-names []
-  :profile/transport-constructor make-transport})

@@ -70,6 +70,20 @@
    (fn []
      (is (nil? (pricing/get-pricing :openai "this-does-not-exist"))))))
 
+(deftest pricing-source-follows-the-tier-that-contributed-cost
+  (registry/register-entry!
+   :custom-corp "provenance-model"
+   {:model/source :live-models-api
+    :model/source-url "https://example.invalid/live"
+    :model/cost {:input-per-million 1.25}
+    :model/cost-source {:source :bundled-catalog
+                        :source-url "https://example.invalid/catalog"
+                        :source-revision "2026-09"}})
+  (let [p (pricing/get-pricing :custom-corp "provenance-model")]
+    (is (= :bundled-catalog (:source p)))
+    (is (= "https://example.invalid/catalog" (:source-url p)))
+    (is (= "2026-09" (:pricing-version p)))))
+
 ;; ---------------------------------------------------------------------------
 ;; estimate-cost — pure function, kept stable
 ;; ---------------------------------------------------------------------------
@@ -112,6 +126,31 @@
   (let [result (pricing/estimate-cost {:usage/input-tokens 1} nil)]
     (is (= :unknown (:cost/status result)))
     (is (nil? (:cost/amount-usd result)))))
+
+(deftest estimate-cost-distinguishes-missing-counters-from-explicit-zero
+  (let [rates (pricing/pricing-entry :input 2.5 :output 10.0)
+        output-only
+        (pricing/estimate-cost {:usage/output-tokens 5} rates)
+        explicit-zero
+        (pricing/estimate-cost {:usage/input-tokens 0
+                                :usage/output-tokens 0}
+                               rates)]
+    (is (= :estimated (:cost/status output-only)))
+    (is (nil? (:cost/amount-usd output-only)))
+    (is (= :actual (:cost/status explicit-zero)))
+    (is (bd≈ 0M (:cost/amount-usd explicit-zero)))))
+
+(deftest unit-pricing-does-not-invent-missing-usage
+  (let [image (pricing/image-cost
+               {}
+               (pricing/pricing-entry :image-per-image 0.04))
+        speech (pricing/tts-cost
+                {}
+                (pricing/pricing-entry :tts-per-million-chars 15))]
+    (is (= :estimated (:cost/status image)))
+    (is (nil? (:cost/amount-usd image)))
+    (is (= :estimated (:cost/status speech)))
+    (is (nil? (:cost/amount-usd speech)))))
 
 ;; ---------------------------------------------------------------------------
 ;; estimate-cost-for-model — full registry → cost path
@@ -161,7 +200,8 @@
                                                       :source :custom))
      (let [p (pricing/get-pricing :openai "gpt-4o")]
        (is (= 1.5 (:input-cost-per-million p)))
-       (is (= 6.0 (:output-cost-per-million p)))))))
+       (is (= 6.0 (:output-cost-per-million p)))
+       (is (= :custom (:source p)))))))
 
 (deftest register-pricing-works-for-custom-provider
   (offline

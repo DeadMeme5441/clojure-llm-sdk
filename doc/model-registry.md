@@ -13,7 +13,19 @@ Higher tiers win:
 | LiteLLM snapshot | `resources/litellm-snapshot.json` | Filtered pricing, context, and capability metadata for addressable provider ids; not proof of live availability. |
 | models.dev | `resources/models-dev-snapshot.json`, network API, and optional cache | Public catalog fallback for metadata and pricing. |
 
-The returned model entry carries `:model/source` so callers can see which tier answered.
+Each merged entry always carries `:model/source`. When supplied by its
+contributors, it also carries:
+
+- `:model/source-url`, `:model/source-revision`,
+  `:model/source-freshness`, and `:model/fetched-at` for the winning tier
+- `:model/availability` as `:listed`, `:configured`, or `:unknown`
+- `:model/sources`, retaining descriptors for every contributing tier
+- `:model/cost-source`, identifying the highest-precedence contributor that
+  supplied pricing
+
+Live endpoint entries are `:listed`, caller overrides are `:configured`, and
+snapshot-only availability is `:unknown`; none of these values grants account
+entitlement.
 
 Registry presence means that a source knows metadata for a provider/model pair.
 It does not guarantee that the provider still serves the model, that a region
@@ -29,7 +41,20 @@ offers it, or that the current account can use it.
 (sdk/model-context-length :openai "gpt-4o")
 ```
 
-Single-argument lookup scans providers in a stable preference order. Prefer two-argument lookup when the model id is ambiguous across providers.
+Single-argument `sdk/model-info` scans providers in a stable preference order
+for compatibility. For routing or pricing decisions, use exact conservative
+resolution:
+
+```clojure
+(require '[llm.sdk.catalog :as catalog])
+
+(catalog/resolve-model "openai/gpt-4o")
+(catalog/resolve-model :openai "gpt-4o")
+```
+
+An unqualified id resolves only when exactly one provider has that exact id.
+Ambiguous ids throw `ExceptionInfo` with `:error :catalog/ambiguous-model` and
+the matching `:providers`. Resolution never guesses by substring.
 
 ## Live Refresh
 
@@ -39,10 +64,13 @@ Single-argument lookup scans providers in a stable preference order. Prefer two-
 ```
 
 Live refresh requires provider credentials and only runs for providers with a
-supported model-list endpoint. It reports only what that endpoint exposes to
-the configured account at that moment; failures are returned per provider
-instead of aborting the whole refresh. Offline snapshot entries are not
-silently promoted to live availability.
+supported model-list endpoint. A successful fetch and entry validation
+atomically replace that provider's entire live slice, so models no longer
+listed disappear from the live tier. If fetching or validation fails, the
+previous live slice is preserved and its entries are marked
+`:model/source-freshness :stale` before the error is reported. Other providers
+continue refreshing independently. Offline snapshot entries are never silently
+promoted to live availability.
 
 ## Overrides
 
@@ -61,7 +89,10 @@ Use overrides for private models, self-hosted endpoints, or pricing data that ha
                 :request-cost 0.005}})
 ```
 
-Overrides are in-memory. Applications that need durable custom catalogs should register them during process startup.
+Overrides are in-memory and tagged `:model/source :override`,
+`:model/source-freshness :caller`, and `:model/availability :configured`.
+Applications that need durable custom catalogs should register them during
+process startup.
 
 ## Cost Estimation
 

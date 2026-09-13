@@ -35,11 +35,17 @@ Options:
 
 | Option | Meaning |
 |---|---|
-| `:stream? true` | Return stream events instead of a single blocking response. |
-| `:on-event fn` | Callback invoked for every stream event. |
+| `:stream? true` | Return a single-pass, resource-owning stream handle instead of a blocking response. |
+| `:on-event fn` | Invoke the callback incrementally for every event, then return the accumulated response. |
 | `:retry true` | Use the default retry policy for retryable transient failures. |
 | `:retry {...}` | Merge caller policy into the default retry policy. |
 | `:config {...}` | Per-call runtime configuration for auth, base URL, headers, HTTP client, and timeouts. |
+
+For ChatGPT OAuth, `:config` accepts `:transport :sse` (default) or
+`:transport :websocket`, plus optional caller-managed `:auth-token` and
+`:account-id`. Managed CLI credentials refresh automatically. See
+[OAuth transports and recovery](provider-configuration.md#chatgpt-oauth)
+for the bounded pre-generation recovery rules.
 
 `sdk/complete` validates the request, applies provider supported-parameter rules, builds the provider request, and parses the response. It preserves an adapter-supplied `:response/cost` (including provider-reported cost); only when cost is absent does the SDK estimate it from canonical usage and known pricing. Cache status is stamped from reported cache usage.
 
@@ -79,10 +85,34 @@ Runtime config is profile-local for that call and does not mutate the provider r
            :timeout-ms 60000})
 ```
 
+All seven modality drivers use the same HTTP path. Without an injected client,
+they share one lazily created connection pool with a 30-second connect timeout.
+`:timeout-ms` is the per-request deadline and defaults to 120 seconds.
+`:connect-timeout-ms` builds a client with that connect timeout unless
+`:http-client` is supplied. Runtime headers are merged case-insensitively and
+win over defaults, adapter headers, and auth headers.
+
 ### Streaming chat
 
-With `:stream? true` and no `:on-event`, `sdk/complete` returns a lazy sequence
-of canonical events. Realize or reduce it to perform the stream read:
+With `:stream? true` and no `:on-event`, `sdk/complete` returns an
+`llm.sdk.StreamHandle` implementing `Seqable`, `java.io.Closeable`,
+`clojure.lang.IReduce`, and `clojure.lang.IReduceInit`. Use `with-open` for
+sequence-style consumption:
+
+```clojure
+(with-open [events (sdk/complete :openai request :stream? true)]
+  (doseq [event events]
+    (consume event)))
+```
+
+Reducing the handle closes it after completion, failure, or early `reduced`
+termination. Sequence operations that abandon the stream before EOF must close
+the handle explicitly; normal EOF closes it automatically.
+
+The handle is single-pass and single-consumer. `seq` and `reduce` advance the
+same cursor, consumed events are released, and a handle is neither replayable
+nor safe for concurrent consumers. Retain your own event data if it is needed
+after consumption.
 
 | Event | Significant fields |
 |---|---|
@@ -91,7 +121,7 @@ of canonical events. Realize or reduce it to perform the stream read:
 | `:stream/usage` | `:usage`, a sparse cumulative map whose fields are all optional in an individual event. |
 | `:stream/citation` | URL is optional when `:citation/source-id` or `:citation/provider-data` identifies the source; title, snippet, text range, dates, and source metadata may also be present. |
 | `:stream/provider-state` | Provider-keyed replay data merged into the aggregate `:response/provider-data`. |
-| `:stream/error` | Error value under `:error/error`. In the lazy interface this remains an event; consuming it alone does not throw. |
+| `:stream/error` | Error value under `:error/error`. In the single-pass event interface this remains data; consuming it alone does not throw. |
 | `:stream/end` | Exactly one terminal event, delivered after trailing usage and provider metadata. |
 
 Usage events are cumulative snapshots, never additive deltas. A reported
@@ -102,17 +132,39 @@ Cache-read and cache-write tokens are separate from canonical uncached input,
 and reasoning tokens may overlap output, so none of those counters is blindly
 added to a derived token total.
 
-With `:on-event`, the callback sees every event and `sdk/complete` then returns
-the accumulated canonical response. If any `:stream/error` was accumulated,
-that final accumulation throws `ExceptionInfo`. Its `ex-data` includes
-`:error`, `:stream/error`, `:provider`, and `:partial-response`; the partial
-response contains the canonical content, tool calls, usage, and provider
-replay state accumulated from the event sequence.
+With `:on-event`, the callback sees every event as it arrives and
+`sdk/complete` returns the accumulated canonical response after the terminal
+event. If any `:stream/error` was accumulated, final accumulation throws
+`ExceptionInfo`. Its `ex-data` includes `:error`, `:stream/error`, `:provider`,
+and `:partial-response`; the partial response contains canonical content, tool
+calls, usage, and provider replay state accumulated from the event sequence.
+The handle closes even when the callback or reduction throws.
 
 To replay prior assistant output, preserve reasoning signatures, encrypted
 reasoning, custom/provider-native tool-call metadata under
 `:tool-call/provider-data`, citation source metadata, and relevant
 `:response/provider-data` when constructing the next canonical message.
+
+### Tool results
+
+A tool message may carry one typed result, keeping routing and status together:
+
+```clojure
+{:message/role :tool
+ :message/content
+ [{:part/type :tool-result
+   :tool-result/id "call_1"
+   :tool-result/name "get_weather"
+   :tool-result/content "{\"temperature\":72}"
+   :tool-result/is-error false}]}
+```
+
+The typed part cannot be mixed with other content, and its id or name cannot
+conflict with message-level routing fields. Anthropic, Gemini, and Bedrock
+lower the error status to their native field. Providers whose wire format has
+no error-status field reject `:tool-result/is-error true` with
+`:error/type :provider/unsupported-tool-result-error` instead of silently
+converting failure to success.
 
 ## Embeddings
 
@@ -227,6 +279,12 @@ The helper tries each `[provider model]` pair in order and returns the first suc
 (sdk/model-context-length :openai "gpt-4o")
 (sdk/refresh-models! :provider :openai)
 ```
+
+For conservative routing, use `llm.sdk.catalog/resolve-model`. It accepts an
+exact model id, a known `provider/model` prefix, or the two-argument
+`(resolve-model provider model-id)` form. A bare id present under multiple
+providers throws `ExceptionInfo` with `:error :catalog/ambiguous-model`; no
+substring guessing is performed.
 
 See [model-registry.md](model-registry.md) for the registry precedence rules and cost APIs.
 

@@ -7,7 +7,7 @@
 
    Run:
      GOOGLE_CLOUD_PROJECT=your-gcp-project GOOGLE_CLOUD_LOCATION=global \\
-       clojure -M -m vertex-anthropic-smoke claude-opus-4-6 claude-sonnet-4-6 claude-haiku-4-5"
+       clojure -M:scripts -m vertex-anthropic-smoke claude-opus-4-6 claude-sonnet-4-6 claude-haiku-4-5"
   (:require [llm.sdk :as sdk]))
 
 (defn- text [resp] (apply str (keep :text (:response/parts resp))))
@@ -22,11 +22,11 @@
       (println "\n========" m "(" location ") ========")
       (try
         (let [resp (sdk/complete :vertex-anthropic
-                     {:request/model m
-                      :request/messages [{:message/role :user
-                                          :message/content "Reply with exactly the word: pong"}]
-                      :request/max-tokens 32
-                      :request/provider-options opts})]
+                                 {:request/model m
+                                  :request/messages [{:message/role :user
+                                                      :message/content "Reply with exactly the word: pong"}]
+                                  :request/max-tokens 32
+                                  :request/provider-options opts})]
           (println "  provider:" (:response/provider resp) " model:" (:response/model resp))
           (println "  text    :" (pr-str (text resp)))
           (println "  finish  :" (:response/finish-reason resp))
@@ -37,15 +37,15 @@
     (println "\n======== streaming:" (first models) "========")
     (let [deltas (atom [])
           resp (sdk/complete :vertex-anthropic
-                 {:request/model (first models)
-                  :request/messages [{:message/role :user :message/content "Count to three."}]
-                  :request/max-tokens 32
-                  :request/provider-options opts}
-                 :stream? true
-                 :on-event (fn [ev]
-                             (when (= :stream/content-delta (:event/type ev))
-                               (swap! deltas conj (:event/delta ev))
-                               (print (:event/delta ev)) (flush))))]
+                             {:request/model (first models)
+                              :request/messages [{:message/role :user :message/content "Count to three."}]
+                              :request/max-tokens 32
+                              :request/provider-options opts}
+                             :stream? true
+                             :on-event (fn [ev]
+                                         (when (= :stream/content-delta (:event/type ev))
+                                           (swap! deltas conj (:event/delta ev))
+                                           (print (:event/delta ev)) (flush))))]
       (println)
       (println "  aggregated:" (pr-str (apply str @deltas)))
       (println "  usage     :" (:response/usage resp)))))

@@ -5,7 +5,7 @@
             [cheshire.core :as json]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.embed :as et]
-            [llm.sdk.providers.cohere-embed :as cohere-embed]))
+            [llm.sdk.providers.cohere.embeddings :as cohere-embed]))
 
 (defn- load-fixture [path]
   (-> (io/resource path) slurp (json/parse-string true)))
@@ -76,7 +76,7 @@
                     :embed/encoding-format :float}))]
       (is (= ["float"] (get-in built [:body :embedding_types]))))))
 
-(deftest test-build-request-rejects-contradictory-embedding-types
+(deftest test-build-request-rejects-canonical-embedding-types-override
   (let [error
         (try
           (et/build-embed-request
@@ -86,13 +86,13 @@
             :embed/inputs ["a"]
             :embed/encoding-format :float
             :embed/provider-options
-            {:extra_body {:embedding_types ["base64"]}}})
+            {:extra_body {"embedding_types" ["base64"]}}})
           nil
-          (catch Exception error error))]
-    (is (= :request/contradictory-embedding-types
+          (catch clojure.lang.ExceptionInfo e e))]
+    (is (= :request/protected-extra-body-override
            (:error/type (ex-data error))))
-    (is (= :float (:embed/encoding-format (ex-data error))))
-    (is (= [["base64"]] (:embedding_types (ex-data error))))))
+    (is (= :embedding_types (:field (ex-data error))))
+    (is (= :cohere (:provider (ex-data error))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Response parsing
@@ -134,6 +134,13 @@
                                      :image_tokens 4}}})]
     (is (= 9 (get-in resp [:response/usage :usage/input-tokens])))
     (is (= 4 (get-in resp [:response/usage :usage/image-tokens])))))
+
+(deftest test-usage-falls-back-from-malformed-actual-to-billed
+  (let [usage (cohere-embed/normalize-cohere-embedding-usage
+               {:tokens {:input_tokens "malformed"}
+                :billed_units {:input_tokens 7}})]
+    (is (= 7 (:usage/input-tokens usage)))
+    (is (= 7 (:usage/total-tokens usage)))))
 
 (deftest test-parse-response-missing-billed-units
   (testing "Cohere occasionally returns no meta — should not throw"

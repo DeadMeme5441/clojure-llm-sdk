@@ -4,7 +4,7 @@
    real responses so you can see what the trial key gets back.
 
    Run:
-     source .env && clojure -M -m cohere-live-demo"
+     clojure -M:scripts -m cohere-live-demo"
   (:require [llm.sdk :as sdk]))
 
 (defn- banner [s]

@@ -14,6 +14,7 @@
             [llm.sdk.transport :as t]
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
+            [llm.sdk.usage :as usage]
             [llm.sdk.errors :as errors]))
 
 ;; ---------------------------------------------------------------------------
@@ -71,7 +72,8 @@
             (case (:part/type part)
               :text {:type "text" :text (:text part)}
               :image {:type "image_url"
-                      :image_url {:url (:image/url part)}}
+                      :image_url
+                      {:url (t/image-url-or-data-uri! :cohere part)}}
               :reasoning {:type "thinking"
                           :thinking (:reasoning/text part)}
               :file (t/unsupported-file-part! :cohere part)
@@ -113,20 +115,6 @@
      (vec (remove #(#{:file :tool-call} (:part/type %)) content))
      content)))
 
-(defn- tool-content->string [content]
-  (cond
-    (string? content) content
-    (sequential? content)
-    (apply str
-           (map (fn [part]
-                  (case (:part/type part)
-                    :text (:text part)
-                    :tool-result (:tool-result/content part)
-                    (unsupported-content-part! part)))
-                content))
-    :else
-    (unsupported-content-part! content)))
-
 (defn- message->cohere [msg]
   (case (:message/role msg)
     (:system :developer)
@@ -146,11 +134,12 @@
                          (mapv canonical-tool-call->cohere tcs))))
 
     :tool
-    {:role "tool"
-     :tool_call_id (or (:message/tool-call-id msg) "tool_0")
-     :content [{:type "document"
-                :document {:data (tool-content->string
-                                  (:message/content msg))}}]}
+    (let [result (->> (t/extract-tool-result :cohere msg)
+                      (t/reject-error-tool-result! :cohere))]
+      {:role "tool"
+       :tool_call_id (or (:tool-result/id result) "tool_0")
+       :content [{:type "document"
+                  :document {:data (:tool-result/content result)}}]})
 
     (throw (ex-info
             (str "Cohere does not support message role "
@@ -172,10 +161,14 @@
 
 (defn- tool-choice->cohere [tc]
   (case tc
+    :auto nil
     :required "REQUIRED"
     :none "NONE"
-    ;; Omitting tool_choice is Cohere's documented automatic mode.
-    nil))
+    (when (some? tc)
+      (throw (ex-info "Cohere cannot force a specific function tool"
+                      {:provider :cohere
+                       :tool-choice tc
+                       :error/type :provider/unsupported-tool-choice})))))
 
 ;; ---------------------------------------------------------------------------
 ;; Request building
@@ -253,9 +246,10 @@
                (seq documents) (assoc :documents documents)
                response-format (assoc :response_format response-format)
                reasoning (assoc :thinking reasoning))
-        body (if-let [extra-body (:extra_body extras)]
-               (merge body extra-body)
-               body)
+        body (t/merge-extra-body (:profile/id profile)
+                                 body
+                                 (:extra_body extras)
+                                 #{:model :messages :stream})
         chat-url (chat-url profile)]
     {:method :post
      :url chat-url
@@ -270,21 +264,21 @@
 
 (defn- usage->canonical [u]
   (when u
-    (let [b (:billed_units u)
+    (let [billed (:billed_units u)
           tokens (:tokens u)
-          input (long (or (:input_tokens tokens)
-                          (:input_tokens b)
-                          0))
-          output (long (or (:output_tokens tokens)
-                           (:output_tokens b)
-                           0))]
-      (cond-> {:usage/input-tokens input
-               :usage/output-tokens output
-               :usage/total-tokens (+ input output)
-               :usage/request-count 1
+          input (or (usage/->int (:input_tokens tokens))
+                    (usage/->int (:input_tokens billed)))
+          output (or (usage/->int (:output_tokens tokens))
+                     (usage/->int (:output_tokens billed)))
+          total (when (and (some? input) (some? output))
+                  (+ input output))
+          cached (usage/->int (:cached_tokens u))]
+      (cond-> {:usage/request-count 1
                :usage/provider-raw u}
-        (:cached_tokens u)
-        (assoc :usage/cached-input-tokens (long (:cached_tokens u)))))))
+        (some? input) (assoc :usage/input-tokens input)
+        (some? output) (assoc :usage/output-tokens output)
+        (some? total) (assoc :usage/total-tokens total)
+        (some? cached) (assoc :usage/cached-input-tokens cached)))))
 
 (defn- citation->part [c]
   (let [source (first (:sources c))
@@ -305,12 +299,15 @@
   [_profile raw]
   (let [msg (:message raw)
         content (:content msg)
-        text-parts (mapv (fn [p] {:part/type :text :text (:text p)})
-                         (filter #(= "text" (:type %)) content))
-        reasoning-parts
-        (mapv (fn [p] {:part/type :reasoning
-                       :reasoning/text (:thinking p)})
-              (filter #(= "thinking" (:type %)) content))
+        content-parts
+        (into []
+              (keep (fn [part]
+                      (case (:type part)
+                        "text" {:part/type :text :text (:text part)}
+                        "thinking" {:part/type :reasoning
+                                    :reasoning/text (:thinking part)}
+                        nil)))
+              content)
         tool-calls (vec
                     (mapv (fn [tc]
                             {:part/type :tool-call
@@ -324,8 +321,7 @@
     (cond-> {:response/id (:id raw)
              :response/provider :cohere
              :response/model (:model raw)
-             :response/parts (into [] (concat text-parts reasoning-parts
-                                              tool-calls citations))
+             :response/parts (into content-parts (concat tool-calls citations))
              :response/finish-reason finish
              :response/raw raw}
       (seq tool-calls) (assoc :response/tool-calls tool-calls)
@@ -425,19 +421,7 @@
   (normalize-usage [_ _ raw] (usage->canonical raw))
   (request-capabilities [_]
     #{:chat :streaming :tools :json-schema :reasoning :citations
-      :file-attachments}))
+      :file-attachments :multimodal}))
 
 (defn make-transport [] (->CohereChatTransport))
 
-;; Augment the existing :cohere profile with native v2 chat support while
-;; preserving the embedding and rerank constructors installed by their
-;; provider namespaces.
-(let [existing (dissoc (provider/get-provider :cohere) :profile/chat-url)
-      base (merge existing
-                  {:profile/protocol-family :cohere
-                   :profile/capabilities
-                   (into #{:chat :streaming :tools :json-schema :reasoning
-                           :citations :file-attachments}
-                         (:profile/capabilities existing #{}))
-                   :profile/transport-constructor make-transport})]
-  (provider/register-provider base))

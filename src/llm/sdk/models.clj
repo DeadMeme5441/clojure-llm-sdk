@@ -9,14 +9,13 @@
    models.dev breadth registry and a bundled offline snapshot to produce
    one unified view per (provider, model).
 
-   Providers without a public /models endpoint (Codex, Codex-backend,
-   Bedrock, Fake, Volcengine) throw :error :unsupported on fetch - callers
-   should route those through models.dev / snapshot layers only."
+   Profiles with :profile/supports-model-listing true and
+   :profile/protocol-family :openai-chat use the generic OpenAI-compatible
+   listing path. Other providers without a native listing method are rejected."
   (:require [clojure.string :as str]
             [malli.core :as m]
             [llm.sdk.http :as http]
             [llm.sdk.provider :as provider]
-            [llm.sdk.providers.openai-compat.aliases :as openai-aliases]
             [llm.sdk.gcp-auth :as gcp-auth]))
 
 ;; ---------------------------------------------------------------------------
@@ -36,10 +35,23 @@
    [:tts-per-million-chars {:optional true} number?]
    [:search-per-call {:optional true} number?]])
 
+(def ModelSource
+  [:enum :live-models-api :models-dev :models-dev-cache
+   :bundled-snapshot :litellm-snapshot :override])
+
+(def ModelSourceDescriptor
+  [:map
+   [:source ModelSource]
+   [:source-url {:optional true} string?]
+   [:source-revision {:optional true} string?]
+   [:freshness {:optional true} [:enum :current :fresh :stale :bundled :caller]]
+   [:fetched-at {:optional true} inst?]])
+
 (def ModelEntry
   "Canonical model registry entry. Every layer (live /models, models.dev,
-   bundled snapshot) emits maps of this shape; :model/source tags the
-   producing layer."
+   bundled snapshot) emits maps of this shape. :model/source describes the
+   highest-precedence contributor, while :model/sources retains every
+   contributing tier and :model/cost-source identifies the pricing origin."
   [:map
    [:model/id string?]
    [:model/provider keyword?]
@@ -49,10 +61,15 @@
    [:model/max-output-tokens {:optional true} int?]
    [:model/capabilities {:optional true} [:set keyword?]]
    [:model/cost {:optional true} ModelCost]
-   [:model/source [:enum :live-models-api :models-dev :bundled-snapshot
-                   :litellm-snapshot :override]]
+   [:model/source ModelSource]
    [:model/source-url {:optional true} string?]
-   [:model/fetched-at {:optional true} inst?]])
+   [:model/source-revision {:optional true} string?]
+   [:model/source-freshness {:optional true}
+    [:enum :current :fresh :stale :bundled :caller]]
+   [:model/availability {:optional true} [:enum :listed :configured :unknown]]
+   [:model/fetched-at {:optional true} inst?]
+   [:model/sources {:optional true} [:vector ModelSourceDescriptor]]
+   [:model/cost-source {:optional true} ModelSourceDescriptor]])
 
 (def validate-model-entry (m/validator ModelEntry))
 
@@ -89,6 +106,8 @@
              :model/provider provider-id
              :model/source :live-models-api
              :model/source-url source-url
+             :model/source-freshness :current
+             :model/availability :listed
              :model/fetched-at ts})
           (:data body))))
 
@@ -101,6 +120,8 @@
                      :model/provider provider-id
                      :model/source :live-models-api
                      :model/source-url source-url
+                     :model/source-freshness :current
+                     :model/availability :listed
                      :model/fetched-at ts}
               (:display_name m) (assoc :model/display-name (:display_name m))))
           (:data body))))
@@ -140,6 +161,8 @@
                        :model/provider provider-id
                        :model/source :live-models-api
                        :model/source-url source-url
+                       :model/source-freshness :current
+                       :model/availability :listed
                        :model/fetched-at ts}
                 (:displayName m) (assoc :model/display-name (:displayName m))
                 (:inputTokenLimit m) (assoc :model/context-length (:inputTokenLimit m))
@@ -209,6 +232,8 @@
                         :model/provider provider-id
                         :model/source :live-models-api
                         :model/source-url source-url
+                        :model/source-freshness :current
+                        :model/availability :listed
                         :model/fetched-at ts}]
               (cond-> base
                 (:name m) (assoc :model/display-name (:name m))
@@ -260,27 +285,6 @@
    ModelEntry maps tagged with :model/source :live-models-api. Throws
    ex-info on auth / HTTP / unsupported."
   identity)
-
-(defmethod fetch-models :openai [_] (openai-style-fetch :openai))
-(defmethod fetch-models :deepseek [_] (openai-style-fetch :deepseek))
-(defmethod fetch-models :kimi [_] (openai-style-fetch :kimi))
-(defmethod fetch-models :mistral [_] (openai-style-fetch :mistral))
-(defmethod fetch-models :groq [_] (openai-style-fetch :groq))
-(defmethod fetch-models :cerebras [_] (openai-style-fetch :cerebras))
-(defmethod fetch-models :together [_] (openai-style-fetch :together))
-(defmethod fetch-models :xai [_] (openai-style-fetch :xai))
-(defmethod fetch-models :huggingface [_] (openai-style-fetch :huggingface))
-;; Aggregators expose OpenAI-style /v1/models, though some
-;; (e.g. Cloudflare with its per-account URL) require correctly
-;; configured base-urls before a fetch will succeed.
-(defmethod fetch-models :sambanova [_] (openai-style-fetch :sambanova))
-(defmethod fetch-models :deepinfra [_] (openai-style-fetch :deepinfra))
-(defmethod fetch-models :nebius [_] (openai-style-fetch :nebius))
-(defmethod fetch-models :hyperbolic [_] (openai-style-fetch :hyperbolic))
-(defmethod fetch-models :novita [_] (openai-style-fetch :novita))
-(defmethod fetch-models :friendliai [_] (openai-style-fetch :friendliai))
-(defmethod fetch-models :featherless [_] (openai-style-fetch :featherless))
-(defmethod fetch-models :dashscope [_] (openai-style-fetch :dashscope))
 
 (defmethod fetch-models :anthropic [_]
   (let [p (profile! :anthropic)
@@ -344,19 +348,36 @@
     (parse-openrouter-models (get-json url headers) :openrouter url)))
 
 (defmethod fetch-models :default [pid]
-  (throw (ex-info (str "Provider does not support live /models: " pid)
-                  {:provider pid :error :unsupported})))
+  (let [profile (provider/get-provider pid)]
+    (if (and (true? (:profile/supports-model-listing profile))
+             (= :openai-chat (:profile/protocol-family profile)))
+      (openai-style-fetch pid)
+      (throw (ex-info (str "Provider does not support live /models: " pid)
+                      {:provider pid :error :unsupported})))))
 
 ;; ---------------------------------------------------------------------------
-;; Supported set
+;; Supported providers
 ;; ---------------------------------------------------------------------------
 
-(def supported-providers
-  "Providers with a usable live /models endpoint."
-  (into #{:openai :anthropic :gemini-native :vertex-gemini :openrouter}
-        openai-aliases/model-listing-alias-ids))
+(def ^:private native-listing-providers
+  "Providers with non-generic listing implementations. The fallback set keeps
+   direct use of this namespace useful before adapter namespaces register their
+   profiles; registered profile metadata is authoritative when present."
+  #{:openai :anthropic :gemini-native :vertex-gemini :openrouter})
 
 (defn supports-models-listing?
-  "Does this provider expose a /models endpoint we can call?"
+  "Does this provider expose a /models endpoint we can call? Registered
+   profile metadata is authoritative. Unknown custom providers are not assumed
+   to use the generic OpenAI-compatible path."
   [provider-id]
-  (contains? supported-providers provider-id))
+  (if-let [profile (provider/get-provider provider-id)]
+    (true? (:profile/supports-model-listing profile))
+    (contains? native-listing-providers provider-id)))
+
+(defn listing-provider-ids
+  "Current registered/native providers whose profiles advertise model listing."
+  []
+  (->> (concat native-listing-providers (provider/list-providers))
+       set
+       (filter supports-models-listing?)
+       set))

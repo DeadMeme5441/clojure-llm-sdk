@@ -6,14 +6,11 @@
    present in the bundled models.dev snapshot at
    resources/models-dev-snapshot.json).
 
-   Single-arg lookups (get-model, context-length, model-capable?) scan
-   across providers and return the first match — stable for globally
-   unique model ids (gpt-4o, claude-opus-4-7), non-deterministic for
-   ambiguous ids that exist under multiple providers (e.g. a model
-   served by both :openrouter and :openai). Prefer the
-   provider-aware overloads when the id is ambiguous."
-  (:require [clojure.string :as str]
-            [llm.sdk.registry :as registry]))
+   Single-arg metadata lookups scan providers in the documented preference
+   order for compatibility. resolve-model is stricter: it accepts only exact
+   ids or an explicit provider/id pair and reports ambiguous exact ids instead
+   of choosing pricing from an arbitrary provider."
+  (:require [llm.sdk.registry :as registry]))
 
 ;; ---------------------------------------------------------------------------
 ;; Lookup — provider-aware preferred, single-arg falls back to scan
@@ -112,24 +109,37 @@
    (:model/max-output-tokens (registry/lookup provider model-id))))
 
 ;; ---------------------------------------------------------------------------
-;; Fuzzy match
+;; Conservative resolution
 ;; ---------------------------------------------------------------------------
 
+(defn- exact-matches [model-id]
+  (->> (registry/known-providers)
+       sort
+       (keep #(registry/lookup % model-id))
+       vec))
+
+(defn- unique-exact-match [model-id]
+  (let [matches (exact-matches model-id)]
+    (case (count matches)
+      0 nil
+      1 (first matches)
+      (throw
+       (ex-info "Model id is ambiguous; specify its provider"
+                {:error :catalog/ambiguous-model
+                 :model/id model-id
+                 :providers (mapv :model/provider matches)})))))
+
 (defn resolve-model
-  "Fuzzy-match a model name against the registry. Tries: an explicit known
-   provider plus its remaining model path, exact id, provider-prefix removal,
-   then substring over every known model id. Returns a registry entry or nil."
-  [model-name]
-  (let [[_ prefix without-prefix] (re-find #"^([^/]+)/(.+)$" model-name)
-        provider (some-> prefix keyword)]
-    (or (when (and provider
-                   (contains? (registry/known-providers) provider))
-          (registry/lookup provider without-prefix))
-        (find-by-id model-name)
-        (when without-prefix (find-by-id without-prefix))
-        (let [all (registry/list-all)]
-          (some (fn [e]
-                  (when (and (:model/id e)
-                             (str/includes? model-name (:model/id e)))
-                    e))
-                all)))))
+  "Resolve an exact model id. A leading known provider segment is treated as
+   an explicit provider selection (for example, openai/gpt-4o). Otherwise the
+   id must have exactly one provider match; ambiguity throws ex-info with
+   :error :catalog/ambiguous-model. No substring guessing is performed."
+  ([model-name]
+   (let [[_ prefix without-prefix] (re-find #"^([^/]+)/(.+)$" model-name)
+         provider (some-> prefix keyword)
+         explicit (when (and provider
+                             (contains? (registry/known-providers) provider))
+                    (registry/lookup provider without-prefix))]
+     (or explicit (unique-exact-match model-name))))
+  ([provider model-id]
+   (registry/lookup provider model-id)))

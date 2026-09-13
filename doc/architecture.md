@@ -68,14 +68,18 @@ Provider implementations live under provider-family namespaces. These namespaces
 | Gemini / Vertex | `llm.sdk.providers.gemini.native`, `.embeddings`, `.vertex`, `.imagen` |
 | Cohere | `llm.sdk.providers.cohere.chat`, `.embeddings`, `.rerank` |
 | Bedrock | `llm.sdk.providers.bedrock.converse`, `.image`, `.rerank` |
-| Codex | `llm.sdk.providers.codex.responses` |
+| Codex | `llm.sdk.providers.codex.responses` (wire codec), `llm.sdk.providers.codex.auth` (managed file/external OAuth lifecycle) |
 | Z.AI | `llm.sdk.providers.zai.chat` |
 | Local / Aggregators | `llm.sdk.providers.ollama.native`, `llm.sdk.providers.openrouter.chat`, `.embeddings`, `.image`, `llm.sdk.providers.perplexity.chat`, `llm.sdk.providers.openai-compat.aliases` |
 | Other modalities | `llm.sdk.providers.voyage.embeddings`, `.rerank`, `llm.sdk.providers.jina.embeddings`, `llm.sdk.providers.elevenlabs.tts`, `llm.sdk.providers.fake.chat` |
 
-The older flat namespaces, such as `llm.sdk.providers.openai-chat` and `llm.sdk.providers.anthropic`, are compatibility shims. New SDK code should depend on the family owner namespaces directly.
-
-Provider registry and auth implementation live in `llm.sdk.provider.registry`, `llm.sdk.provider.auth`, and `llm.sdk.provider.builtins`. Cache implementation lives in `llm.sdk.cache.markers`, `llm.sdk.cache.policy`, and `llm.sdk.cache.request`. The aggregate namespaces `llm.sdk.provider` and `llm.sdk.cache` remain public compatibility surfaces.
+Provider-family namespaces are the sole implementations; the former flat
+provider namespaces have been removed. Provider registry and auth
+implementation live in `llm.sdk.provider.registry`, `llm.sdk.provider.auth`,
+and `llm.sdk.provider.builtins`. Cache implementation lives in
+`llm.sdk.cache.markers`, `llm.sdk.cache.policy`, and `llm.sdk.cache.request`.
+The aggregate `llm.sdk.provider` and `llm.sdk.cache` namespaces remain
+supported public seams.
 
 Profile capabilities answer whether a transport can express a surface; model
 capabilities answer whether a particular model is cataloged for that surface.
@@ -85,22 +89,30 @@ model selection distinct.
 
 ## Provider Profiles
 
-Provider profiles are registered by `llm.sdk.provider.builtins` and carry:
+Built-in provider values are assembled by `llm.sdk.provider.builtins` and
+published atomically on the first registry lookup. Merely requiring an adapter
+namespace has no registry side effect. Each complete profile carries:
 
 - provider id
 - protocol family
 - base URL
-- auth strategy
-- credential environment variable names
-- capabilities
+- auth strategy and credential sources
 - default headers
-- supported model listing flag
+- supported model-listing flag
 - provider quirks
-- optional transport constructors
-- optional URL builder
-- optional cost calculator
+- one or more transport constructors
+- optional URL builder and supported-parameter policy
 
-OpenAI-compatible providers reuse the OpenAI Chat Completions transport owned by `llm.sdk.providers.openai.chat`. Providers with native shapes, such as Anthropic, Gemini, Cohere, Bedrock, and Ollama, use dedicated transports in their own family namespaces.
+Registration validates the complete profile before publishing it and requires
+at least one transport constructor. The registry derives operation
+capabilities (`:chat`, `:embedding`, `:moderation`, `:rerank`,
+`:image-generation`, `:transcription`, and `:tts`) from the constructors,
+replacing conflicting caller-supplied operation claims.
+
+OpenAI-compatible providers reuse the OpenAI Chat Completions transport owned
+by `llm.sdk.providers.openai.chat`. Providers with native shapes, such as
+Anthropic, Gemini, Cohere, Bedrock, and Ollama, use dedicated transports in
+their own family namespaces.
 
 Perplexity is not an OpenAI-compatible alias: `:perplexity` owns the native
 Agent API request/output and streaming lifecycle. Z.AI similarly owns its
@@ -161,18 +173,33 @@ cache-read and cache-write tokens are excluded from canonical uncached input,
 and reasoning may overlap output, so those values are not blindly added to a
 derived total.
 
-Without `:on-event`, `sdk/complete` exposes the events as a lazy sequence, so
-`:stream/error` remains observable data when the sequence is realized. With
-`:on-event`, the SDK consumes and accumulates the sequence. Accumulation fails
-with `ExceptionInfo` when an error event occurred; its `ex-data` includes the
-classified error, original stream error, provider, and the canonical
-`:partial-response` accumulated from the event sequence. The terminal
-`:stream/end` is normalized to occur exactly once and only after trailing
-usage or provider metadata has been consumed.
+Without `:on-event`, `sdk/complete` returns an `llm.sdk.StreamHandle` that is
+`Seqable`, `Closeable`, and reducible. Normal EOF closes it. Direct `reduce`
+also closes it after errors and early `reduced` termination; callers using
+sequence operations that can stop early should use `with-open`.
+
+The handle is single-pass and single-consumer: `seq` and `reduce` advance one
+cursor, and consumed events are released instead of retained as a transcript.
+Callers that need replay must retain their own data.
+
+With `:on-event`, the SDK calls the callback incrementally and then accumulates
+the terminal response. Accumulation fails with `ExceptionInfo` when an error
+event occurred; its `ex-data` includes the classified error, original stream
+error, provider, and canonical `:partial-response`. The stream closes when the
+callback or reduction throws. `:stream/end` occurs exactly once and only after
+trailing usage or provider metadata has been consumed.
 
 If a usage event carries provider-reported cost, the reducer retains it on the
 aggregate response. Later registry estimation runs only when no
 `:response/cost` already exists.
+
+## Shared HTTP Execution
+
+Every modality uses the same HTTP execution path. Calls share a lazily created
+pooled client by default, while `:config {:http-client client}` injects a
+caller-owned client. The default connect timeout is 30 seconds and the default
+request deadline is 120 seconds; callers may set `:connect-timeout-ms` and
+`:timeout-ms`. Runtime headers merge case-insensitively and win last.
 
 ## Retry And Fallbacks
 

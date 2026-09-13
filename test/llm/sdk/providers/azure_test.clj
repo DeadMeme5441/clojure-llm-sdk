@@ -11,7 +11,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.transport.embed :as et]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.openai-chat :as openai]))
+            [llm.sdk.providers.openai.chat :as openai]))
 
 ;; ---------------------------------------------------------------------------
 ;; register-azure-deployment! shape
@@ -58,10 +58,10 @@
 
 (deftest test-register-azure-deployment-missing-fields-throws
   (is (thrown-with-msg? Exception #"register-azure-deployment!"
-        (openai/register-azure-deployment!
-         {:id :azure-bad
-          :endpoint "https://x.openai.azure.com"
-          :deployment "d"})))) ; missing :api-version
+                        (openai/register-azure-deployment!
+                         {:id :azure-bad
+                          :endpoint "https://x.openai.azure.com"
+                          :deployment "d"})))) ; missing :api-version
 
 ;; ---------------------------------------------------------------------------
 ;; URL construction

@@ -9,16 +9,16 @@
                               :response/raw raw}.
 
    Providers without a speak transport throw ex-info on call."
-  (:require [hato.client :as hc]
-            [cheshire.core :as json]
-            [llm.sdk.provider :as provider]
-            [llm.sdk.schema :as schema]
-            [llm.sdk.errors :as errors]
+  (:require [cheshire.core :as json]
+            [hato.client :as hc]
+            [llm.sdk.http :as http]
+            [llm.sdk.operation :as operation]
             [llm.sdk.pricing :as pricing]
+            [llm.sdk.schema :as schema]
             [llm.sdk.transport.speak :as st]))
 
 (defn- stamp-tts-cost [provider-id request parsed]
-  (if (:response/cost parsed)
+  (if (contains? parsed :response/cost)
     parsed
     (let [model (or (:audio/model parsed) (:speak/model request))
           characters (count (:speak/input request))
@@ -30,74 +30,67 @@
                 {:characters characters})]
       (assoc parsed :response/cost cost))))
 
-(defn- http-client [{:keys [http-client connect-timeout-ms timeout-ms]}]
-  (or http-client
-      (hc/build-http-client {:connect-timeout (or connect-timeout-ms 30000)
-                             :timeout (or timeout-ms 120000)})))
-
 (defn- bytes-request
-  "TTS responses are raw audio bytes — we read :as :byte-array and
-   forward content-type so the transport can label the audio."
-  [{:keys [method url headers body] :as req}]
-  (let [resp (hc/request
-              {:method method
-               :url url
-               :headers headers
-               :body (when body (json/generate-string body))
-               :as :byte-array
-               :http-client (http-client req)
-               :throw-exceptions? false})]
-    {:status (:status resp)
-     :headers (:headers resp)
-     :body (:body resp)}))
+  "Execute a buffered request whose successful body is raw audio bytes."
+  [{:keys [method url headers body] :as request}]
+  (let [response
+        (hc/request
+         (merge (http/request-options request)
+                {:method method
+                 :url url
+                 :headers headers
+                 :body (when body (json/generate-string body))
+                 :as :byte-array
+                 :throw-exceptions? false}))]
+    {:status (:status response)
+     :headers (:headers response)
+     :body (:body response)}))
+
+(defn- decode-error-body [body]
+  (try
+    (http/decode-body
+     (if (bytes? body)
+       (String. ^bytes body "UTF-8")
+       body))
+    (catch Exception _ body)))
+
+(defn- validate-provider-response! [provider-id status response parsed]
+  (let [audio (:audio/bytes parsed)]
+    (when-not (and (bytes? audio) (pos? (alength ^bytes audio)))
+      (throw
+       (ex-info "Provider returned an empty or invalid speech response"
+                {:provider provider-id
+                 :status status
+                 :error/type :provider/invalid-speech-response
+                 :response parsed
+                 :body (:body response)})))))
 
 (defn speak
   "Send a canonical SpeakRequest and return a SpeakResponse.
 
-   Request keys:
-     :speak/model    model id (e.g. \"tts-1\", \"eleven_multilingual_v2\")
-     :speak/input    text to synthesize
-     :speak/voice    voice id (e.g. \"alloy\" or an ElevenLabs voice id)
-     :speak/format   :mp3|:opus|:aac|:flac|:wav|:pcm (provider-dependent)
-     :speak/speed    optional [0.25, 4.0]
-     :speak/instructions  optional style/affect prompt (OpenAI tts-1-hd / gpt-4o-mini-tts)
-     :speak/provider-options  extra provider-specific fields"
+   The response contains nonempty :audio/bytes and its content type."
   [provider-id request & {:keys [config]}]
-  (let [profile (some-> (provider/get-provider provider-id)
-                        (provider/apply-runtime-config config))
-        profile (or profile
-                    (throw (ex-info "Unknown provider"
-                                    {:provider provider-id})))
-        _ (when-not (schema/validate-speak-request request)
-            (throw (ex-info "Invalid llm.sdk speak request"
-                            {:error/type :schema/invalid-speak-request
-                             :schema/explain (schema/explain-speak-request request)})))
-        ctor (:profile/speak-transport-constructor profile)
-        _ (when-not ctor
-            (throw (ex-info "Text-to-speech not supported by provider"
-                            {:provider provider-id})))
-        transport (ctor)
-        req (st/build-speak-request transport profile request)
-        req (provider/apply-http-options profile req)
-        resp (try
-               (bytes-request req)
-               (catch Exception e
-                 (throw (ex-info "Provider TTS transport error"
-                                 {:error (errors/classify-error e :provider provider-id)
-                                  :provider provider-id}
-                                 e))))
-        status (:status resp)]
-    (if (>= status 400)
-      (let [body (try
-                   (json/parse-string
-                    (String. ^bytes (:body resp) "UTF-8")
-                    true)
-                   (catch Exception _ (:body resp)))
-            err (st/parse-speak-error transport profile status body)]
-        (throw (ex-info "Provider TTS API error"
-                        {:error err
-                         :status status
-                         :body body
-                         :provider provider-id})))
-      (stamp-tts-cost provider-id request
-                      (st/parse-speak-response transport profile resp)))))
+  (operation/run
+   {:provider-id provider-id
+    :request request
+    :config config
+    :validate-request schema/validate-speak-request
+    :explain-request schema/explain-speak-request
+    :invalid-error-type :schema/invalid-speak-request
+    :invalid-message "Invalid llm.sdk speak request"
+    :constructor-key :profile/speak-transport-constructor
+    :unsupported-message "Text-to-speech not supported by provider"
+    :build-request st/build-speak-request
+    :request-effect bytes-request
+    :parse-response
+    (fn [transport profile response]
+      (let [parsed (st/parse-speak-response transport profile response)]
+        (validate-provider-response!
+         provider-id (:status response) response parsed)
+        (stamp-tts-cost provider-id request parsed)))
+    :parse-error
+    (fn [transport profile status body]
+      (st/parse-speak-error
+       transport profile status (decode-error-body body)))
+    :transport-error-message "Provider TTS transport error"
+    :api-error-message "Provider TTS API error"}))

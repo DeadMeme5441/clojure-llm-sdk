@@ -1,9 +1,7 @@
 (ns llm.sdk.cost-calculator-test
   (:require [clojure.test :refer [deftest is testing]]
             [llm.sdk.pricing :as pricing]
-            [llm.sdk.provider :as provider]
-            ;; Ensure :perplexity is registered
-            [llm.sdk.providers.perplexity]))
+            [llm.sdk.provider :as provider]))
 
 (deftest test-embedding-cost
   (let [p (pricing/pricing-entry :input 0.02 :output 0)
@@ -48,7 +46,7 @@
     (let [profile (provider/get-provider :perplexity)
           calc (:profile/cost-calculator profile)
           pricing (pricing/pricing-entry :input 3.0 :output 15.0
-                                          :search-per-call 0.005)
+                                         :search-per-call 0.005)
           usage {:usage/input-tokens 1000
                  :usage/output-tokens 500
                  :usage/search-queries 4}
@@ -76,6 +74,39 @@
                         :pricing pricing})]
       (is (= :actual (:cost/status result)))
       (is (= 0.020M (:cost/amount-usd result))))))
+
+(deftest test-perplexity-custom-calculator-keeps-incomplete-cost-unknown
+  (let [profile (provider/get-provider :perplexity)
+        calc (:profile/cost-calculator profile)
+        rates (pricing/pricing-entry :input 3.0 :output 15.0
+                                     :search-per-call 0.005)
+        sparse-result
+        (calc {:provider :perplexity
+               :model "sonar"
+               :usage {:usage/output-tokens 5
+                       :usage/search-queries 2}
+               :pricing rates})
+        missing-search-result
+        (calc {:provider :perplexity
+               :model "sonar"
+               :usage {:usage/input-tokens 10
+                       :usage/output-tokens 5}
+               :pricing rates})]
+    (is (= :estimated (:cost/status sparse-result)))
+    (is (nil? (:cost/amount-usd sparse-result)))
+    (is (= :estimated (:cost/status missing-search-result)))
+    (is (nil? (:cost/amount-usd missing-search-result)))))
+
+(deftest test-perplexity-search-only-preserves-explicit-zero
+  (let [profile (provider/get-provider :perplexity)
+        calc (:profile/cost-calculator profile)
+        result
+        (calc {:provider :perplexity
+               :model "search-metered"
+               :usage {:usage/search-queries 0}
+               :pricing (pricing/pricing-entry :search-per-call 0.005)})]
+    (is (= :actual (:cost/status result)))
+    (is (= 0M (:cost/amount-usd result)))))
 
 (deftest test-default-calculator-no-search-cost
   (testing "Perplexity calc returns base token cost when no search-cost-per-call set"

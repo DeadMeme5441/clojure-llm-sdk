@@ -137,7 +137,11 @@
        (is (some? e))
        (is (= "gpt-4o" (:model/id e)))
        (is (= :openai (:model/provider e)))
-       (is (= :models-dev (:model/source e)))
+       (is (= :bundled-snapshot (:model/source e)))
+       (is (= :bundled (:model/source-freshness e)))
+       (is (= :unknown (:model/availability e)))
+       (is (string? (:model/source-url e)))
+       (is (string? (:model/source-revision e)))
        (is (pos? (:model/context-length e)))
        (is (pos? (get-in e [:model/cost :input-per-million])))))))
 
@@ -178,7 +182,7 @@
      (let [es (mdev/list-models :openai)]
        (is (> (count es) 10))
        (is (every? #(= :openai (:model/provider %)) es))
-       (is (every? #(= :models-dev (:model/source %)) es))
+       (is (every? #(= :bundled-snapshot (:model/source %)) es))
        (is (every? models/validate-model-entry es))))))
 
 (deftest list-models-anthropic-includes-claude-family
@@ -239,6 +243,45 @@
       (is (.exists (io/file *tmp-cache-dir* "models-dev-cache.json"))
           "network success persists data to disk cache"))))
 
+(deftest disk-cache-retains-network-origin
+  (let [canned-tree {:openai
+                     {:models {:disk-model
+                               {:id "disk-model"
+                                :limit {:context 4096}}}}}]
+    (binding [mdev/*api-url* "https://catalog.example/api.json"]
+      (with-redefs [http/request
+                    (fn [_] {:status 200 :body canned-tree})]
+        (mdev/fetch-all))
+      (mdev/reset-cache!)
+      (with-redefs [http/request
+                    (fn [_] (throw (ex-info "network should not run" {})))]
+        (let [entry (mdev/lookup :openai "disk-model")]
+          (is (= :models-dev-cache (:model/source entry)))
+          (is (= :fresh (:model/source-freshness entry)))
+          (is (= "https://catalog.example/api.json"
+                 (:model/source-url entry))))))))
+
+(deftest disk-cache-retains-known-source-revision
+  (let [tree {:openai
+              {:models {:revisioned-model
+                        {:id "revisioned-model"
+                         :limit {:context 2048}}}}}
+        envelope {:_llm_sdk_cache
+                  {:fetched_at_ms (System/currentTimeMillis)
+                   :source_url "https://catalog.example/pinned.json"
+                   :source_revision "catalog-revision"}
+                  :data tree}
+        f (io/file *tmp-cache-dir* "models-dev-cache.json")]
+    (.mkdirs (.getParentFile f))
+    (spit f (json/generate-string envelope))
+    (with-redefs [http/request
+                  (fn [_] (throw (ex-info "network should not run" {})))]
+      (let [entry (mdev/lookup :openai "revisioned-model")]
+        (is (= :models-dev-cache (:model/source entry)))
+        (is (= "https://catalog.example/pinned.json"
+               (:model/source-url entry)))
+        (is (= "catalog-revision" (:model/source-revision entry)))))))
+
 (deftest network-failure-falls-back-to-bundled
   (offline
    (fn []
@@ -264,13 +307,16 @@
 
 (deftest network-failure-with-stale-disk-uses-disk
   (let [stale-tree {:openai {:models {:stale-only-model {:id "stale-only-model"
-                                                          :limit {:context 9999}}}}}]
+                                                         :limit {:context 9999}}}}}]
     ;; Seed the disk cache directly, then run with network mocked to fail
     (binding [mdev/*ttl-ms* 0] ; immediately stale
       (let [f (io/file *tmp-cache-dir* "models-dev-cache.json")]
         (.mkdirs (.getParentFile f))
         (spit f (json/generate-string stale-tree)))
       (with-redefs [http/request (fn [_] (throw (ex-info "boom" {})))]
-        (let [{:keys [source data]} (mdev/fetch-all)]
+        (let [{:keys [source data]} (mdev/fetch-all)
+              entry (mdev/lookup :openai "stale-only-model")]
           (is (= :disk source) "stale disk preferred to bundled when present")
-          (is (some? (-> data :openai :models :stale-only-model))))))))
+          (is (some? (-> data :openai :models :stale-only-model)))
+          (is (= :models-dev-cache (:model/source entry)))
+          (is (= :stale (:model/source-freshness entry))))))))

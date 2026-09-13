@@ -234,21 +234,36 @@ The same canonical shapes are available outside the request path:
 
 ## Streaming
 
-With `:stream? true` and no callback, `sdk/complete` returns a lazy sequence
-of canonical stream events. Realizing that sequence performs the read. A
-`:stream/error` is therefore an event value in this mode; merely consuming
-the lazy stream does not turn that event into an exception.
+With `:stream? true` and no callback, `sdk/complete` returns an
+`llm.sdk.StreamHandle`. It implements `Seqable`, `java.io.Closeable`,
+`clojure.lang.IReduce`, and `clojure.lang.IReduceInit`. Normal EOF closes it;
+direct reduction also closes it after completion, failure, or early `reduced`
+termination. Use `with-open` when sequence-style consumption might stop before
+EOF:
 
-With `:stream? true :on-event cb`, the SDK consumes the stream, calls `cb` for
-each event, and then accumulates the events into the canonical response
-returned by `sdk/complete`. The same accumulation is available through
-`llm.sdk.stream/events->response`. If an accumulated stream contains a
-`:stream/error`, accumulation throws `ExceptionInfo` rather than returning a
-successful response. Its `ex-data` contains the classified `:error`, the
-original `:stream/error`, the `:provider`, and a `:partial-response` containing
-the canonical state accumulated from the event sequence.
-This differs intentionally from the lazy event interface, where callers
-observe and decide how to handle the error event themselves.
+```clojure
+(with-open [events (sdk/complete :openai request :stream? true)]
+  (doseq [event events]
+    (consume event)))
+```
+
+The handle is single-pass and single-consumer. Sequence and reduction consume
+the same cursor, already delivered events are released, and the handle is not
+replayable or intended for concurrent consumers. Retain any event data needed
+after consumption.
+
+A `:stream/error` remains an event value in this form; consuming the event does
+not itself throw.
+
+With `:stream? true :on-event cb`, the SDK consumes the stream and calls `cb`
+incrementally for each event before reducing it into the canonical response
+returned by `sdk/complete`. The stream closes even if the callback throws. The
+same accumulation is available through `llm.sdk.stream/events->response`. If an
+accumulated stream contains a `:stream/error`, accumulation throws
+`ExceptionInfo` rather than returning a successful response. Its `ex-data`
+contains the classified `:error`, the original `:stream/error`, the `:provider`,
+and a `:partial-response` containing the canonical state accumulated from the
+event sequence.
 
 Indexed `:stream/reasoning-delta` events update independent reasoning blocks;
 an optional `:reasoning/signature` survives on the resulting reasoning part.

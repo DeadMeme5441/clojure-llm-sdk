@@ -23,7 +23,7 @@ Provider profiles define:
 | Vertex Gemini | `:vertex-gemini` | `gemini-native` | ADC / `GOOGLE_OAUTH_ACCESS_TOKEN` |
 | Vertex Anthropic (Claude) | `:vertex-anthropic` | `anthropic-messages` | ADC / `GOOGLE_OAUTH_ACCESS_TOKEN` |
 | OpenAI Codex | `:codex` | `codex` | `OPENAI_API_KEY` |
-| Codex Backend | `:codex-backend` | `codex` | `~/.codex/auth.json` |
+| Codex Backend | `:codex-backend` | `codex` | Managed Codex CLI `auth.json` or caller-managed OAuth token/account |
 | DeepSeek | `:deepseek` | `openai-chat` | `DEEPSEEK_API_KEY` |
 | Kimi / Moonshot | `:kimi` | `openai-chat` | `MOONSHOT_API_KEY` |
 | Kimi Code | `:kimi-code` | `openai-chat` | `KIMI_API_KEY` |
@@ -56,7 +56,7 @@ OpenAI-compatible aggregator aliases:
 
 `clojure-llm-sdk` is not a proxy router. Aggregator aliases use one credential each and do not perform pool management, spend routing, cooldowns, or tenant isolation.
 
-Provider implementation namespaces are split by provider family. For example, OpenAI chat is owned by `llm.sdk.providers.openai.chat`, Anthropic chat by `llm.sdk.providers.anthropic.chat`, OpenRouter by `llm.sdk.providers.openrouter.chat`, and Bedrock Converse by `llm.sdk.providers.bedrock.converse`. The older flat namespaces remain compatibility shims for existing callers.
+Provider-family namespaces are the sole implementations. For example, OpenAI chat is owned by `llm.sdk.providers.openai.chat`, Anthropic chat by `llm.sdk.providers.anthropic.chat`, OpenRouter by `llm.sdk.providers.openrouter.chat`, and Bedrock Converse by `llm.sdk.providers.bedrock.converse`. The former flat namespaces have been removed.
 
 The tables below describe registered transport surfaces. A transport
 capability is not a promise that every cataloged model supports that modality,
@@ -232,6 +232,16 @@ Vertex embedding alias. Requests use Gemini's
 and `:title` directly under `:embed/provider-options`. Missing provider usage
 remains absent rather than being synthesized as zero.
 
+### Typed Tool Results
+
+Tool messages may carry one canonical `:part/type :tool-result` with
+`:tool-result/id`, `:tool-result/name`, `:tool-result/content`, and optional
+`:tool-result/is-error`. Anthropic, Gemini, and Bedrock preserve the error
+status in their native representation. Every implemented provider shape
+without an error-status field rejects `:tool-result/is-error true` rather than
+silently sending failure as success. Conflicting or mixed result
+representations are rejected before a request is sent.
+
 ### OpenRouter
 
 OpenRouter accepts routing preferences directly under
@@ -239,15 +249,18 @@ OpenRouter accepts routing preferences directly under
 and `:metadata-level` for its metadata header. Canonical reasoning remains
 under `:request/reasoning`. For additional OpenAI-compatible wire extensions,
 the exact shared escape-hatch key is
-`:request/provider-options {:extra_body {...}}`; native keys inside that map
-are forwarded without renaming, while `model`, `messages`, and `stream` cannot
-be overridden.
+`:request/provider-options {:extra_body {...}}`. String and keyword spellings
+are normalized for collision detection; native keys are forwarded without
+renaming only when they do not collide with protected or canonical wire fields.
+JSON field case is otherwise preserved. A collision throws instead of being
+silently discarded or overriding canonical data.
 
 ### Azure OpenAI
 
 Azure deployment profiles support chat and embeddings through
-`llm.sdk.providers.openai.chat/register-azure-deployment!`; the legacy
-`llm.sdk.providers.openai-chat` namespace forwards to the same implementation.
+`llm.sdk.providers.openai.chat/register-azure-deployment!`. That provider-family
+namespace is the sole implementation.
+
 The default classic style requires `:api-version` and routes through
 `/openai/deployments/{deployment}/chat/completions` and
 `/openai/deployments/{deployment}/embeddings`. Set `:api-style :v1` to use

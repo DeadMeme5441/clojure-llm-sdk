@@ -5,7 +5,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.vertex-gemini :as vertex]))
+            [llm.sdk.providers.gemini.vertex :as vertex]))
 
 (defn- build [request]
   (with-redefs [gcp-auth/resolve-access-token (fn [_ _] "stub-token")]
@@ -135,9 +135,9 @@
               (str "data: " (cheshire.core/generate-string payload)))
         chunks
         [{:candidates [{:content {:parts [{:text "think"
-                                          :thought true}]}}]}
+                                           :thought true}]}}]}
          {:candidates [{:content {:parts [{:thought true
-                                          :thoughtSignature "vertex-thought"}]}}]}
+                                           :thoughtSignature "vertex-thought"}]}}]}
          {:candidates
           [{:content
             {:parts [{:functionCall {:id "vertex-stream-call"
@@ -150,7 +150,7 @@
         events (mapcat #(transport/parse-stream-event t profile (sse %))
                        chunks)
         response (stream/events->response events :vertex-gemini
-                                         "gemini-3.5-flash")
+                                          "gemini-3.5-flash")
         rebuilt
         (build
          {:request/model "gemini-3.5-flash"

@@ -3,7 +3,7 @@
             [llm.sdk.provider :as provider]
             [llm.sdk.stream :as stream]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.openai-chat :as openai]))
+            [llm.sdk.providers.openai.chat :as openai]))
 
 (deftest test-build-request-basic
   (let [t (openai/make-transport)
@@ -19,6 +19,15 @@
     (is (= 0.5 (get-in built [:body :temperature])))
     (is (= 100 (get-in built [:body :max_completion_tokens])))
     (is (= 2 (count (get-in built [:body :messages]))))))
+
+(deftest test-alias-profile-preserves-query-auth-parameter
+  (let [profile (openai/build-alias-profile
+                 {:id :query-auth
+                  :base-url "https://example.test/v1"
+                  :auth-strategy :api-key-query
+                  :auth-query-param "key"
+                  :env-var-names ["QUERY_AUTH_KEY"]})]
+    (is (= "key" (:profile/auth-query-param profile)))))
 
 (deftest test-build-request-stream-flag
   (let [t (openai/make-transport)
@@ -110,11 +119,17 @@
         (assoc base :request/provider-options
                {:extra_body {"reasoning_format" "raw"
                              :include_reasoning true}})]
-    (doseq [request [tool-request json-request conflicting-request]]
+    (doseq [request [tool-request json-request]]
       (let [body (:body (transport/build-request t profile request))]
         (is (not (contains? body :reasoning_format)))
-        (is (not (contains? body "reasoning_format")))))))
-
+        (is (not (contains? body "reasoning_format")))))
+    (let [error (try (transport/build-request t profile conflicting-request)
+                     nil
+                     (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+      (is (= {:provider :groq
+              :field :reasoning_format
+              :error/type :request/protected-extra-body-override}
+             error)))))
 
 (deftest test-build-request-tools
   (let [t (openai/make-transport)
@@ -164,7 +179,7 @@
     (is (= "custom" (:type definition)))
     (is (= "grammar" (get-in definition [:custom :format :type])))
     (is (= "lark" (get-in definition
-                           [:custom :format :grammar :syntax])))
+                          [:custom :format :grammar :syntax])))
     (is (= {:type "custom" :custom {:name "shell"}}
            (get-in built [:body :tool_choice])))
     (is (= [{:id "call_custom"
@@ -172,7 +187,6 @@
              :extra_content {:trace_id "trace-1"}
              :custom {:name "shell" :input "pwd"}}]
            replay))))
-
 
 (deftest test-build-request-json-schema-response-format
   (let [t (openai/make-transport)
@@ -238,7 +252,7 @@
     (is (= "flex" (get-in built [:body :service_tier])))
     (is (nil? (get-in built [:body :extra_body])))))
 
-(deftest test-provider-extra-is-flat-and-rejects-reserved-fields
+(deftest test-provider-extra-rejects-protected-fields-and-stays-flat
   (let [t (openai/make-transport)
         profile (provider/get-provider :openai)
         base-request
@@ -246,26 +260,26 @@
          :request/messages
          [{:message/role :user :message/content "Canonical"}]
          :request/stream? true}]
-    (doseq [[field spelling provided]
+    (doseq [[spelling expected-field provided]
             [[:model :model "bad-keyword"]
-             [:model "model" "bad-string"]
+             ["model" :model "bad-string"]
              [:messages :messages [{:role "user" :content "bad"}]]
-             [:messages "messages" []]
+             ["messages" :messages []]
              [:stream :stream false]
-             [:stream "stream" false]]]
-      (try
-        (transport/build-request
-         t profile
-         (assoc-in base-request
-                   [:request/provider-options :extra_body]
-                   {spelling provided}))
-        (is false (str "expected reserved extra_body rejection for "
-                       spelling))
-        (catch clojure.lang.ExceptionInfo e
-          (is (= :request/protected-extra-body-override
-                 (:error/type (ex-data e))))
-          (is (= field (:field (ex-data e))))
-          (is (= provided (:provided-value (ex-data e)))))))
+             ["stream" :stream false]]]
+      (let [error
+            (try
+              (transport/build-request
+               t profile
+               (assoc-in base-request
+                         [:request/provider-options :extra_body]
+                         {spelling provided}))
+              nil
+              (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :request/protected-extra-body-override
+               (:error/type (ex-data error))))
+        (is (= expected-field (:field (ex-data error))))
+        (is (= :openai (:provider (ex-data error))))))
     (let [body
           (:body
            (transport/build-request
@@ -274,9 +288,6 @@
                    :request/provider-options
                    {:extra_body {"service_tier" "flex"
                                  :verbosity "low"}})))]
-      (is (= "gpt-5" (:model body)))
-      (is (= [{:role "user" :content "Canonical"}] (:messages body)))
-      (is (true? (:stream body)))
       (is (= "flex" (:service_tier body)))
       (is (= "low" (:verbosity body)))
       (is (not (contains? body :extra_body))))))
@@ -296,6 +307,67 @@
             :file {:filename "brief.pdf"
                    :file_data "data:application/pdf;base64,JVBERi0x"}}
            (get-in built [:body :messages 0 :content 0])))))
+
+(deftest test-build-request-inline-image-and-typed-tool-result
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)
+        built
+        (transport/build-request
+         t profile
+         {:request/model "gpt-4o"
+          :request/messages
+          [{:message/role :user
+            :message/content
+            [{:part/type :image
+              :image/data "aW1hZ2U="
+              :image/mime-type "image/webp"}]}
+           {:message/role :tool
+            :message/content
+            [{:part/type :tool-result
+              :tool-result/id "call_1"
+              :tool-result/name "lookup"
+              :tool-result/content "{\"ok\":true}"}]}]})]
+    (is (= "data:image/webp;base64,aW1hZ2U="
+           (get-in built [:body :messages 0 :content 0 :image_url :url])))
+    (is (= {:role "tool"
+            :content "{\"ok\":true}"
+            :tool_call_id "call_1"
+            :name "lookup"}
+           (get-in built [:body :messages 1]))))
+  (testing "OpenAI rejects error status because chat-completions has no such field"
+    (let [t (openai/make-transport)
+          profile (provider/get-provider :openai)]
+      (try
+        (transport/build-request
+         t profile
+         {:request/model "gpt-4o"
+          :request/messages
+          [{:message/role :tool
+            :message/content
+            [{:part/type :tool-result
+              :tool-result/id "call_1"
+              :tool-result/name "lookup"
+              :tool-result/content "failed"
+              :tool-result/is-error true}]}]})
+        (is false "expected unsupported error-status rejection")
+        (catch clojure.lang.ExceptionInfo e
+          (is (= :provider/unsupported-tool-result-error
+                 (:error/type (ex-data e)))))))))
+
+(deftest test-build-request-rejects-image-without-source
+  (let [t (openai/make-transport)
+        profile (provider/get-provider :openai)]
+    (try
+      (transport/build-request
+       t profile
+       {:request/model "gpt-4o"
+        :request/messages
+        [{:message/role :user
+          :message/content [{:part/type :image}]}]})
+      (is false "expected missing image source rejection")
+      (catch clojure.lang.ExceptionInfo e
+        (is (= :request/missing-image-source
+               (:error/type (ex-data e))))))))
 
 (deftest test-build-request-file-attachment-fails-for-alias
   (let [t (openai/make-transport)

@@ -52,6 +52,20 @@
     (doseq [f frames] (.write bos ^bytes f))
     (ByteArrayInputStream. (.toByteArray bos))))
 
+(defn- tracking-stream [bytes closed?]
+  (proxy [ByteArrayInputStream] [bytes]
+    (close []
+      (reset! closed? true)
+      (proxy-super close))))
+
+(defn- invalid-frame-prefix [total-len headers-len]
+  (let [bos (ByteArrayOutputStream.)
+        out (DataOutputStream. bos)]
+    (.writeInt out total-len)
+    (.writeInt out headers-len)
+    (.writeInt out 0)
+    (.toByteArray bos)))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests
 ;; ---------------------------------------------------------------------------
@@ -88,6 +102,40 @@
 
 (deftest test-empty-stream
   (is (empty? (es/frame-seq (ByteArrayInputStream. (byte-array 0))))))
+
+(deftest frame-seq-closes-at-clean-eof
+  (let [closed? (atom false)]
+    (is (empty? (es/frame-seq (tracking-stream (byte-array 0) closed?))))
+    (is @closed?)))
+
+(deftest truncated-frame-is-not-clean-eof
+  (let [encoded (encode-frame {":event-type" "messageStart"}
+                              (json-bytes {:role "assistant"}))
+        truncated (byte-array (take (dec (alength encoded)) encoded))
+        closed? (atom false)]
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Truncated AWS event-stream frame"
+                          (doall (es/frame-seq
+                                  (tracking-stream truncated closed?)))))
+    (is @closed?)))
+
+(deftest invalid-frame-lengths-are-rejected-before-allocation
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                        #"Invalid AWS event-stream frame length"
+                        (doall (es/frame-seq
+                                (ByteArrayInputStream.
+                                 (invalid-frame-prefix 15 0))))))
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                        #"Invalid AWS event-stream headers length"
+                        (doall (es/frame-seq
+                                (ByteArrayInputStream.
+                                 (invalid-frame-prefix 16 1))))))
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                        #"Invalid AWS event-stream frame length"
+                        (doall (es/frame-seq
+                                (ByteArrayInputStream.
+                                 (invalid-frame-prefix (* 25 1024 1024)
+                                                       0)))))))
 
 (deftest test-decode-bedrock-exception-frame
   (let [frame-bytes

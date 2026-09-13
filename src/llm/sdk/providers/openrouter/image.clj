@@ -3,6 +3,7 @@
   (:require [clojure.string :as str]
             [llm.sdk.errors :as errors]
             [llm.sdk.provider :as provider]
+            [llm.sdk.transport :as transport]
             [llm.sdk.transport.image :as it]
             [llm.sdk.usage :as usage]))
 
@@ -42,7 +43,7 @@
                quality
                (assoc :quality quality))
         extra (get-in request [:image/provider-options :extra_body])
-        body (merge body extra)]
+        body (transport/merge-extra-body (:profile/id profile) body extra)]
     {:method :post
      :url (str (:profile/base-url profile) "/images")
      :headers (merge (provider/default-headers
@@ -51,13 +52,18 @@
      :body body}))
 
 (defn- response-image [image]
-  (when-let [b64 (:b64_json image)]
-    (cond-> {:image/b64 b64}
+  (let [url (or (:url image) (:image_url image))]
+    (cond-> {}
+      (:b64_json image) (assoc :image/b64 (:b64_json image))
+      url (assoc :image/url url)
       (:media_type image) (assoc :image/mime-type (:media_type image)))))
 
 (defn parse-image-response-openrouter
   [_profile raw]
-  (let [images (into [] (keep response-image) (:data raw))
+  (let [images (into [] (comp (map response-image)
+                              (filter #(or (seq (:image/b64 %))
+                                           (seq (:image/url %)))))
+                     (:data raw))
         usage-raw (:usage raw)
         usage-cost (:cost usage-raw)]
     (cond-> {:image/provider :openrouter
@@ -97,8 +103,3 @@
 
 (defn make-transport [] (->OpenRouterImageTransport))
 
-(when-let [p (provider/get-provider :openrouter)]
-  (provider/register-provider
-   (-> p
-       (assoc :profile/image-transport-constructor make-transport)
-       (update :profile/capabilities (fnil conj #{}) :image-generation))))

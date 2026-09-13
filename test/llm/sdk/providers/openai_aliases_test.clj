@@ -5,7 +5,7 @@
             [clojure.test :refer [deftest is testing]]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
-            [llm.sdk.providers.openai-chat :as openai]
+            [llm.sdk.providers.openai.chat :as openai]
             [llm.sdk.providers.openai-compat.aliases :as aliases]))
 
 (def ^:private new-aliases

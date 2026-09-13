@@ -16,6 +16,19 @@
   (is (not (schema/validate-request
             {:request/model "gpt-4o"}))))
 
+(deftest test-request-cache-constraints
+  (let [base {:request/model "gpt-4o"
+              :request/messages
+              [{:message/role :user :message/content "Hello"}]}]
+    (is (schema/validate-request
+         (assoc base :request/cache {:ttl "5m" :breakpoints 0})))
+    (is (schema/validate-request
+         (assoc base :request/cache {:ttl "1h"})))
+    (is (not (schema/validate-request
+              (assoc base :request/cache {:ttl "30m"}))))
+    (is (not (schema/validate-request
+              (assoc base :request/cache {:breakpoints -1}))))))
+
 (deftest test-response-validation
   (is (schema/validate-response
        {:response/provider :openai
@@ -101,7 +114,7 @@
                             :effort :max
                             :exclude false
                             :summary :detailed}
-        :request/cache {:enabled? true :ttl "30m"}}))
+        :request/cache {:enabled? true :ttl "1h"}}))
   (is (schema/validate-part
        {:part/type :citation
         :citation/source-id "document-1"

@@ -16,8 +16,9 @@
 
    Lookups field-merge across all tiers: higher tiers fill in missing
    fields (like context-length and pricing) from lower tiers. The
-   :model/source of the returned entry is the highest-precedence tier
-   that contributed.
+   :model/source fields describe the highest-precedence contributor,
+   :model/sources retains all contributors, and :model/cost-source records
+   the highest tier that supplied pricing.
 
    All operations are by [provider-keyword, model-id]."
   (:require [clojure.set :as set]
@@ -41,32 +42,65 @@
 ;; Merge — higher tiers fill in missing fields from lower tiers
 ;; ---------------------------------------------------------------------------
 
+(def ^:private source-fields
+  [:model/source :model/source-url :model/source-revision
+   :model/source-freshness :model/availability :model/fetched-at])
+
+(def ^:private merge-metadata-fields
+  (into source-fields [:model/sources :model/cost-source]))
+
+(defn- source-descriptor [entry]
+  (when-let [source (:model/source entry)]
+    (cond-> {:source source}
+      (:model/source-url entry)
+      (assoc :source-url (:model/source-url entry))
+      (:model/source-revision entry)
+      (assoc :source-revision (:model/source-revision entry))
+      (:model/source-freshness entry)
+      (assoc :freshness (:model/source-freshness entry))
+      (:model/fetched-at entry)
+      (assoc :fetched-at (:model/fetched-at entry)))))
+
+(defn- entry-sources [entry]
+  (or (seq (:model/sources entry))
+      (some-> (source-descriptor entry) vector)
+      []))
+
 (defn- deep-merge-cost
   "Cost map needs key-level merge so live + mdev can each contribute
-   different cost dimensions (e.g. live has cache fields, mdev has
-   per-million base rates)."
+   different cost dimensions."
   [a b]
   (merge a b))
 
 (defn- merge-pair
-  "Merge entry b on top of entry a. Cost is merged at the inner-map
-   level. Other fields use rightmost-wins."
+  "Merge entry b on top of entry a. Provenance is reconstructed after all
+   tiers merge so a missing higher-tier URL or revision never inherits a
+   lower-tier value and becomes misleading."
   [a b]
-  (let [merged (merge a b)
+  (let [merged (merge (apply dissoc a merge-metadata-fields)
+                      (apply dissoc b merge-metadata-fields))
         cost (deep-merge-cost (:model/cost a) (:model/cost b))]
     (cond-> merged
       (seq cost) (assoc :model/cost cost))))
 
 (defn merge-entries
-  "Merge any number of ModelEntry maps in increasing-precedence order.
-   nil entries skipped. Returns nil when no input has a value. The
-   highest-precedence non-nil contributor's :model/source tag wins."
+  "Merge ModelEntry maps in increasing-precedence order. nil entries are
+   skipped. The winning tier owns the scalar source fields; all contributors
+   remain visible in :model/sources. :model/cost-source is the highest tier
+   that supplied any pricing."
   [& entries]
   (let [non-nil (vec (keep identity entries))]
     (when (seq non-nil)
-      (let [combined (reduce merge-pair (first non-nil) (rest non-nil))
-            source (:model/source (peek non-nil))]
-        (assoc combined :model/source source)))))
+      (let [winner (peek non-nil)
+            combined (reduce merge-pair (first non-nil) (rest non-nil))
+            cost-entry (last (filter #(seq (:model/cost %)) non-nil))
+            sources (vec (distinct (mapcat entry-sources non-nil)))]
+        (cond-> (merge combined (select-keys winner source-fields))
+          (seq sources) (assoc :model/sources sources)
+          cost-entry
+          (assoc :model/cost-source
+                 (or (:model/cost-source cost-entry)
+                     (source-descriptor cost-entry))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Lookup
@@ -94,7 +128,7 @@
   []
   (set/union (mdev/known-providers)
              (lsnap/known-providers)
-             models/supported-providers
+             (models/listing-provider-ids)
              (store-providers live-store)
              (store-providers override-store)))
 
@@ -138,30 +172,65 @@
 ;; Mutation — refresh! and register-entry!
 ;; ---------------------------------------------------------------------------
 
+(defn- provider-entry? [provider-id [[entry-provider _] _]]
+  (= provider-id entry-provider))
+
+(defn- replace-live-provider [store provider-id entries]
+  (let [without-provider (into {} (remove (partial provider-entry? provider-id))
+                               store)]
+    (reduce (fn [result entry]
+              (assoc result
+                     [provider-id (:model/id entry)]
+                     (cond-> (assoc entry
+                                    :model/provider provider-id
+                                    :model/source :live-models-api)
+                       (nil? (:model/source-freshness entry))
+                       (assoc :model/source-freshness :current)
+                       (nil? (:model/availability entry))
+                       (assoc :model/availability :listed))))
+            without-provider
+            entries)))
+
+(defn- mark-live-provider-stale [store provider-id]
+  (reduce-kv (fn [result key entry]
+               (assoc result key
+                      (if (= provider-id (first key))
+                        (assoc entry :model/source-freshness :stale)
+                        entry)))
+             {}
+             store))
+
 (defn refresh!
-  "Hit the provider's live /models endpoint and merge results into the
-   live tier. Returns the vector of fetched entries on success, throws
-   ex-info on failure. No-op (returns empty vector) for providers that
-   don't expose /models."
+  "Replace one provider's live /models slice with the fetched snapshot.
+   Fetch and entry validation complete before the single atomic store update.
+   A failed fetch preserves the prior slice and marks it stale before rethrowing.
+   Unsupported providers return an empty vector."
   [provider-id]
   (if-not (models/supports-models-listing? provider-id)
     []
-    (let [entries (models/fetch-models provider-id)]
-      (swap! live-store
-             (fn [s]
-               (reduce (fn [acc e]
-                         (assoc acc [(:model/provider e) (:model/id e)] e))
-                       s
-                       entries)))
-      entries)))
+    (try
+      (let [entries (models/fetch-models provider-id)]
+        (when-let [invalid
+                   (some #(when-not (and (string? (:model/id %))
+                                         (or (nil? (:model/provider %))
+                                             (= provider-id (:model/provider %))))
+                            %)
+                         entries)]
+          (throw (ex-info "Provider /models returned an invalid entry"
+                          {:provider provider-id :entry invalid})))
+        (swap! live-store replace-live-provider provider-id entries)
+        entries)
+      (catch Exception e
+        (swap! live-store mark-live-provider-stale provider-id)
+        (throw e)))))
 
 (defn refresh-all!
-  "Refresh every supported provider's live /models. Returns a map of
-   provider → number of entries fetched, or {:error ...} on failure
-   per provider. Failures do not abort other providers."
+  "Refresh every provider currently advertising live model listing. Returns a
+   map of provider → count, or an error per provider. Failures do not abort
+   other providers."
   []
   (into {}
-        (for [pid (sort models/supported-providers)]
+        (for [pid (sort (models/listing-provider-ids))]
           [pid (try {:count (count (refresh! pid))}
                     (catch Exception e
                       {:error (ex-message e)
@@ -169,12 +238,13 @@
 
 (defn register-entry!
   "Insert a caller-provided entry into the override tier. The supplied
-   map can omit :model/source / :model/provider / :model/id — they will
-   be set to (provider-id, model-id, :override). Useful for custom
-   endpoints models.dev doesn't know about."
+   map can omit source/provider/id fields; they are set to the caller-owned
+   override tier."
   [provider-id model-id entry]
   (let [tagged (assoc entry
                       :model/source :override
+                      :model/source-freshness :caller
+                      :model/availability :configured
                       :model/provider provider-id
                       :model/id model-id)]
     (swap! override-store assoc [provider-id model-id] tagged)
