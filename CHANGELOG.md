@@ -2,6 +2,19 @@
 
 All notable user-visible changes are tracked here.
 
+## 0.6.1
+
+- OpenRouter now surfaces readable structured reasoning: `reasoning.text`
+  and `reasoning.summary` entries from `reasoning_details` become visible
+  reasoning parts and stream reasoning deltas instead of metadata-only
+  provider state. Encrypted or unknown entries remain provider metadata,
+  native `reasoning`/`reasoning_content` still take precedence, and native
+  `reasoning_details` replay on follow-up turns unchanged.
+- Vertex Gemini streaming smoke now honors `GOOGLE_CLOUD_LOCATION`, accepts
+  a model argument, and allows a larger output budget for thinking models.
+- Corrected Vertex ADC setup guidance; the SDK reads credentials directly
+  rather than invoking gcloud.
+
 ## 0.6.0
 
 ### Breaking changes

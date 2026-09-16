@@ -12,13 +12,13 @@ This is a provider SDK, not an agent framework or proxy server. It owns provider
 Add the library coordinate to `deps.edn`:
 
 ```clojure
-{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.6.0"}}}
+{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.6.1"}}}
 ```
 
 Or with Leiningen / `project.clj`:
 
 ```clojure
-[net.clojars.deadmeme5441/clojure-llm-sdk "0.6.0"]
+[net.clojars.deadmeme5441/clojure-llm-sdk "0.6.1"]
 ```
 
 **Upgrading to 0.6.0:** review the [migration notes](CHANGELOG.md#060) for

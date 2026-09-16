@@ -1,5 +1,7 @@
 (ns llm.sdk.providers.openrouter-test
   (:require [clojure.test :refer [deftest is testing]]
+            [cheshire.core :as json]
+            [llm.sdk.stream :as stream]
             [llm.sdk.provider :as provider]
             [llm.sdk.transport :as transport]
             [llm.sdk.providers.openrouter.chat :as openrouter]
@@ -127,7 +129,8 @@
                      :server_tool_use_details {:web_search 2}}}
         resp (transport/parse-response t profile raw)]
     (is (= :stop (:response/finish-reason resp)))
-    (is (= [{:part/type :text :text "Hello from OpenRouter!"}]
+    (is (= [{:part/type :reasoning :reasoning/text "Checked primary sources"}
+            {:part/type :text :text "Hello from OpenRouter!"}]
            (:response/parts resp)))
     (is (= "end_turn"
            (get-in resp [:response/provider-data :native_finish_reason])))
@@ -218,21 +221,68 @@
     (is (= :stream/content-delta (:event/type ev)))
     (is (= "Hello" (:event/delta ev)))))
 
-(deftest test-parse-stream-preserves-structured-reasoning-details
+(deftest test-structured-reasoning-visible-with-native-replay
   (let [t (openrouter/make-transport)
         profile (provider/get-provider :openrouter)
-        line (str "data: {\"choices\":[{\"delta\":{\"reasoning_details\":["
-                  "{\"type\":\"reasoning.summary\","
-                  "\"summary\":\"Checked primary sources\",\"index\":0}]}}]}")
-        ev (transport/parse-stream-event t profile line)]
-    (is (= :stream/provider-state (:event/type ev)))
-    (is (= :openrouter (:provider-state/provider ev)))
-    (is (= [{:type "reasoning.summary"
-             :summary "Checked primary sources"
-             :index 0}]
-           (get-in ev
-                   [:provider-state/data :chat-completion/delta
-                    :reasoning_details])))))
+        details [{:type "reasoning.text" :text "Check " :signature "sig" :index 0}
+                 {:type "reasoning.summary" :summary "sources." :index 1}
+                 {:type "reasoning.encrypted" :data "opaque" :index 2}]
+        message {:content "Answer" :reasoning_details details}
+        raw {:choices [{:message message :finish_reason "stop"}]}
+        response (transport/parse-response t profile raw)
+        events (transport/parse-stream-event
+                t profile
+                (str "data: " (json/generate-string
+                               {:choices [{:delta message :finish_reason "stop"}]})))
+        streamed (stream/events->response events :openrouter "test-model")]
+    (doseq [result [response streamed]]
+      (is (= "Check sources."
+             (apply str (keep :reasoning/text (:response/parts result)))))
+      (is (= "Answer" (apply str (keep :text (:response/parts result)))))
+      (is (= :stop (:response/finish-reason result)))
+      (let [wire (get-in (transport/build-request
+                         t profile
+                         {:request/model "test-model"
+                          :request/messages
+                          [{:message/role :assistant
+                            :message/content (:response/parts result)
+                            :message/provider-data (:response/provider-data result)}]})
+                        [:body :messages 0])]
+        (is (= details (:reasoning_details wire)))))
+    (is (= raw (:response/raw response)))
+    (is (= ["Check sources."]
+           (mapv :event/delta
+                 (filter #(= :stream/reasoning-delta (:event/type %)) events))))))
+
+(deftest test-structured-reasoning-fallback-precedence-and-opaque-details
+  (let [t (openrouter/make-transport)
+        profile (provider/get-provider :openrouter)
+        details [{:type "reasoning.text" :text "think"}]]
+    (doseq [[message expected]
+            [[{:reasoning_details details} "think"]
+             [{:reasoning "" :reasoning_details details} "think"]
+             [{:reasoning "think" :reasoning_details details} "think"]
+             [{:reasoning_content "think" :reasoning_details details} "think"]
+             [{:content [{:type "thinking" :thinking "think"}]
+               :reasoning_details details} "think"]
+             [{:reasoning_details [{:type "reasoning.summary" :summary "summary"}]} "summary"]
+             [{:reasoning_details [{:type "reasoning.encrypted" :data "opaque"}
+                                   {:type "future" :text "hidden"}
+                                   {:type "reasoning.text" :text nil}
+                                   {:type "reasoning.summary" :summary ""}]} ""]
+             [{} ""]]]
+      (testing (pr-str message)
+        (let [response (transport/parse-response t profile {:choices [{:message message}]})
+              parsed (transport/parse-stream-event
+                      t profile (str "data: " (json/generate-string {:choices [{:delta message}]})))
+              events (if (sequential? parsed) parsed (when parsed [parsed]))]
+          (is (= expected (apply str (keep :reasoning/text (:response/parts response)))))
+          (is (= expected (apply str (map :event/delta
+                                         (filter #(= :stream/reasoning-delta (:event/type %)) events)))))
+          (when (contains? message :reasoning_details)
+            (is (= (:reasoning_details message)
+                   (get-in (first (filter #(= :stream/provider-state (:event/type %)) events))
+                           [:provider-state/data :chat-completion/delta :reasoning_details])))))))))
 
 (deftest test-parse-stream-preserves-reported-cost
   (let [t (openrouter/make-transport)

@@ -6,6 +6,7 @@
             [llm.sdk.transport :as t]
             [llm.sdk.providers.openai.chat :as openai]
             [llm.sdk.providers.openrouter.embeddings]
+            [llm.sdk.stream :as stream]
             [llm.sdk.usage :as usage]
             [llm.sdk.cache :as cache]
             [llm.sdk.errors :as errors]))
@@ -106,6 +107,17 @@
                   [:cost :cost_details :is_byok :server_tool_use
                    :server_tool_use_details])}))
 
+(defn- readable-reasoning [details]
+  (not-empty
+   (apply str
+          (keep (fn [detail]
+                  (let [text (case (:type detail)
+                               "reasoning.text" (:text detail)
+                               "reasoning.summary" (:summary detail)
+                               nil)]
+                    (when (string? text) text)))
+                details))))
+
 (defn parse-response-openrouter
   [profile raw]
   (let [base (openai/parse-response-openai profile raw)
@@ -117,8 +129,15 @@
                                   (get-in raw
                                           [:choices 0 :native_finish_reason])]
                          {:native_finish_reason native-finish}))
+        reasoning (when-not (some #(= :reasoning (:part/type %))
+                                  (:response/parts base))
+                    (readable-reasoning
+                     (get-in raw [:choices 0 :message :reasoning_details])))
         actual-cost (reported-cost (:usage raw))]
     (cond-> base
+      reasoning (update :response/parts
+                        #(into [{:part/type :reasoning
+                                 :reasoning/text reasoning}] %))
       (seq provider-data) (assoc :response/provider-data provider-data)
       actual-cost (assoc :response/cost actual-cost))))
 
@@ -135,10 +154,24 @@
 
 (defn parse-stream-event-openrouter
   [profile line]
-  (let [parsed (openai/parse-stream-event-openai profile line)]
-    (if (sequential? parsed)
-      (mapv attach-stream-cost parsed)
-      (some-> parsed attach-stream-cost))))
+  (let [parsed (openai/parse-stream-event-openai profile line)
+        events (cond (sequential? parsed) (mapv attach-stream-cost parsed)
+                     parsed [(attach-stream-cost parsed)]
+                     :else [])
+        reasoning (when-not (some #(= :stream/reasoning-delta (:event/type %))
+                                  events)
+                    (readable-reasoning
+                     (mapcat #(get-in % [:provider-state/data
+                                        :chat-completion/delta
+                                        :reasoning_details])
+                             events)))
+        events (if reasoning
+                 (into [(stream/reasoning-delta reasoning)] events)
+                 events)]
+    (case (count events)
+      0 nil
+      1 (first events)
+      events)))
 
 ;; ---------------------------------------------------------------------------
 ;; Error parsing
