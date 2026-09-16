@@ -8,7 +8,7 @@ Add the same Maven coordinate used by the README to `deps.edn`:
 
 ```clojure
 {:deps {net.clojars.deadmeme5441/clojure-llm-sdk
-        {:mvn/version "0.6.1"}}}
+        {:mvn/version "0.6.2"}}}
 ```
 
 Then require the public namespace:

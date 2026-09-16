@@ -358,6 +358,7 @@ Set `GOOGLE_CLOUD_PROJECT` and optionally `GOOGLE_CLOUD_LOCATION`. The default l
 ```bash
 gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT=my-project
+export GOOGLE_CLOUD_LOCATION=global
 ```
 
 ```clojure
@@ -366,6 +367,19 @@ export GOOGLE_CLOUD_PROJECT=my-project
   {:request/model "gemini-2.5-pro"
    :request/messages [{:message/role :user
                        :message/content "Hi"}]})
+```
+
+The SDK reads the process environment, not `.env` files or the active gcloud
+project. Request-level `:request/provider-options {:vertex {:project "my-project"
+:location "global"}}` overrides environment settings. `global` uses
+`https://aiplatform.googleapis.com`; the SDK does not invoke gcloud for tokens.
+
+Run a live streaming smoke with the selected model (requires ADC and the
+environment above):
+
+```bash
+clojure -M:scripts -m vertex-stream-smoke gemini-3.8-flash
+clojure -M:scripts -m vertex-stream-smoke gemini-3.5-flash-lite
 ```
 
 ## Gemini Native Embeddings

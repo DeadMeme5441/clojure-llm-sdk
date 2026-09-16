@@ -3,16 +3,16 @@
    delta as it arrives, then the aggregate response with cost/cache."
   (:require [llm.sdk :as sdk]))
 
-(defn -main [& _]
+(defn -main [& [model]]
   (let [project (or (System/getenv "GOOGLE_CLOUD_PROJECT")
                     (throw (Exception. "set GOOGLE_CLOUD_PROJECT")))
-        request {:request/model "gemini-2.5-flash"
+        request {:request/model (or model "gemini-2.5-flash")
                  :request/messages
                  [{:message/role :user
                    :message/content "Reply with exactly the word 'pong'."}]
-                 :request/max-tokens 64
+                 :request/max-tokens 512
                  :request/provider-options
-                 {:vertex {:project project :location "us-central1"}}}
+                 {:vertex {:project project}}}
         deltas (atom [])
         events (atom [])
         on-event (fn [ev]

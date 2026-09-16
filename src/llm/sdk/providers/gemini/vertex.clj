@@ -3,13 +3,14 @@
 
    Builds on Gemini native with different auth (GCP OAuth) and endpoint
    structure. Auth resolution follows the standard GCP ADC chain via
-   llm.sdk.gcp-auth: request opts → GOOGLE_OAUTH_ACCESS_TOKEN env →
-   `gcloud auth print-access-token` → GOOGLE_APPLICATION_CREDENTIALS
-   service-account JSON (RS256-signed JWT exchanged at
-   oauth2.googleapis.com/token).
+   llm.sdk.gcp-auth: request token → runtime auth token →
+   GOOGLE_OAUTH_ACCESS_TOKEN → explicit credentials file →
+   well-known ADC file → metadata server. Local development uses
+   `gcloud auth application-default login`; the SDK does not shell out.
 
    Project resolution: request opts → profile quirks →
-   GOOGLE_CLOUD_PROJECT env → SA JSON project_id."
+   GOOGLE_CLOUD_PROJECT / GCLOUD_PROJECT → credentials project_id
+   or quota_project_id."
   (:require [clojure.string :as str]
             [llm.sdk.transport :as t]
             [llm.sdk.providers.gemini.native :as gemini]
