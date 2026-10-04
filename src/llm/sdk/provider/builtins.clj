@@ -23,6 +23,8 @@
             [llm.sdk.providers.openrouter.chat :as openrouter]
             [llm.sdk.providers.openrouter.embeddings :as openrouter-embed]
             [llm.sdk.providers.openrouter.image :as openrouter-image]
+            [llm.sdk.providers.openrouter.decide :as openrouter-decide]
+            [llm.sdk.providers.typesafe.decide :as typesafe-decide]
             [llm.sdk.providers.perplexity.chat :as perplexity]
             [llm.sdk.providers.bedrock.converse :as bedrock]
             [llm.sdk.providers.bedrock.image :as bedrock-image]
@@ -120,8 +122,13 @@
                                         :cache :multimodal :provider-routing}
                 :profile/quirks {:provider-preferences true :pareto-router true}
                 :profile/transport-constructor openrouter/make-transport
+                :profile/decision-transport-constructor openrouter-decide/make-transport
                 :profile/embed-transport-constructor openrouter-embed/make-transport
                 :profile/image-transport-constructor openrouter-image/make-transport})
+      (profile :typesafe :systemone "https://api.typesafe.ai/v1" :bearer
+               {:profile/env-var-names ["TYPESAFE_AI_API_KEY" "TYPESAFE_API_KEY"]
+                :profile/supports-model-listing true
+                :profile/decision-transport-constructor typesafe-decide/make-transport})
       (profile :perplexity :perplexity-agent "https://api.perplexity.ai" :bearer
                {:profile/env-var-names ["PERPLEXITY_API_KEY"]
                 :profile/capabilities #{:chat :streaming :tools :json-schema

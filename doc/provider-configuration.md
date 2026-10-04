@@ -20,7 +20,7 @@ passes `llm.sdk.schema/ProviderProfile`, including identity, protocol, base URL,
 auth strategy, model-listing flag, and at least one modality transport
 constructor. Registration validates before publishing. The registry derives
 the operation capabilities from installed constructors rather than trusting
-caller-supplied `:chat`, `:embedding`, `:moderation`, `:rerank`,
+caller-supplied `:chat`, `:decision`, `:embedding`, `:moderation`, `:rerank`,
 `:image-generation`, `:transcription`, or `:tts` claims.
 
 ## Credentials
@@ -51,6 +51,27 @@ Important chat credentials:
 | Z.AI | `:zai` | `ZAI_API_KEY` |
 
 See [.env.example](../.env.example) for the full credential template across chat, embeddings, rerank, audio, image, and AWS providers.
+
+### TypeSafe and OpenRouter Decisions
+
+`:typesafe` reads `TYPESAFE_AI_API_KEY`, then `TYPESAFE_API_KEY`, and uses
+`https://api.typesafe.ai/v1/systemone`. Export the key before starting the
+process; the SDK does not source `.env`. Runtime `:config {:api-key "..."}`
+overrides environment credentials.
+
+`:openrouter` uses `OPENROUTER_API_KEY` for both Jev surfaces. `sdk/decide`
+defaults to `/api/alpha/decisions`; set
+`:decision/provider-options {:api :systemone}` for `/api/v1/systemone`.
+OpenRouter provider preferences go under `:decision/provider-options :provider`.
+Jev calls use `sdk/decide`, not `sdk/complete`; see
+[typed decisions](api-reference.md#typed-decisions).
+
+Run the inexpensive, opt-in smokes for TypeSafe and both OpenRouter endpoints:
+
+```bash
+set -a; source .env; set +a
+clojure -M:live-test -n llm.sdk.live-decide-test
+```
 
 ## Per-Call Runtime Config
 

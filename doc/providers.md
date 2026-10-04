@@ -1,6 +1,6 @@
 # Providers
 
-`clojure-llm-sdk` provides registered profiles across chat, embeddings, moderation, rerank, image generation, transcription, and text-to-speech.
+`clojure-llm-sdk` provides registered profiles across chat, typed decisions, embeddings, moderation, rerank, image generation, transcription, and text-to-speech.
 
 Provider profiles define:
 
@@ -103,6 +103,20 @@ deployment routing and `:api-style :v1` attach the embedding transport.
 
 Cohere rerank responses may contain unit-only
 `{:response/usage {:usage/search-units n}}`. Missing token counts remain absent.
+
+### Typed Decisions
+
+| Provider | ID | Wire shape | Auth |
+|---|---|---|---|
+| TypeSafe Jev | `:typesafe` | `/v1/systemone` | `TYPESAFE_AI_API_KEY` (fallback: `TYPESAFE_API_KEY`) |
+| OpenRouter Jev | `:openrouter` | `/api/alpha/decisions` by default; `/api/v1/systemone` with `:api :systemone` | `OPENROUTER_API_KEY` |
+
+Call `sdk/decide` with `:decision/model`, `:decision/state`, and
+`:decision/questions`. Noul, Choice, and Score return typed answers, not chat
+text; no streaming is supported. TypeSafe exposes live model aliases through
+`(sdk/refresh-models! :provider :typesafe)`. Listing does not supply prices or
+context limits. OpenRouter-reported decision cost remains authoritative.
+See the [decision API reference](api-reference.md#typed-decisions).
 
 ### Image Generation
 

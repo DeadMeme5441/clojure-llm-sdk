@@ -47,6 +47,25 @@
       (is (= "Claude Opus 4.7" (:model/display-name opus)))
       (is (= :anthropic (:model/provider opus))))))
 
+(deftest parse-typesafe-models-extracts-decision-aliases
+  ;; Documentation-shaped fixture: /models exposes names, descriptions and
+  ;; release dates, not the pricing or limits published on the models page.
+  (let [url "https://api.typesafe.ai/v1/models"
+        entries (models/parse-typesafe-models (load-fixture "typesafe") :typesafe url)]
+    (is (= ["jev-latest" "jev-preview"] (mapv :model/id entries)))
+    (doseq [entry entries]
+      (is (= :typesafe (:model/provider entry)))
+      (is (= #{:decision} (:model/capabilities entry)))
+      (is (= :live-models-api (:model/source entry)))
+      (is (= url (:model/source-url entry)))
+      (is (= :current (:model/source-freshness entry)))
+      (is (= :listed (:model/availability entry)))
+      (is (inst? (:model/fetched-at entry)))
+      (is (not (contains? entry :model/cost)))
+      (is (not (contains? entry :model/context-length)))
+      (is (not (contains? entry :model/max-output-tokens))))
+    (is (= [] (models/parse-typesafe-models {:models []} :typesafe url)))))
+
 (deftest parse-gemini-models-strips-prefix-extracts-limits-and-caps
   (let [body (load-fixture "gemini-native")
         entries (models/parse-gemini-models body :gemini-native "https://generativelanguage.googleapis.com/v1beta/models")
@@ -119,6 +138,7 @@
         (concat
          (models/parse-openai-style (load-fixture "openai") :openai "u")
          (models/parse-anthropic-models (load-fixture "anthropic") :anthropic "u")
+         (models/parse-typesafe-models (load-fixture "typesafe") :typesafe "u")
          (models/parse-gemini-models (load-fixture "gemini-native") :gemini-native "u")
          (models/parse-openrouter-models (load-fixture "openrouter") :openrouter "u"))]
     (doseq [e all-entries]
@@ -142,6 +162,7 @@
   (is (true? (models/supports-models-listing? :gemini-native)))
   (is (true? (models/supports-models-listing? :vertex-gemini)))
   (is (true? (models/supports-models-listing? :openrouter)))
+  (is (true? (models/supports-models-listing? :typesafe)))
   (is (true? (models/supports-models-listing? :deepseek)))
   (is (true? (models/supports-models-listing? :kimi)))
   (is (false? (models/supports-models-listing? :kimi-code)))
@@ -217,6 +238,23 @@
       (let [headers (:headers @captured)]
         (testing "anthropic-version header carried from default-headers"
           (is (= "2023-06-01" (get headers "anthropic-version"))))))))
+
+(deftest fetch-models-typesafe-uses-profile-bearer-auth
+  (let [captured (atom nil)
+        body (load-fixture "typesafe")]
+    (with-redefs [provider/resolve-auth-token
+                  (fn [profile]
+                    (is (= :typesafe (:profile/id profile)))
+                    "test-typesafe-token")
+                  http/request (mock-http captured {:status 200 :body body})]
+      (let [entries (models/fetch-models :typesafe)]
+        (is (= :get (:method @captured)))
+        (is (= "https://api.typesafe.ai/v1/models" (:url @captured)))
+        (is (= "Bearer test-typesafe-token"
+               (get-in @captured [:headers "Authorization"])))
+        (is (= ["jev-latest" "jev-preview"] (mapv :model/id entries)))
+        (is (every? #(= :typesafe (:model/provider %)) entries))
+        (is (every? #(= #{:decision} (:model/capabilities %)) entries))))))
 
 (deftest fetch-models-openrouter-tolerates-missing-token
   (let [captured (atom nil)

@@ -68,6 +68,8 @@ Coverage markers:
 | Rerank | Voyage | `:voyage` | `request-golden`, `response-fixture`, `live-smoke` | Score/document response variants. |
 | Rerank | Jina | `:jina` | `request-golden`, `response-fixture`, `live-smoke` | Provider id tagging and document return shape. |
 | Rerank | Bedrock | `:bedrock` | `request-golden`, `response-fixture` | Bedrock Agent Runtime `/rerank` requires SigV4 and model ARN routing. |
+| Decisions | TypeSafe | `:typesafe` | `request-golden`, `response-fixture`, `live-smoke` | Preserve string question IDs, typed answers, distributions, and structured legends; reject incomplete answers. |
+| Decisions | OpenRouter | `:openrouter` | `request-golden`, `response-fixture`, `live-smoke` | Both Decisions and System One endpoints; provider routing, proxy URL prefixes, and reported cost. |
 | Image | OpenAI | `:openai` | `request-golden`, `response-fixture` | Every request must name `:image/model`; supported `gpt-image-*` option families and b64 responses must stay pinned. |
 | Image | OpenRouter | `:openrouter` | `request-golden`, `response-fixture` | Every request must name an OpenRouter image model; native `/images` parameters, usage, media type, and provider-reported cost must stay pinned. |
 | Image | Vertex Gemini | `:vertex-imagen` | `request-golden`, `response-fixture` | Requested Gemini image models route over Vertex `generateContent`; discontinued `imagen-*` models fail explicitly. |

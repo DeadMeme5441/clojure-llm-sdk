@@ -72,6 +72,12 @@ previous live slice is preserved and its entries are marked
 continue refreshing independently. Offline snapshot entries are never silently
 promoted to live availability.
 
+TypeSafe supports `(sdk/refresh-models! :provider :typesafe)`. Its `/models`
+endpoint lists Jev aliases with `#{:decision}` capabilities, but supplies no
+pricing or context limits. Versioned model IDs can still be used even when
+absent from that listing. OpenRouter's chat-oriented model listing may omit
+Jev decision models; this does not prevent calling them through `sdk/decide`.
+
 ## Overrides
 
 Use overrides for private models, self-hosted endpoints, or pricing data that has not reached public catalogs yet:

@@ -37,6 +37,7 @@ entry.
 | Embeddings | OpenAI, Gemini Native, OpenRouter, caller-registered Azure deployments, Cohere, Voyage, Mistral, Together, Jina, Nebius, and Ollama. |
 | Moderation | OpenAI. |
 | Rerank | Cohere, Voyage, Jina. |
+| Typed decisions | TypeSafe Jev System One; OpenRouter Decisions and TypeSafe-compatible System One. |
 | Image generation | OpenAI, OpenRouter, Vertex Gemini image generation (`:vertex-imagen`), and Bedrock image models. |
 | Audio transcription | OpenAI Whisper, Groq Whisper. |
 | Text-to-speech | OpenAI TTS, ElevenLabs. |

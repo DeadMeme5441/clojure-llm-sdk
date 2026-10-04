@@ -2,6 +2,20 @@
 
 All notable user-visible changes are tracked here.
 
+## 0.6.3
+
+- Added `sdk/decide` for TypeSafe Jev and OpenRouter, with typed Noul, Choice,
+  and Score questions and answers. Question IDs, probability distributions,
+  confidence, and structured score legends survive normalization.
+- Added TypeSafe's `/v1/systemone` adapter and live `/v1/models` discovery.
+  Credentials use `TYPESAFE_AI_API_KEY`, with `TYPESAFE_API_KEY` as a fallback.
+- Added OpenRouter's `/api/alpha/decisions` endpoint (default) and its
+  TypeSafe-compatible `/api/v1/systemone` endpoint (`:api :systemone`).
+  Provider routing, reported cost, runtime credentials, and HTTP configuration
+  use the existing SDK conventions.
+- Added offline request/response and validation coverage plus opt-in live
+  smokes for all three decision endpoints.
+
 ## 0.6.2
 
 - Vertex Gemini streaming smoke now honors `GOOGLE_CLOUD_LOCATION`, accepts

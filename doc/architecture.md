@@ -51,6 +51,7 @@ Each modality has a narrow protocol and driver:
 | Embeddings | `sdk/embed` | `llm.sdk.transport.embed/EmbedTransport` |
 | Moderation | `sdk/moderate` | `llm.sdk.transport.moderate/ModerationTransport` |
 | Rerank | `sdk/rerank` | `llm.sdk.transport.rerank/RerankTransport` |
+| Typed decisions | `sdk/decide` | `llm.sdk.transport.decide/DecisionTransport` |
 | Image generation | `sdk/generate-image` | `llm.sdk.transport.image/ImageTransport` |
 | Audio transcription | `sdk/transcribe` | `llm.sdk.transport.transcribe/TranscribeTransport` |
 | Text-to-speech | `sdk/speak` | `llm.sdk.transport.speak/SpeakTransport` |
@@ -70,7 +71,8 @@ Provider implementations live under provider-family namespaces. These namespaces
 | Bedrock | `llm.sdk.providers.bedrock.converse`, `.image`, `.rerank` |
 | Codex | `llm.sdk.providers.codex.responses` (wire codec), `llm.sdk.providers.codex.auth` (managed file/external OAuth lifecycle) |
 | Z.AI | `llm.sdk.providers.zai.chat` |
-| Local / Aggregators | `llm.sdk.providers.ollama.native`, `llm.sdk.providers.openrouter.chat`, `.embeddings`, `.image`, `llm.sdk.providers.perplexity.chat`, `llm.sdk.providers.openai-compat.aliases` |
+| TypeSafe | `llm.sdk.providers.typesafe.decide` (shared System One codec) |
+| Local / Aggregators | `llm.sdk.providers.ollama.native`, `llm.sdk.providers.openrouter.chat`, `.embeddings`, `.image`, `.decide`, `llm.sdk.providers.perplexity.chat`, `llm.sdk.providers.openai-compat.aliases` |
 | Other modalities | `llm.sdk.providers.voyage.embeddings`, `.rerank`, `llm.sdk.providers.jina.embeddings`, `llm.sdk.providers.elevenlabs.tts`, `llm.sdk.providers.fake.chat` |
 
 Provider-family namespaces are the sole implementations; the former flat
@@ -105,7 +107,7 @@ namespace has no registry side effect. Each complete profile carries:
 
 Registration validates the complete profile before publishing it and requires
 at least one transport constructor. The registry derives operation
-capabilities (`:chat`, `:embedding`, `:moderation`, `:rerank`,
+capabilities (`:chat`, `:decision`, `:embedding`, `:moderation`, `:rerank`,
 `:image-generation`, `:transcription`, and `:tts`) from the constructors,
 replacing conflicting caller-supplied operation claims.
 

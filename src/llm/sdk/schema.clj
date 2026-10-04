@@ -364,6 +364,85 @@
    [:rerank/next-token {:optional true} string?]])
 
 ;; ---------------------------------------------------------------------------
+;; Typed decisions (System One)
+;; ---------------------------------------------------------------------------
+
+(defn- decision-json? [value]
+  (cond
+    (or (nil? value) (string? value) (boolean? value)) true
+    (number? value) (Double/isFinite (double value))
+    (map? value) (every? (fn [[k v]]
+                          (and (or (string? k) (keyword? k))
+                               (decision-json? v)))
+                        value)
+    (vector? value) (every? decision-json? value)
+    :else false))
+
+(def DecisionContent
+  [:and [:or string? map? vector?] [:fn decision-json?]])
+
+(def DecisionQuestion
+  [:multi {:dispatch :type}
+   [:noul
+    [:map {:closed true}
+     [:type [:= :noul]]
+     [:instructions DecisionContent]
+     [:criteria {:optional true}
+      [:map {:closed true}
+       ["true" {:optional true} DecisionContent]
+       ["false" {:optional true} DecisionContent]]]]]
+   [:choice
+    [:map {:closed true}
+     [:type [:= :choice]]
+     [:instructions DecisionContent]
+     [:criteria [:map-of {:min 1 :max 255} string?
+                 [:maybe DecisionContent]]]]]
+   [:score
+    [:map {:closed true}
+     [:type [:= :score]]
+     [:instructions DecisionContent]
+     [:criteria [:vector {:min 2 :max 10} DecisionContent]]]]])
+
+(def DecisionRequest
+  [:map {:closed true}
+   [:decision/model [:string {:min 1}]]
+   [:decision/state DecisionContent]
+   [:decision/questions [:map-of {:min 1} string? DecisionQuestion]]
+   [:decision/provider-options {:optional true} map?]])
+
+(def ^:private Probability
+  [:and number? [:fn #(<= 0 % 1)]])
+
+(def DecisionAnswer
+  [:multi {:dispatch :type}
+   [:noul [:map [:type [:= :noul]] [:noul Probability]]]
+   [:choice
+    [:map
+     [:type [:= :choice]]
+     [:choice string?]
+     [:probabilities [:map-of {:min 1} string? Probability]]
+     [:confidence Probability]]]
+   [:score
+    [:map
+     [:type [:= :score]]
+     [:score [:and number? [:fn #(and (Double/isFinite (double %))
+                                     (not (neg? %)))]]]
+     [:legend [:map-of {:min 2} string? DecisionContent]]
+     [:probabilities [:map-of {:min 2} string? Probability]]
+     [:confidence Probability]]]])
+
+(def DecisionResponse
+  [:map {:closed true}
+   [:decision/id {:optional true} string?]
+   [:decision/provider keyword?]
+   [:decision/model string?]
+   [:decision/answers [:map-of {:min 1} string? DecisionAnswer]]
+   [:decision/provider-data {:optional true} map?]
+   [:decision/raw {:optional true} any?]
+   [:response/usage {:optional true} Usage]
+   [:response/cost {:optional true} Cost]])
+
+;; ---------------------------------------------------------------------------
 ;; Moderation request / response
 ;; ---------------------------------------------------------------------------
 
@@ -581,6 +660,7 @@
    [:profile/embed-transport-constructor {:optional true} ifn?]
    [:profile/moderation-transport-constructor {:optional true} ifn?]
    [:profile/rerank-transport-constructor {:optional true} ifn?]
+   [:profile/decision-transport-constructor {:optional true} ifn?]
    [:profile/image-transport-constructor {:optional true} ifn?]
    [:profile/transcribe-transport-constructor {:optional true} ifn?]
    [:profile/speak-transport-constructor {:optional true} ifn?]
@@ -605,6 +685,8 @@
 (def validate-moderation-response (m/validator ModerationResponse))
 (def validate-rerank-request (m/validator RerankRequest))
 (def validate-rerank-response (m/validator RerankResponse))
+(def validate-decision-request (m/validator DecisionRequest))
+(def validate-decision-response (m/validator DecisionResponse))
 (def validate-image-gen-request (m/validator ImageGenRequest))
 (def validate-image-gen-response (m/validator ImageGenResponse))
 (def validate-transcribe-request (m/validator TranscribeRequest))
@@ -620,6 +702,8 @@
 (defn explain-moderation-response [x] (m/explain ModerationResponse x))
 (defn explain-rerank-request [x] (m/explain RerankRequest x))
 (defn explain-rerank-response [x] (m/explain RerankResponse x))
+(defn explain-decision-request [x] (m/explain DecisionRequest x))
+(defn explain-decision-response [x] (m/explain DecisionResponse x))
 (defn explain-image-gen-request [x] (m/explain ImageGenRequest x))
 (defn explain-image-gen-response [x] (m/explain ImageGenResponse x))
 (defn explain-transcribe-request [x] (m/explain TranscribeRequest x))

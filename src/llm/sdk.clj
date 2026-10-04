@@ -21,6 +21,7 @@
             [llm.sdk.embed :as embed-driver]
             [llm.sdk.moderate :as moderate-driver]
             [llm.sdk.rerank :as rerank-driver]
+            [llm.sdk.decide :as decide-driver]
             [llm.sdk.image :as image-driver]
             [llm.sdk.transcribe :as transcribe-driver]
             [llm.sdk.speak :as speak-driver]
@@ -576,6 +577,20 @@
    :rerank/return-documents, :rerank/provider-options."
   [provider-id request & opts]
   (apply rerank-driver/rerank provider-id request opts))
+
+;; ---------------------------------------------------------------------------
+;; Typed decisions
+;; ---------------------------------------------------------------------------
+
+(defn decide
+  "Evaluate state against typed questions and return a DecisionResponse.
+   Required keys: :decision/model, :decision/state, :decision/questions.
+   Question IDs are strings; question :type is :noul, :choice, or :score.
+   Providers: :typesafe (System One), :openrouter (Decisions by default;
+   :decision/provider-options {:api :systemone} selects System One).
+   Accepts the usual :config runtime credentials, URL, headers and HTTP options."
+  [provider-id request & opts]
+  (apply decide-driver/decide provider-id request opts))
 
 ;; ---------------------------------------------------------------------------
 ;; Image generation

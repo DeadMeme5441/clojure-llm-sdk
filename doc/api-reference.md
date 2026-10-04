@@ -209,6 +209,79 @@ The result includes provider-normalized flagged status, categories, category sco
 
 The result includes ranked indices, scores, optional document echoes, usage when reported, and raw provider data. Cohere may report a unit-only usage map containing `:usage/search-units`; input/output token counters are not invented.
 
+## Typed Decisions
+
+```clojure
+(sdk/decide provider-id request & {:keys [config]})
+```
+
+Jev evaluates state against typed questions; it does not generate chat text or
+stream tokens. Use `:typesafe` for the direct API or `:openrouter` for either
+OpenRouter decision endpoint.
+
+```clojure
+{:decision/model "jev-latest"
+ :decision/state {:ticket "All payments fail. Please fix this immediately."}
+ :decision/questions
+ {"urgent" {:type :noul :instructions "Is immediate action needed?"}
+  "team" {:type :choice :instructions "Which team owns this?"
+          :criteria {"payments" "Payment failures" "accounts" nil}}
+  "severity" {:type :score :instructions "Rate severity."
+              :criteria ["Cosmetic" "Impaired" "Blocked"]}}}
+```
+
+- State and instructions accept a string, JSON object, or vector. Structured
+  criteria use the same shapes.
+- Question IDs and Choice option keys are **strings**. Question `:type` is a
+  keyword: `:noul`, `:choice`, or `:score`.
+- Noul optionally accepts `:criteria {"true" description "false" description}`.
+- Choice requires 1–255 options; a description may be `nil`.
+- Score requires an ordered vector of 2–10 level descriptions.
+- Invalid requests fail before HTTP; malformed or incomplete answers fail
+  rather than becoming empty successful results.
+
+`:decision/provider-options` accepts:
+
+| Key | Meaning |
+|---|---|
+| `:api` | `:openrouter` defaults to `:decisions` (`/api/alpha/decisions`); `:systemone` selects `/api/v1/systemone`. TypeSafe supports only `:systemone`. |
+| `:provider` | OpenRouter provider-routing preferences, passed as top-level `provider`. |
+| `:extra_body` | Additional provider fields such as OpenRouter `:session_id`, `:user`, or `:trace`. Cannot overwrite canonical fields or the API selector. |
+
+Use `"jev-latest"` or a versioned ID such as `"jev-1.13.0"` directly with
+TypeSafe. OpenRouter Decisions accepts `"typesafe/jev-1.13"`; its System One
+endpoint also maps bare names such as `"jev-latest"` into the TypeSafe namespace.
+Per-call `:config` supports the usual credentials, base URL, headers, HTTP client,
+and timeouts. An OpenRouter proxy base should include its `/api/v1` suffix;
+Decisions replaces the final `/v1` with `/alpha/decisions`, preserving prefixes.
+
+Response shape:
+
+```clojure
+{:decision/provider :typesafe
+ :decision/model "jev-1.13.0"
+ :decision/answers
+ {"urgent" {:type :noul :noul 0.98}
+  "team" {:type :choice :choice "payments"
+          :probabilities {"payments" 1.0 "accounts" 0.0} :confidence 1.0}
+  "severity" {:type :score :score 2.0
+              :legend {"0" "Cosmetic" "1" "Impaired" "2" "Blocked"}
+              :probabilities {"0" 0.0 "1" 0.0 "2" 1.0} :confidence 1.0}}
+ :response/usage {...}
+ :response/cost {...}
+ :decision/raw {...}}
+```
+
+Usage and cost are optional. OpenRouter's reported `usage.cost` is authoritative;
+otherwise cost is estimated only from known registry rates and reported usage,
+or marked unknown. Missing usage is not zero-filled. Optional `:decision/id`
+and `:decision/provider-data` preserve native metadata. Score legend and
+probability keys stay strings; structured legend values retain their JSON shape.
+
+Sources: [TypeSafe API](https://docs.typesafe.ai/api),
+[OpenRouter Decisions](https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-request),
+[OpenRouter System One](https://openrouter.ai/docs/guides/community/typesafe-sdk).
+
 ## Image Generation
 
 ```clojure

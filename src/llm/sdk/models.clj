@@ -126,6 +126,23 @@
               (:display_name m) (assoc :model/display-name (:display_name m))))
           (:data body))))
 
+(defn parse-typesafe-models
+  "Shape: {models [{name, description, release_date}]}.
+   All listed models support typed decisions. The endpoint does not expose
+   context limits or pricing."
+  [body provider-id source-url]
+  (let [ts (now)]
+    (mapv (fn [m]
+            {:model/id (:name m)
+             :model/provider provider-id
+             :model/capabilities #{:decision}
+             :model/source :live-models-api
+             :model/source-url source-url
+             :model/source-freshness :current
+             :model/availability :listed
+             :model/fetched-at ts})
+          (:models body))))
+
 (defn- gemini-method->capability [method]
   (case method
     "generateContent" :chat
@@ -294,6 +311,13 @@
         headers (provider/default-headers p token)]
     (parse-anthropic-models (get-json url headers) :anthropic url)))
 
+(defmethod fetch-models :typesafe [_]
+  (let [p (profile! :typesafe)
+        url (str (:profile/base-url p) "/models")
+        token (provider/resolve-auth-token p)
+        headers (provider/default-headers p token)]
+    (parse-typesafe-models (get-json url headers) :typesafe url)))
+
 (defmethod fetch-models :gemini-native [_]
   (let [p (profile! :gemini-native)
         base (:profile/base-url p)
@@ -363,7 +387,7 @@
   "Providers with non-generic listing implementations. The fallback set keeps
    direct use of this namespace useful before adapter namespaces register their
    profiles; registered profile metadata is authoritative when present."
-  #{:openai :anthropic :gemini-native :vertex-gemini :openrouter})
+  #{:openai :anthropic :gemini-native :vertex-gemini :openrouter :typesafe})
 
 (defn supports-models-listing?
   "Does this provider expose a /models endpoint we can call? Registered

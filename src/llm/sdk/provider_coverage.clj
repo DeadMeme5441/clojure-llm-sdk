@@ -141,23 +141,36 @@
 
    :openrouter
    (cov :surfaces #{:complete :streaming :tools :json-schema :reasoning
-                    :provider-routing :embedding :image-generation}
+                    :provider-routing :embedding :image-generation :decision}
         :cache #{:system-and-3-envelope :prompt-key :canonical-cache-stamp}
         :metrics #{:openai-usage :openrouter-provider-usage
                    :embedding-usage :image-response-metadata
-                   :canonical-chat-stamp}
+                   :canonical-chat-stamp :decision-usage}
         :pricing #{:openrouter-live-models :models-dev :litellm-snapshot
-                   :user-override}
+                   :user-override :provider-reported}
         :models #{:live-models-api :models-dev :bundled-snapshot}
         :request #{:openrouter-golden :openai-chat-completions-golden
-                   :embeddings-golden :openrouter-image-golden}
+                   :embeddings-golden :openrouter-image-golden :decision-golden}
         :response #{:openrouter-fixture :openai-chat-completions-fixture
-                    :embeddings-fixture :openrouter-image-fixture}
+                    :embeddings-fixture :openrouter-image-fixture :decision-fixture}
         :stream #{:openai-sse-fixture}
         :auth #{:bearer :optional-for-models}
         :errors #{:shared-classifier}
         :live-smoke :env-gated
         :notes "OpenRouter is first-class, not an alias; pricing is billing-route pricing.")
+
+   :typesafe
+   (cov :surfaces #{:decision}
+        :cache #{:not-applicable}
+        :metrics #{:decision-usage}
+        :pricing #{:unknown :user-override}
+        :models #{:live-models-api}
+        :request #{:decision-golden}
+        :response #{:decision-fixture}
+        :stream #{:not-applicable}
+        :auth #{:bearer :runtime-override}
+        :errors #{:shared-classifier}
+        :live-smoke :env-gated)
 
    :codex
    (cov :surfaces #{:complete :streaming :tools :json-schema :multimodal :reasoning

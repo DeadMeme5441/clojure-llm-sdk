@@ -10,6 +10,7 @@
    :profile/embed-transport-constructor :embedding
    :profile/moderation-transport-constructor :moderation
    :profile/rerank-transport-constructor :rerank
+   :profile/decision-transport-constructor :decision
    :profile/image-transport-constructor :image-generation
    :profile/transcribe-transport-constructor :transcription
    :profile/speak-transport-constructor :tts})

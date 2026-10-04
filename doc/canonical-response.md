@@ -25,6 +25,29 @@ unknown semantics across providers.
 The Malli schemas live in `llm.sdk.schema` (`Response`, `Usage`, `Cost`,
 `Cache`).
 
+## Typed decision responses
+
+`sdk/decide` returns `DecisionResponse`, separate from chat `Response`.
+`:decision/provider` and `:decision/model` identify the result;
+`:decision/answers` maps the original string question IDs to typed data:
+
+- Noul: `{:type :noul :noul probability}`.
+- Choice: `{:type :choice :choice "option" :probabilities {"option" probability ...}
+  :confidence probability}`.
+- Score: `{:type :score :score weighted-level :legend {"0" description ...}
+  :probabilities {"0" probability ...} :confidence probability}`.
+
+Probability and legend keys remain strings, including namespaced-looking IDs
+and numeric level keys. Structured legend values remain JSON data. Optional
+`:decision/id`, `:decision/provider-data`, and `:decision/raw` retain native
+metadata and the decoded response. Invalid or incomplete answers raise an error.
+
+Decision responses share `:response/usage` and `:response/cost` semantics:
+unreported usage stays absent; OpenRouter's reported cost wins over estimates.
+TypeSafe's model listing supplies no rates, so its cost remains unknown unless
+the caller registers pricing. Decisions have no chat parts, finish reason,
+cache stamp, or stream events. See [typed decisions](api-reference.md#typed-decisions).
+
 ## Replay-significant parts
 
 Canonical parts retain opaque data that a provider requires on a later turn;

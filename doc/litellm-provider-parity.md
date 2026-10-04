@@ -89,7 +89,8 @@ billable model. OpenAI, OpenRouter, and Bedrock callers must provide an explicit
 | `:vertex-gemini` | `vertex_ai` | Vertex Gemini chat, streaming, tools, multimodal, file/document attachments, reasoning | embeddings, TTS, OCR, count tokens, fine tuning, RAG/vector stores, realtime, public generateContent pass-through |
 | `:vertex-anthropic` | `vertex_ai` | Claude-on-Vertex messages chat, streaming, tools, JSON schema, thinking, file/document attachments, native cache markers (reuses Anthropic body/parse with GCP OAuth) | count tokens, batches, file lifecycle APIs, model listing, public rawPredict pass-through |
 | `:vertex-imagen` | `vertex_ai` | Gemini image generation over Vertex `generateContent` (compatibility provider id) | image edits/videos and other Vertex AI endpoint families |
-| `:openrouter` | `openrouter` | chat, streaming, tools, JSON schema, reasoning, provider routing, embeddings, image generation, live model/pricing lookup | responses, image edit, messages/a2a/interactions |
+| `:openrouter` | `openrouter` | chat, streaming, tools, JSON schema, reasoning, provider routing, embeddings, image generation, typed Decisions and System One, live model/pricing lookup | responses, image edit, messages/a2a/interactions |
+| `:typesafe` | not mapped | Jev System One typed decisions (Noul, Choice, Score), live model listing | No chat or other endpoint family is claimed. |
 | `:perplexity` | `perplexity` | native Agent chat, streaming, tools, typed search output/citations, usage, and structured errors | dedicated search endpoint and other endpoint families not exposed through the Agent constructor |
 | `:codex` | `openai` | OpenAI Responses-shaped Codex chat, streaming, tools, file attachments, reasoning, encrypted reasoning | not a general OpenAI Responses API surface |
 | `:codex-backend` | `chatgpt` | ChatGPT backend Responses/SSE path, OAuth auth-json cache, tools, file attachments, reasoning | not a general ChatGPT automation surface |

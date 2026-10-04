@@ -3,7 +3,7 @@
 [![CI](https://github.com/DeadMeme5441/clojure-llm-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/DeadMeme5441/clojure-llm-sdk/actions/workflows/ci.yml)
 [![Clojars Project](https://img.shields.io/clojars/v/net.clojars.deadmeme5441/clojure-llm-sdk.svg)](https://clojars.org/net.clojars.deadmeme5441/clojure-llm-sdk)
 
-A Clojure SDK for LLM providers: one canonical API for chat, embeddings, moderation, rerank, image generation, audio transcription, and text-to-speech.
+A Clojure SDK for LLM providers: one canonical API for chat, typed decisions, embeddings, moderation, rerank, image generation, audio transcription, and text-to-speech.
 
 This is a provider SDK, not an agent framework or proxy server. It owns provider wire-format differences so your application does not have to. It does not include credential pools, budget routing, plugin loading, vector stores, MCP clients, observability sinks, or secret managers.
 
@@ -12,13 +12,13 @@ This is a provider SDK, not an agent framework or proxy server. It owns provider
 Add the library coordinate to `deps.edn`:
 
 ```clojure
-{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.6.2"}}}
+{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.6.3"}}}
 ```
 
 Or with Leiningen / `project.clj`:
 
 ```clojure
-[net.clojars.deadmeme5441/clojure-llm-sdk "0.6.2"]
+[net.clojars.deadmeme5441/clojure-llm-sdk "0.6.3"]
 ```
 
 **Upgrading to 0.6.0:** review the [migration notes](CHANGELOG.md#060) for
@@ -127,6 +127,7 @@ The public API exposes these canonical surfaces:
 | Embeddings | `sdk/embed` | OpenAI, Gemini Native, OpenRouter, Azure OpenAI deployment profiles, Cohere, Voyage, Mistral, Together, Jina, Nebius, and Ollama |
 | Moderation | `sdk/moderate` | OpenAI |
 | Rerank | `sdk/rerank` | Cohere, Voyage, Jina |
+| Typed decisions | `sdk/decide` | TypeSafe Jev, OpenRouter Decisions and System One |
 | Image generation | `sdk/generate-image` | OpenAI, OpenRouter, Vertex Gemini image generation (`:vertex-imagen`), and Bedrock image models |
 | Audio transcription | `sdk/transcribe` | OpenAI Whisper, Groq Whisper |
 | Text-to-speech | `sdk/speak` | OpenAI TTS, ElevenLabs |
@@ -167,6 +168,7 @@ Some provider names are intentionally distinct:
 - `:kimi-code` uses Kimi Code's coding endpoint and reads `KIMI_API_KEY`.
 - `:vertex-gemini` uses Google Application Default Credentials or `GOOGLE_OAUTH_ACCESS_TOKEN`.
 - `:zai` uses Z.AI's OpenAI-compatible GLM endpoint and reads `ZAI_API_KEY`.
+- `:typesafe` uses Jev's typed decision endpoint and reads `TYPESAFE_AI_API_KEY` (or `TYPESAFE_API_KEY`). Use `sdk/decide`, not `sdk/complete`.
 - `:vertex-anthropic` serves Claude models through Google Vertex AI using the same GCP credentials as `:vertex-gemini`, not an `ANTHROPIC_API_KEY`.
 - `:codex-backend` uses ChatGPT OAuth over HTTP/SSE (default) or Responses WebSocket V2 (`:config {:transport :websocket}`). Managed Codex CLI file credentials refresh automatically; caller-managed `:auth-token` and `:account-id` bypass file storage. See [OAuth configuration and live verification](doc/provider-configuration.md#chatgpt-oauth). `:openai` and API-key `:codex` remain separate.
 
@@ -209,6 +211,37 @@ Native Gemini embeddings use the existing `:gemini-native` profile:
    :embed/dimensions 256
    :embed/provider-options {:task-type :retrieval-document}})
 ```
+
+Typed decisions (Noul, Choice, and Score):
+
+```clojure
+(def decision-request
+  {:decision/model "jev-latest"
+   :decision/state "All payments are failing. Please fix this now."
+   :decision/questions
+   {"urgent" {:type :noul :instructions "Is immediate action requested?"}
+    "team" {:type :choice :instructions "Which team owns this?"
+            :criteria {"payments" "Payment failures"
+                       "accounts" "Login issues"}}
+    "severity" {:type :score :instructions "How severe is the problem?"
+                :criteria ["Cosmetic" "Function impaired" "Revenue blocked"]}}})
+
+(sdk/decide :typesafe decision-request)
+
+;; OpenRouter's native Decisions API (default).
+(sdk/decide :openrouter
+            (assoc decision-request :decision/model "typesafe/jev-1.13"))
+
+;; OpenRouter's TypeSafe-compatible System One API.
+(sdk/decide :openrouter
+            (assoc decision-request
+                   :decision/provider-options {:api :systemone}))
+```
+
+Answers live under `:decision/answers`, keyed by the same string question IDs.
+Probabilities, confidence, and score legends are preserved as data, not prose.
+See the [decision API reference](doc/api-reference.md#typed-decisions) for the
+request and response contract.
 
 Rerank:
 
