@@ -18,7 +18,7 @@ Provider profiles define:
 | OpenAI | `:openai` | `openai-chat` | `OPENAI_API_KEY` |
 | OpenRouter | `:openrouter` | `openrouter` | `OPENROUTER_API_KEY` |
 | Anthropic Messages | `:anthropic` | `anthropic-messages` | `ANTHROPIC_API_KEY` |
-| Anthropic OAuth | `:anthropic` | `anthropic-messages` | `CLAUDE_OAT_TOKEN` |
+| Anthropic OAuth | `:anthropic` | `anthropic-messages` | Explicit `:auth-mode :oauth`; caller token or `CLAUDE_OAT_TOKEN` |
 | Gemini Native | `:gemini-native` | `gemini-native` | `GEMINI_API_KEY` |
 | Vertex Gemini | `:vertex-gemini` | `gemini-native` | ADC / `GOOGLE_OAUTH_ACCESS_TOKEN` |
 | Vertex Anthropic (Claude) | `:vertex-anthropic` | `anthropic-messages` | ADC / `GOOGLE_OAUTH_ACCESS_TOKEN` |
@@ -160,7 +160,7 @@ response uses canonical `:transcription/duration-seconds` and sparse
 
 ### Anthropic OAuth
 
-The Anthropic adapter auto-detects OAuth-style tokens by token prefix and switches from `x-api-key` to Bearer auth. OAuth mode also adds Claude Code identity headers and preserves thinking block signatures for replay.
+Anthropic OAuth for Claude Code models requires explicit `:config {:auth-mode :oauth}` with a caller-managed `:auth-token` or `CLAUDE_OAT_TOKEN`. API-key mode remains the default; token prefixes never choose a mode. The adapter owns bearer-only authentication, the official-endpoint restriction, tool-name round trips, and complete stream validation. It preserves caller instructions and native thinking/replay metadata. Applications own interactive sign-in, credential storage, and refresh. Users accept responsibility and liability for permitted use and account consequences. See [configuration and limitations](provider-configuration.md#anthropic-claude-code-oauth).
 
 ### Vertex Anthropic (Claude on Vertex)
 

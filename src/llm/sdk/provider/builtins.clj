@@ -81,7 +81,7 @@
                 :profile/speak-transport-constructor speak/make-transport})
       (profile :anthropic :anthropic-messages "https://api.anthropic.com/v1" :api-key-header
                {:profile/auth-header-name "x-api-key"
-                :profile/env-var-names ["ANTHROPIC_API_KEY" "CLAUDE_OAT_TOKEN"]
+                :profile/env-var-names ["ANTHROPIC_API_KEY"]
                 :profile/supports-model-listing true
                 :profile/capabilities anthropic-caps
                 :profile/default-headers {"anthropic-version" "2023-06-01"}

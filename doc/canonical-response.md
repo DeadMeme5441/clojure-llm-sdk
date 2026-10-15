@@ -304,3 +304,9 @@ no separate cost or cache event types. Provider-reported cost may
 accompany a usage event and remains authoritative on the aggregate response.
 When no such cost exists, cost/cache stamping runs only after the complete
 usage envelope is available.
+
+Anthropic Messages streams require `message_stop` and a known provider finish
+reason. An earlier finish-reason delta alone is not transport completion.
+Missing or unknown completion is `:incomplete`, even when complete tool arguments
+were received. Native adapter end markers with `:event/terminal? false` carry
+intermediate finish metadata; public completion streams still emit one final end.

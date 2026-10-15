@@ -12,13 +12,13 @@ This is a provider SDK, not an agent framework or proxy server. It owns provider
 Add the library coordinate to `deps.edn`:
 
 ```clojure
-{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.6.3"}}}
+{:deps {net.clojars.deadmeme5441/clojure-llm-sdk {:mvn/version "0.6.4"}}}
 ```
 
 Or with Leiningen / `project.clj`:
 
 ```clojure
-[net.clojars.deadmeme5441/clojure-llm-sdk "0.6.3"]
+[net.clojars.deadmeme5441/clojure-llm-sdk "0.6.4"]
 ```
 
 **Upgrading to 0.6.0:** review the [migration notes](CHANGELOG.md#060) for
@@ -170,6 +170,7 @@ Some provider names are intentionally distinct:
 - `:zai` uses Z.AI's OpenAI-compatible GLM endpoint and reads `ZAI_API_KEY`.
 - `:typesafe` uses Jev's typed decision endpoint and reads `TYPESAFE_AI_API_KEY` (or `TYPESAFE_API_KEY`). Use `sdk/decide`, not `sdk/complete`.
 - `:vertex-anthropic` serves Claude models through Google Vertex AI using the same GCP credentials as `:vertex-gemini`, not an `ANTHROPIC_API_KEY`.
+- `:anthropic` supports Claude Code OAuth with explicit `:config {:auth-mode :oauth :auth-token access-token}`; `CLAUDE_OAT_TOKEN` is used only in that mode. API keys remain the default. The caller owns sign-in, storage, and refresh. Users are responsible for permitted use and account consequences. See [Anthropic OAuth](doc/provider-configuration.md#anthropic-claude-code-oauth).
 - `:codex-backend` uses ChatGPT OAuth over HTTP/SSE (default) or Responses WebSocket V2 (`:config {:transport :websocket}`). Managed Codex CLI file credentials refresh automatically; caller-managed `:auth-token` and `:account-id` bypass file storage. See [OAuth configuration and live verification](doc/provider-configuration.md#chatgpt-oauth). `:openai` and API-key `:codex` remain separate.
 
 Applications that manage secrets outside environment variables can pass per-call runtime config:

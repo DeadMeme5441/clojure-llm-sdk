@@ -5,6 +5,7 @@
   (:require [clojure.string :as str]
             [llm.sdk.provider :as provider]
             [llm.sdk.provider.auth :as provider-auth]
+            [llm.sdk.providers.anthropic.chat :as anthropic]
             [llm.sdk.schema :as schema]
             [llm.sdk.transport :as transport]
             [llm.sdk.http :as http]
@@ -102,7 +103,7 @@
 ;; Complete
 ;; ---------------------------------------------------------------------------
 
-(declare stamp)
+(declare stamp ensure-terminal-end)
 
 (defn- sign-if-needed [profile req] (aws-sigv4/maybe-sign profile req))
 
@@ -235,7 +236,8 @@
                            (transport/parse-stream-event transport profile record)))
               events' (into events parsed)
               raw' (conj raw record)]
-          (if (some #(= :stream/end (:event/type %)) parsed)
+          (if (some #(and (= :stream/end (:event/type %))
+                          (not= false (:event/terminal? %))) parsed)
             {:events events'
              :raw (str (str/join "\n\n" raw') "\n\n")}
             (recur (rest records) events' raw')))
@@ -279,15 +281,16 @@
                          :provider provider-id
                          :attempts 1})))
       (let [{:keys [events raw]} (collect-sse-events-until-end transport profile body)
-            has-end? (some #(= :stream/end (:event/type %)) events)
-            parsed-events (concat [(stream/start-event)]
-                                  events
-                                  (when-not has-end?
-                                    [(stream/end-event :finish-reason :incomplete)]))
-            parsed (try
-                     (transport/parse-response transport profile raw)
-                     (catch Throwable _
-                       (stream/events->response parsed-events provider-id model)))]
+            parsed-events (cons (stream/start-event)
+                                (ensure-terminal-end
+                                 events
+                                 (= :anthropic-messages (:profile/protocol-family profile))))
+            parsed (if (= :anthropic-messages (:profile/protocol-family profile))
+                     (stream/events->response parsed-events provider-id model)
+                     (try
+                       (transport/parse-response transport profile raw)
+                       (catch Throwable _
+                         (stream/events->response parsed-events provider-id model))))]
         (stamp parsed
                provider-id model)))))
 
@@ -393,14 +396,14 @@
   "Move provider end markers behind any trailing metadata and emit exactly one
    SDK terminal event. EOF without a provider end is classified as incomplete
    so an unexpectedly truncated stream is observable."
-  [events]
+  [events require-finish-reason?]
   (letfn [(step [remaining terminal-seen? finish-reason]
             (lazy-seq
              (if-let [remaining (seq remaining)]
                (let [event (first remaining)]
                  (if (= :stream/end (:event/type event))
                    (step (rest remaining)
-                         true
+                         (or terminal-seen? (not= false (:event/terminal? event)))
                          (or (:event/finish-reason event) finish-reason))
                    (cons event
                          (step (rest remaining)
@@ -408,7 +411,10 @@
                                finish-reason))))
                (list (stream/end-event
                       :finish-reason
-                      (if terminal-seen?
+                      (if (and terminal-seen?
+                               (or (not require-finish-reason?)
+                                   (contains? #{:stop :tool-calls :length :content-filter}
+                                              finish-reason)))
                         (or finish-reason :unknown)
                         :incomplete))))))]
     (step events false nil)))
@@ -421,15 +427,16 @@
       (catch Throwable _))))
 
 (defn- stop-at-provider-end
-  "The Codex backend's SSE response end is also its transport terminator. Stop
-   reading there so a server that keeps the HTTP connection alive cannot stall
-   SDK terminal delivery. Other protocols must remain open for usage trailers."
+  "Stop at the actual transport terminator without reading a still-open body.
+   Anthropic finish-reason deltas are nonterminal; its message_stop and the
+   Codex backend's final response end terminate their SSE transports."
   [events]
   (letfn [(step [remaining]
             (lazy-seq
              (when-let [remaining (seq remaining)]
                (let [event (first remaining)]
-                 (if (= :stream/end (:event/type event))
+                 (if (and (= :stream/end (:event/type event))
+                          (not= false (:event/terminal? event)))
                    (list event)
                    (cons event (step (rest remaining))))))))]
     (step events)))
@@ -457,6 +464,7 @@
      :config    Per-call runtime config: :api-key/:auth-token,
                 :base-url, :headers, :http-client,
                 :connect-timeout-ms, :timeout-ms.
+                Anthropic OAuth requires :auth-mode :oauth; tokens stay caller-owned.
                 ChatGPT OAuth (:codex-backend) defaults to HTTP/SSE;
                 :transport :websocket enables persistent incremental Responses.
                 :incremental? false disables automatic WebSocket continuation."
@@ -479,6 +487,9 @@
         request (cond-> request stream? (assoc :request/stream? true))
         req (transport/build-request transport profile request)
         req (provider/apply-http-options profile req)
+        req (if (= :anthropic-messages (:profile/protocol-family profile))
+              (anthropic/finalize-request profile req)
+              req)
         req (sign-if-needed profile req)
         req (if (= provider-id :codex-backend)
               (let [mode (get config :transport :sse)]
@@ -513,12 +524,15 @@
                  :events
                  (parse-stream-lines transport profile
                                      (http/line-seq-closeable body))}))
-            events (if (and (= :codex-backend provider-id)
-                            (= :sse (:transport req)))
+            events (if (or (= :anthropic-messages (:profile/protocol-family profile))
+                           (and (= :codex-backend provider-id)
+                                (= :sse (:transport req))))
                      (stop-at-provider-end events)
                      events)
             parsed-events (concat [(stream/start-event)]
-                                  (ensure-terminal-end events))
+                                  (ensure-terminal-end
+                                   events
+                                   (= :anthropic-messages (:profile/protocol-family profile))))
             handle (stream-handle parsed-events body)]
         (if on-event
           (let [acc (reduce (fn [acc event]

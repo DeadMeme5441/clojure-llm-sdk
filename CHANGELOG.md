@@ -2,6 +2,21 @@
 
 All notable user-visible changes are tracked here.
 
+## 0.6.4
+
+- Require explicit `:config {:auth-mode :oauth}` for Anthropic Claude Code OAuth.
+  API keys remain the default; token-prefix detection and unrelated system-prompt
+  rewriting are removed. Existing OAuth callers must select the mode explicitly.
+- Finalize bearer-only authentication after runtime HTTP overrides and restrict
+  OAuth to the official Anthropic endpoint. Keep required protocol headers intact.
+- Round-trip tool definitions, forced choice, streamed/unary responses, and native
+  replay through one reversible wire-name mapping without changing canonical names,
+  thinking signatures, cache controls, or usage/pricing.
+- Require both `message_stop` and a known finish reason before Anthropic stream
+  completion. Malformed events fail; incomplete tool responses remain incomplete.
+- Keep interactive login, private storage, and refresh application-owned. Document
+  users' responsibility and liability for their use of Claude Code OAuth.
+
 ## 0.6.3
 
 - Added `sdk/decide` for TypeSafe Jev and OpenRouter, with typed Noul, Choice,

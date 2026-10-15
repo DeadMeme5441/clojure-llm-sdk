@@ -4,8 +4,7 @@
   (:require [clojure.string :as str]
             [cheshire.core :as json]
             [clojure.test :refer [deftest is testing]]
-            [llm.sdk :as sdk]
-            [llm.sdk.provider :as provider]))
+            [llm.sdk :as sdk]))
 
 (defn- has-creds? [env-var]
   (boolean (System/getenv env-var)))
@@ -38,22 +37,12 @@
 (deftest ^:live test-anthropic-oauth-smoke
   (when (has-creds? "CLAUDE_OAT_TOKEN")
     (testing "Anthropic OAuth smoke test"
-      (let [oauth-profile {:profile/id :anthropic-oauth-temp
-                           :profile/protocol-family :anthropic-messages
-                           :profile/base-url "https://api.anthropic.com/v1"
-                           :profile/auth-strategy :bearer
-                           :profile/env-var-names ["CLAUDE_OAT_TOKEN"]
-                           :profile/capabilities #{:chat :streaming :tools :json-schema :reasoning :cache :thinking-blocks}
-                           :profile/default-headers {"anthropic-version" "2023-06-01"}
-                           :profile/transport-constructor
-                           (fn [] ((requiring-resolve 'llm.sdk.providers.anthropic.chat/make-transport)))}
-            _ (provider/register-provider oauth-profile)
-            req {:request/model "claude-sonnet-4-20250514"
+      (let [req {:request/model "claude-sonnet-4-20250514"
                  :request/messages [{:message/role :user
                                      :message/content "Say exactly 'pong' and nothing else."}]
                  :request/max-tokens 1024}
             result (try
-                     {:ok true :resp (sdk/complete :anthropic-oauth-temp req)}
+                     {:ok true :resp (sdk/complete :anthropic req :config {:auth-mode :oauth})}
                      (catch clojure.lang.ExceptionInfo e
                        (let [data (ex-data e)
                              status (:status data)

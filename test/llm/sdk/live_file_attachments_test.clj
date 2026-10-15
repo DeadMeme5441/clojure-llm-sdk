@@ -9,8 +9,7 @@
   (:require [clojure.java.shell :as sh]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [llm.sdk :as sdk]
-            [llm.sdk.provider :as provider]))
+            [llm.sdk :as sdk]))
 
 (def ^:private secret-code "SDK-LIVE-FILE-42")
 
@@ -132,25 +131,13 @@
 (deftest ^:live live-anthropic-oat-file-text-source
   (when (env? "CLAUDE_OAT_TOKEN")
     (testing "Anthropic OAuth/OAT document block via text source"
-      (let [oauth-profile {:profile/id :anthropic-oat-file-live
-                           :profile/protocol-family :anthropic-messages
-                           :profile/base-url "https://api.anthropic.com/v1"
-                           :profile/auth-strategy :bearer
-                           :profile/env-var-names ["CLAUDE_OAT_TOKEN"]
-                           :profile/capabilities #{:chat :streaming :tools
-                                                   :json-schema :reasoning
-                                                   :cache :thinking-blocks
-                                                   :file-attachments}
-                           :profile/default-headers {"anthropic-version" "2023-06-01"}
-                           :profile/transport-constructor
-                           (fn [] ((requiring-resolve 'llm.sdk.providers.anthropic.chat/make-transport)))}
-            _ (provider/register-provider oauth-profile)
-            resp (sdk/complete
-                  :anthropic-oat-file-live
+      (let [resp (sdk/complete
+                  :anthropic
                   {:request/model "claude-sonnet-4-20250514"
                    :request/messages [(file-message)]
                    :request/max-tokens 32
-                   :request/temperature 0})]
+                   :request/temperature 0}
+                  :config {:auth-mode :oauth})]
         (is (= :anthropic (:response/provider resp)))
         (assert-secret-code resp)))))
 
