@@ -56,8 +56,19 @@
    This returns a transient profile value; it does not mutate the
    global provider registry."
   [profile config]
-  (let [token (or (:auth-token config) (:api-key config))]
+  (let [token (or (:auth-token config) (:api-key config))
+        mode (:auth-mode config)]
+    (when (and mode
+               (or (not (contains? #{:api-key :oauth} mode))
+                   (not= :anthropic-messages (:profile/protocol-family profile))))
+      (throw (ex-info "Explicit auth-mode is supported only for Anthropic Messages"
+                      {:error/type :auth/invalid-mode :auth-mode mode})))
     (cond-> profile
+      mode
+      (assoc :profile/auth-mode mode
+             :profile/env-var-names (if (= :oauth mode)
+                                     ["CLAUDE_OAT_TOKEN"]
+                                     ["ANTHROPIC_API_KEY"]))
       token
       (assoc :profile/auth-token token)
 

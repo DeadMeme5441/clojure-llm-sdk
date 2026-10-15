@@ -33,7 +33,7 @@ Important chat credentials:
 |---|---|---|
 | OpenAI | `:openai` | `OPENAI_API_KEY` |
 | Anthropic API key | `:anthropic` | `ANTHROPIC_API_KEY` |
-| Anthropic OAuth | `:anthropic` | `CLAUDE_OAT_TOKEN` |
+| Anthropic OAuth | `:anthropic` with `:auth-mode :oauth` | Caller token or `CLAUDE_OAT_TOKEN` |
 | Gemini Native | `:gemini-native` | `GEMINI_API_KEY` |
 | Vertex Gemini | `:vertex-gemini` | ADC or `GOOGLE_OAUTH_ACCESS_TOKEN` |
 | Vertex Anthropic | `:vertex-anthropic` | ADC or `GOOGLE_OAUTH_ACCESS_TOKEN` |
@@ -95,8 +95,9 @@ Supported config keys:
 | Key | Meaning |
 |---|---|
 | `:api-key` / `:auth-token` | Auth token for this call. |
+| `:auth-mode` | Anthropic Messages only: `:api-key` (default) or explicit `:oauth`. Token shape never selects the mode. |
 | `:base-url` | Provider base URL override. |
-| `:headers` | Extra headers; merged case-insensitively and applied last, after provider, adapter, and auth headers. |
+| `:headers` | Extra headers; merged case-insensitively and applied last, except protected Anthropic OAuth authentication/protocol headers. |
 | `:http-client` | Caller-managed hato `java.net.http.HttpClient`, shared by every modality. |
 | `:connect-timeout-ms` | HTTP connect timeout; WebSocket upgrade timeout. Without this or an injected client, the shared default pool uses 30000 ms. |
 | `:timeout-ms` | HTTP request deadline plus streamed-body inactivity timeout; WebSocket server/consumer inactivity timeout. Defaults to 120000 ms. |
@@ -107,12 +108,48 @@ Supported config keys:
 Without `:http-client` or a custom connect timeout, calls share one lazily
 created connection pool. Supplying `:connect-timeout-ms` builds a separate
 client; supplying `:http-client` uses the caller-owned client. Runtime headers
-win even when their spelling differs only by case.
+win even when their spelling differs only by case, except for protected Anthropic
+OAuth headers.
 
 Custom complete profiles may use `:profile/auth-strategy :api-key-query` with
 a non-empty `:profile/auth-query-param`; the resolved runtime, profile, or
 environment token is added to that query parameter. Registration rejects
 query-auth profiles without the parameter name.
+
+## Anthropic Claude Code OAuth
+
+Anthropic API keys remain the default. To access Claude Code models with a
+caller-managed OAuth access token:
+
+```clojure
+(sdk/complete :anthropic
+              {:request/model "claude-sonnet-4-6"
+               :request/messages [{:message/role :user :message/content "Hello"}]}
+              :stream? true
+              :on-event handle-event
+              :config {:auth-mode :oauth :auth-token access-token})
+```
+
+Without an explicit token, OAuth mode reads only `CLAUDE_OAT_TOKEN`; API-key mode
+reads `ANTHROPIC_API_KEY`. OAuth-looking strings no longer enable OAuth implicitly.
+Custom native Anthropic profiles may set `:profile/auth-mode :oauth` explicitly.
+
+OAuth is restricted to the exact `https://api.anthropic.com/v1` base URL.
+Runtime overrides cannot replace its bearer credential, restore `x-api-key`, or
+remove required protocol headers. Function definitions, forced tool choice, and
+native history/replay use the same reversible wire names; canonical names stay
+unchanged for callers. Caller instructions and opaque reasoning are preserved.
+Streaming requires both a known finish reason and `message_stop`; missing either
+produces `:incomplete`, and malformed event data raises an error.
+
+The SDK does not start browser login, import Claude credentials, persist tokens,
+or refresh caller-owned Anthropic tokens. Those responsibilities belong to the
+application. Users choosing Claude Code OAuth accept responsibility and liability
+for compliance with Anthropic's terms and account permissions, account restrictions,
+charges, and data handling. To the extent permitted by law, the SDK and its
+contributors disclaim liability for consequences of that access. Compatibility
+does not imply Anthropic's authorization or endorsement; eligibility and limits
+remain provider-controlled.
 
 ## ChatGPT OAuth
 

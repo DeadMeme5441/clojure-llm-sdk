@@ -209,128 +209,6 @@
     (is (= :tool-calls (:event/finish-reason (second finish-events))))))
 
 ;; ---------------------------------------------------------------------------
-;; OAuth token detection
-;; ---------------------------------------------------------------------------
-
-(deftest test-oauth-token-detection
-  (is (true? (anthropic/oauth-token? "sk-ant-oat-test-token")))
-  (is (true? (anthropic/oauth-token? "sk-ant-admin123")))
-  (is (true? (anthropic/oauth-token? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")))
-  (is (true? (anthropic/oauth-token? "cc-access-token-123")))
-  ;; Regular API keys should NOT be detected as OAuth
-  (is (false? (anthropic/oauth-token? "sk-ant-api03-test")))
-  (is (false? (anthropic/oauth-token? nil)))
-  (is (false? (anthropic/oauth-token? ""))))
-
-(deftest test-build-request-oauth-bearer-auth
-  (let [t (anthropic/make-transport)
-        ;; Temporarily override the provider to simulate an OAuth token
-        profile (assoc (provider/get-provider :anthropic)
-                       :profile/auth-strategy :bearer
-                       :profile/env-var-names ["ANTHROPIC_OAUTH_TEST"])
-        req {:request/model "claude-sonnet-4-6"
-             :request/messages [{:message/role :user :message/content "Hello"}]}
-        built (transport/build-request t profile req)]
-    ;; The request should build without errors.
-    (is (map? built))
-    (is (string? (:url built)))))
-
-(deftest test-build-request-claude-oat-direct-wire-shape
-  (testing "Claude OAT on direct Anthropic endpoint uses Claude Code bearer headers and body transforms"
-    (let [t (anthropic/make-transport)
-          profile (assoc (provider/get-provider :anthropic)
-                         :profile/auth-token "sk-ant-oat-test-token")
-          req {:request/model "claude-sonnet-4-6"
-               :request/messages [{:message/role :system
-                                   :message/content "You are Hermes Agent"}
-                                  {:message/role :user
-                                   :message/content "weather?"}
-                                  {:message/role :assistant
-                                   :message/content "Checking."
-                                   :message/tool-calls [{:part/type :tool-call
-                                                         :tool-call/id "toolu_1"
-                                                         :tool-call/name "get_weather"
-                                                         :tool-call/arguments "{\"city\":\"NYC\"}"}]}]
-               :request/tools [{:type :function
-                                :function {:name "get_weather"
-                                           :description "Weather"
-                                           :parameters {:type :object
-                                                        :properties {:city {:type :string}}}}}]
-               :request/tool-choice :required}
-          built (transport/build-request t profile req)]
-      (is (= "Bearer sk-ant-oat-test-token" (get-in built [:headers "Authorization"])))
-      (is (nil? (get-in built [:headers "x-api-key"])))
-      (is (re-find #"oauth-2025-04-20" (get-in built [:headers "anthropic-beta"])))
-      (is (re-find #"claude_cli|claude-cli"
-                   (or (get-in built [:headers "user-agent"]) "")))
-      (is (= "cli" (get-in built [:headers "x-app"])))
-      (is (nil? (get-in built [:headers "anthropic-dangerous-direct-browser-access"])))
-      (is (= "claude-sonnet-4-6" (get-in built [:body :model])))
-      (is (= "You are Claude Code, Anthropic's official CLI for Claude."
-             (get-in built [:body :system 0 :text])))
-      (is (= "You are Claude Code"
-             (get-in built [:body :system 1 :text])))
-      (is (= "mcp_get_weather" (get-in built [:body :tools 0 :name])))
-      (is (= "mcp_get_weather"
-             (get-in built [:body :messages 1 :content 1 :name])))
-      (is (= {:type "any"} (get-in built [:body :tool_choice]))))))
-
-(deftest test-claude-oat-transform-does-not-apply-to-third-party-endpoints
-  (testing "OAuth-looking tokens on Anthropic-compatible gateways keep the gateway wire shape"
-    (let [t (anthropic/make-transport)
-          profile (assoc (provider/get-provider :anthropic)
-                         :profile/base-url "https://example-gateway.test/v1"
-                         :profile/auth-token "sk-ant-oat-test-token")
-          req {:request/model "claude-sonnet-4-6"
-               :request/messages [{:message/role :system
-                                   :message/content "You are Hermes Agent"}
-                                  {:message/role :user
-                                   :message/content "hi"}]}
-          built (transport/build-request t profile req)]
-      (is (= "sk-ant-oat-test-token" (get-in built [:headers "x-api-key"])))
-      (is (nil? (get-in built [:headers "Authorization"])))
-      (is (= "You are Hermes Agent" (get-in built [:body :system 0 :text])))
-      (is (nil? (get-in built [:headers "x-app"]))))))
-
-(deftest test-claude-oat-transform-requires-real-anthropic-host
-  (testing "host detection does not treat lookalike domains as Anthropic"
-    (let [t (anthropic/make-transport)
-          profile (assoc (provider/get-provider :anthropic)
-                         :profile/base-url "https://proxy.anthropic.com.evil.test/v1"
-                         :profile/auth-token "sk-ant-oat-test-token")
-          built (transport/build-request
-                 t profile
-                 {:request/model "claude-sonnet-4-6"
-                  :request/messages [{:message/role :system
-                                      :message/content "You are Hermes Agent"}
-                                     {:message/role :user
-                                      :message/content "hi"}]})]
-      (is (= "sk-ant-oat-test-token" (get-in built [:headers "x-api-key"])))
-      (is (nil? (get-in built [:headers "Authorization"])))
-      (is (= "You are Hermes Agent" (get-in built [:body :system 0 :text]))))))
-
-(deftest test-build-request-oauth-system-prefix
-  (testing "OAuth mode sanitizes system prompt product references"
-    (let [sanitized (#'anthropic/sanitize-system-for-oauth
-                     [{:type "text" :text "You are Hermes Agent"}])]
-      (is (= "You are Claude Code" (get-in sanitized [0 :text]))))))
-
-(deftest test-mcp-prefix-tools
-  (testing "OAuth mode prefixes tool names with mcp_"
-    (let [tools [{:type :function :function {:name "get_weather" :description "Weather"}}]
-          prefixed (#'anthropic/mcp-prefix-tools tools)]
-      (is (= "mcp_get_weather" (get-in prefixed [0 :function :name])))
-      ;; Already-prefixed names should not be double-prefixed
-      (is (= "mcp_get_weather" (get-in (#'anthropic/mcp-prefix-tools prefixed) [0 :function :name]))))))
-
-(deftest test-mcp-prefix-tool-names-in-messages
-  (testing "OAuth mode prefixes tool names in message history"
-    (let [messages [{:role "assistant"
-                     :content [{:type "tool_use" :name "get_weather" :id "tu_1"}]}]
-          prefixed (#'anthropic/mcp-prefix-tool-names-in-messages messages)]
-      (is (= "mcp_get_weather" (get-in prefixed [0 :content 0 :name]))))))
-
-;; ---------------------------------------------------------------------------
 ;; Caching
 ;; ---------------------------------------------------------------------------
 
@@ -727,10 +605,10 @@
                                         :name "get_weather"
                                         :input {}}}))))
         (is (nil? (parse {:type "content_block_stop" :index 1})))
-        (is (= {:event/type :stream/end
-                :event/finish-reason :tool-calls}
-               (parse {:type "message_delta"
-                       :delta {:stop_reason "tool_use"}})))
+        (let [finish (parse {:type "message_delta" :delta {:stop_reason "tool_use"}})]
+          (is (= :tool-calls (:event/finish-reason finish)))
+          (is (false? (:event/terminal? finish))
+              "A finish reason is not the message_stop transport terminator"))
         (is (= {:event/type :stream/end
                 :event/finish-reason nil}
                (parse {:type "message_stop"})))))))

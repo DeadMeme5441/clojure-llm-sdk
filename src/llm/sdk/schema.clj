@@ -626,7 +626,10 @@
                 (:citation/source-id citation)
                 (:citation/provider-data citation)))]]]
    [:error [:map [:event/type [:= :stream/error]] [:error/error any?]]]
-   [:end [:map [:event/type [:= :stream/end]] [:event/finish-reason {:optional true} [:enum :stop :length :tool-calls :content-filter :incomplete :unknown]]]]])
+   [:end [:map
+          [:event/type [:= :stream/end]]
+          [:event/terminal? {:optional true} boolean?]
+          [:event/finish-reason {:optional true} [:enum :stop :length :tool-calls :content-filter :incomplete :unknown]]]]])
 
 ;; ---------------------------------------------------------------------------
 ;; Provider profile
@@ -642,6 +645,7 @@
    [:profile/protocol-family keyword?]
    [:profile/base-url string?]
    [:profile/auth-strategy AuthStrategy]
+   [:profile/auth-mode {:optional true} [:enum :api-key :oauth]]
    [:profile/auth-header-name {:optional true} string?]
    [:profile/auth-query-param {:optional true} string?]
    [:profile/default-headers {:optional true} map?]

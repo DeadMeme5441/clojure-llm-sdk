@@ -41,6 +41,10 @@ Options:
 | `:retry {...}` | Merge caller policy into the default retry policy. |
 | `:config {...}` | Per-call runtime configuration for auth, base URL, headers, HTTP client, and timeouts. |
 
+For Anthropic Claude Code OAuth, pass `:config {:auth-mode :oauth :auth-token access-token}`.
+The SDK owns the wire protocol; the caller owns login, storage, and refresh.
+See [Anthropic OAuth](provider-configuration.md#anthropic-claude-code-oauth).
+
 For ChatGPT OAuth, `:config` accepts `:transport :sse` (default) or
 `:transport :websocket`, plus optional caller-managed `:auth-token` and
 `:account-id`. Managed CLI credentials refresh automatically. See

@@ -289,92 +289,70 @@
         (unsupported-tool! tc)))))
 
 ;; ---------------------------------------------------------------------------
-;; OAuth token detection
+;; Explicit Claude Code OAuth wire contract
 ;; ---------------------------------------------------------------------------
 
-(defn oauth-token?
-  "Check if a token is an Anthropic OAuth/setup token.
-   Detects: sk-ant-* (but not sk-ant-api*), eyJ* JWTs, cc-* Claude Code tokens."
-  [token]
-  (boolean
-   (when (string? token)
-     (cond
-       ;; Regular Anthropic Console API key — NOT OAuth
-       (str/starts-with? token "sk-ant-api") false
-       ;; Anthropic-issued setup tokens / managed keys
-       (str/starts-with? token "sk-ant-") true
-       ;; JWTs from Anthropic OAuth flow
-       (str/starts-with? token "eyJ") true
-       ;; Claude Code OAuth access tokens
-       (str/starts-with? token "cc-") true
-       :else false))))
-
-(defn- third-party-endpoint?
-  "Return true for non-Anthropic endpoints using Anthropic Messages API.
-   OAuth transforms only apply to direct Anthropic endpoints."
-  [base-url]
-  (if-let [host (try
-                  (some-> base-url java.net.URI. .getHost str/lower-case)
-                  (catch Exception _ nil))]
-    (not (or (= host "anthropic.com")
-             (str/ends-with? host ".anthropic.com")))
-    false))
-
-;; ---------------------------------------------------------------------------
-;; Claude Code identity (OAuth mode)
-;; ---------------------------------------------------------------------------
-
+(def ^:private official-base-url "https://api.anthropic.com/v1")
 (def ^:private claude-code-system-prefix
   "You are Claude Code, Anthropic's official CLI for Claude.")
+(def ^:private oauth-betas
+  ["claude-code-20250219" "oauth-2025-04-20"
+   "interleaved-thinking-2025-05-14" "fine-grained-tool-streaming-2025-05-14"])
 
-(defn- sanitize-system-for-oauth
-  "Sanitize system prompt for Anthropic OAuth endpoints.
-   Replace product name references to avoid server-side content filters."
-  [blocks]
-  (mapv (fn [block]
-          (if (and (map? block) (= (:type block) "text"))
-            (update block :text
-                    #(-> %
-                         (str/replace "Hermes Agent" "Claude Code")
-                         (str/replace "Hermes agent" "Claude Code")
-                         (str/replace "hermes-agent" "claude-code")
-                         (str/replace "Nous Research" "Anthropic")))
-            block))
-        blocks))
+(defn- oauth? [profile]
+  (= :oauth (:profile/auth-mode profile)))
 
-(defn- mcp-prefix-tools
-  "Prefix tool names with mcp_ (Claude Code convention).
-   Returns nil when input is nil or empty."
-  [tools]
-  (when (seq tools)
-    (mapv (fn [tool]
-            (cond
-              (get-in tool [:function :name])
-              (update-in tool [:function :name]
-                         #(if (str/starts-with? % "mcp_") % (str "mcp_" %)))
+(defn- validate-oauth! [profile]
+  (when-not (= official-base-url (:profile/base-url profile))
+    (throw (ex-info "Claude OAuth requires the official Anthropic endpoint"
+                    {:error/type :anthropic/oauth-endpoint :retryable? false})))
+  (let [token (provider/resolve-auth-token profile)]
+    (when (or (not (string? token)) (str/blank? token))
+      (throw (ex-info "Claude OAuth requires an access token"
+                      {:error/type :anthropic/oauth-token :retryable? false})))
+    token))
 
-              (:name tool)
-              (update tool :name
-                      #(if (str/starts-with? % "mcp_") % (str "mcp_" %)))
+(defn- prefix-name [name] (str "_" name))
 
-              :else
-              tool))
-          tools)))
+(defn- canonical-name [name]
+  (if (and (string? name) (str/starts-with? name "_"))
+    (subs name 1)
+    name))
 
-(defn- mcp-prefix-tool-names-in-messages
-  "Prefix tool names in message history (tool_use blocks)."
-  [messages]
-  (mapv (fn [msg]
-          (if (:content msg)
-            (update msg :content
-                    (fn [blocks]
-                      (mapv (fn [block]
-                              (if (and (map? block) (= (:type block) "tool_use") (:name block))
-                                (update block :name #(if (str/starts-with? % "mcp_") % (str "mcp_" %)))
-                                block))
-                            blocks)))
-            msg))
+(defn- map-tool-block [f block]
+  (if (and (= "tool_use" (:type block)) (string? (:name block)))
+    (update block :name f)
+    block))
+
+(defn- prefix-tool-names-in-messages [messages]
+  (mapv #(update % :content
+                 (fn [blocks] (mapv (partial map-tool-block prefix-name) blocks)))
         messages))
+
+(defn finalize-request
+  "Finalize explicit Claude OAuth after shared HTTP options. Authentication and
+   required protocol headers cannot be replaced by runtime header overrides.
+   Also usable for authenticated model discovery. API-key requests are unchanged."
+  [profile request]
+  (if-not (oauth? profile)
+    request
+    (let [token (validate-oauth! profile)]
+      (update request :headers
+              (fn [headers]
+                (let [headers (into {} (map (fn [[k v]] [(str/lower-case (name k)) v])) headers)
+                      betas (->> (str/split (get headers "anthropic-beta" "") #",")
+                                 (map str/trim) (remove str/blank?)
+                                 (concat oauth-betas) distinct (str/join ","))]
+                  (-> headers
+                      (dissoc "x-api-key" "authorization")
+                      (assoc "authorization" (str "Bearer " token)
+                             "anthropic-version" "2023-06-01"
+                             "anthropic-beta" betas
+                             "anthropic-dangerous-direct-browser-access" "true"
+                             "content-type" "application/json"
+                             "accept" "application/json"
+                             "user-agent" "claude-cli/2.1.280 (external, cli)"
+                             "x-app" "cli"))))))))
 
 (defn- file-id-attachment? [part]
   (and (= :file (:part/type part)) (:file/id part)))
@@ -512,24 +490,16 @@
 ;; Request building
 ;; ---------------------------------------------------------------------------
 
-(def ^:private claude-code-version "2.1.74")
-
-(defn- build-oauth-headers
-  "Build headers for Anthropic OAuth requests.
-   Matches Hermes: Claude Code user-agent, x-app, and full beta list."
-  [token]
-  {"Authorization" (str "Bearer " token)
-   "anthropic-beta" "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,claude-code-20250219,oauth-2025-04-20"
-   "user-agent" (str "claude-cli/" claude-code-version " (external, cli)")
-   "x-app" "cli"})
+(defn- build-oauth-headers [profile]
+  (:headers (finalize-request profile {:headers (:profile/default-headers profile)})))
 
 (defn build-request-anthropic
   [profile request]
   (let [model (:request/model request)
         model-norm (-> model str/lower-case (str/replace #"anthropic/" ""))
         messages (:request/messages request)
-        token (provider/resolve-auth-token profile)
-        oauth? (and (oauth-token? token) (not (third-party-endpoint? (:profile/base-url profile))))
+        oauth? (oauth? profile)
+        token (when-not oauth? (provider/resolve-auth-token profile))
         system-blocks (extract-system messages)
         anthropic-messages (messages->anthropic messages)
         tools (when (seq (:request/tools request))
@@ -548,16 +518,14 @@
         max-tokens (let [requested (or (:request/max-tokens request) 128000)
                          cap (catalog/max-output-tokens model-norm)]
                      (if cap (min requested cap) requested))
-        ;; OAuth transforms
         system-blocks (if oauth?
-                        (let [cc-block {:type "text" :text claude-code-system-prefix}
-                              blocks (if (seq system-blocks)
-                                       (into [cc-block] system-blocks)
-                                       [cc-block])]
-                          (sanitize-system-for-oauth blocks))
+                        (into [{:type "text" :text claude-code-system-prefix}] system-blocks)
                         system-blocks)
-        tools (if oauth? (mcp-prefix-tools tools) tools)
-        anthropic-messages (if oauth? (mcp-prefix-tool-names-in-messages anthropic-messages) anthropic-messages)
+        tools (if (and oauth? tools) (mapv #(update % :name prefix-name) tools) tools)
+        anthropic-messages (if oauth? (prefix-tool-names-in-messages anthropic-messages) anthropic-messages)
+        tool-choice (cond-> tool-choice
+                      (and oauth? (= "tool" (:type tool-choice)))
+                      (update :name prefix-name))
         ;; Caching: native layout for Anthropic. Decide once, apply
         ;; markers to (system, messages, tools). Caller can override
         ;; via :request/cache; defaults to no-op when omitted.
@@ -594,8 +562,7 @@
                            :else [])
         ;; Build headers
         headers (if oauth?
-                  (merge (:profile/default-headers profile {})
-                         (build-oauth-headers token))
+                  (build-oauth-headers profile)
                   (merge (provider/auth-headers profile token)
                          (:profile/default-headers profile {})
                          {"anthropic-dangerous-direct-browser-access" "true"}))
@@ -630,7 +597,7 @@
               (when (:request/metadata request)
                 {:metadata (:request/metadata request)}))]
     {:method :post
-     :url (str (:profile/base-url profile) "/messages")
+     :url (str (:profile/base-url profile) "/messages" (when oauth? "?beta=true"))
      :headers headers
      :body body}))
 
@@ -736,8 +703,9 @@
      :provider-data (:citation/provider-data part))))
 
 (defn parse-response-anthropic
-  [_profile raw]
-  (let [content (:content raw)
+  [profile raw]
+  (let [content (cond->> (:content raw)
+                  (oauth? profile) (mapv (partial map-tool-block canonical-name)))
         parts (vec (mapcat block->canonical-parts content))
         reasoning-details (vec (keep #(when (= (:type %) "thinking") %) (:content raw)))
         tool-calls (vec (filter #(= (:part/type %) :tool-call) parts))
@@ -769,7 +737,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- parse-sse-line [line]
-  (sse/parse-json-data line))
+  (or (sse/parse-json-data line)
+      (when (sse/data-payload line)
+        (throw (ex-info "Malformed Anthropic stream data"
+                        {:error/type :anthropic/invalid-stream :retryable? false})))))
 
 (defn- normalize-stream-usage [usage-raw]
   (let [output-details (:output_tokens_details usage-raw)
@@ -789,7 +760,7 @@
       (some? searches) (assoc :usage/search-queries searches))))
 
 (defn parse-stream-event-anthropic
-  [_profile line]
+  [profile line]
   (when-let [data (parse-sse-line line)]
     (let [t (:type data)]
       (cond
@@ -818,7 +789,8 @@
             nil))
 
         (= t "content_block_start")
-        (let [block (:content_block data)
+        (let [block (cond->> (:content_block data)
+                      (oauth? profile) (map-tool-block canonical-name))
               idx (:index data 0)]
           (if (= (:type block) "tool_use")
             (stream/tool-call-start
@@ -854,10 +826,9 @@
                           (normalize-stream-usage usage-raw)))
               finish-ev (when-let [stop-reason
                                    (get-in data [:delta :stop_reason])]
-                          (stream/end-event
-                           :finish-reason (get stop-reason-map
-                                               stop-reason
-                                               :unknown)))
+                          (assoc (stream/end-event
+                                  :finish-reason (get stop-reason-map stop-reason :unknown))
+                                 :event/terminal? false))
               events (one-or-many [usage-ev finish-ev])]
           events)
 
