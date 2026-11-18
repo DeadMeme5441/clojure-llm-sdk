@@ -313,84 +313,22 @@
         (pricing/stamp-response-cost-and-cache provider-id model)
         (canonicalize-chat-response provider-id model))))
 
-(defn- normalize-retry-policy
-  "Translate the :retry kwarg into either nil (one-shot) or a policy map.
-   true → default-policy; a map → merged into default-policy so callers
-   can override only the keys they care about."
-  [retry]
-  (cond
-    (or (nil? retry) (false? retry)) nil
-    (true? retry) (retry/default-policy)
-    (map? retry) (merge (retry/default-policy) retry)
-    :else nil))
-
-(defn- retry-after-ms-from
-  "Read the Retry-After header off a hato response and convert to ms.
-   Header lookup is case-insensitive at the source but hato returns a
-   keyword-or-string map - we try both spellings."
-  [resp]
-  (let [headers (:headers resp)
-        v (or (get headers "retry-after")
-              (get headers "Retry-After")
-              (get headers :retry-after))]
-    (retry/parse-retry-after v)))
-
 (def ^:dynamic *retry-sleep-fn*
   "Indirection for tests - replace to drive retry without actually
    sleeping. Default is Thread/sleep."
   (fn [ms] (Thread/sleep (long ms))))
 
 (defn- complete-non-streaming
-  "Run the non-streaming request path, with optional retry. `policy`
-   is nil (one-shot) or a normalized policy map."
   [transport profile req provider-id model policy]
   (if (true? (get-in req [:body :stream]))
+    ;; Preserve the existing bounded OAuth recovery, never replay partial output.
     (complete-sse-non-streaming transport profile req provider-id model)
-    (loop [attempt 1]
-      (let [outcome
-            (try
-              (let [resp (http/request req)
-                    status (:status resp)
-                    body (:body resp)]
-                (if (and (number? status) (>= status 400))
-                  {:tag :http-error
-                   :err (transport/parse-error transport profile status body)
-                   :status status :body body :resp resp}
-                  {:tag :ok
-                   :response (transport/parse-response transport profile body)}))
-              (catch Exception e
-                {:tag :exception :ex e}))]
-        (case (:tag outcome)
-          :ok
-          (stamp (:response outcome) provider-id model)
-
-          :http-error
-          (let [classified (:err outcome)
-                decision (when policy (retry/should-retry? classified policy attempt))]
-            (if (:retry? decision)
-              (let [wait (max (or (retry-after-ms-from (:resp outcome)) 0)
-                              (:delay-ms decision))]
-                (*retry-sleep-fn* wait)
-                (recur (inc attempt)))
-              (throw (ex-info "Provider API error"
-                              {:error classified
-                               :status (:status outcome)
-                               :body (:body outcome)
-                               :provider provider-id
-                               :attempts attempt}))))
-
-          :exception
-          (let [e (:ex outcome)
-                classified (errors/classify-error e :provider provider-id)
-                decision (when policy (retry/should-retry? classified policy attempt))]
-            (if (:retry? decision)
-              (do (*retry-sleep-fn* (:delay-ms decision))
-                  (recur (inc attempt)))
-              (throw (ex-info "Provider transport error"
-                              {:error classified
-                               :provider provider-id
-                               :attempts attempt}
-                              e)))))))))
+    (let [response (binding [retry/*sleep-fn* *retry-sleep-fn*]
+                     (retry/request! http/request req
+                                     #(transport/parse-error transport profile %1 %2)
+                                     provider-id policy))]
+      (stamp (transport/parse-response transport profile (:body response))
+             provider-id model))))
 
 (defn- ensure-terminal-end
   "Move provider end markers behind any trailing metadata and emit exactly one
@@ -544,8 +482,7 @@
                    provider-id model))
           handle))
       ;; Non-streaming path
-      (complete-non-streaming transport profile req provider-id model
-                              (normalize-retry-policy retry)))))
+      (complete-non-streaming transport profile req provider-id model retry))))
 
 ;; ---------------------------------------------------------------------------
 ;; Embed

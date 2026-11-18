@@ -19,12 +19,13 @@
    only moderation) or {:type :text :text \"...\"} / {:type :image_url
    :image_url \"https://...\"} maps. The OpenAI omni-moderation models
    accept the multi-modal shape."
-  [provider-id request & {:keys [config]}]
+  [provider-id request & {:keys [config retry]}]
   (let [parsed
         (operation/run
          {:provider-id provider-id
           :request request
           :config config
+    :retry retry
           :validate-request schema/validate-moderation-request
           :explain-request schema/explain-moderation-request
           :invalid-error-type :schema/invalid-moderation-request
