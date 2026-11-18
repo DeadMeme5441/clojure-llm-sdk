@@ -2,6 +2,15 @@
 
 All notable user-visible changes are tracked here.
 
+## Unreleased
+
+- Share opt-in retries across synchronous chat, decisions, embeddings, moderation,
+  reranking, image generation, transcription and speech. Preserve HTTP error
+  status, request ID, `Retry-After` and attempt count.
+- Enforce retry budgets and response body deadlines, including multipart and
+  binary requests. Interruption, authentication failures, exhausted credits and
+  malformed successful responses are never retried.
+
 ## 0.6.4
 
 - Require explicit `:config {:auth-mode :oauth}` for Anthropic Claude Code OAuth.

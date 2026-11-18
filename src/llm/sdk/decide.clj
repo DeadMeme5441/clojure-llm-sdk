@@ -8,12 +8,13 @@
 (defn decide
   "Evaluate :decision/state against :decision/questions with :decision/model.
    Accepts :config for per-call credentials and HTTP settings."
-  [provider-id request & {:keys [config]}]
+  [provider-id request & {:keys [config retry]}]
   (let [parsed
         (operation/run
          {:provider-id provider-id
           :request request
           :config config
+    :retry retry
           :validate-request schema/validate-decision-request
           :explain-request schema/explain-decision-request
           :invalid-error-type :schema/invalid-decision-request

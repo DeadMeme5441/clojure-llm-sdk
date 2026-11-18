@@ -57,12 +57,13 @@
    vector of strings). Optional fields: :embed/dimensions,
    :embed/encoding-format (:float or :base64), :embed/user,
    :embed/provider-options."
-  [provider-id request & {:keys [config]}]
+  [provider-id request & {:keys [config retry]}]
   (let [parsed
         (operation/run
          {:provider-id provider-id
           :request request
           :config config
+    :retry retry
           :validate-request schema/validate-embed-request
           :explain-request schema/explain-embed-request
           :invalid-error-type :schema/invalid-embed-request

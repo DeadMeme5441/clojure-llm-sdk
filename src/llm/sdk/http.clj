@@ -50,7 +50,8 @@
 (defn- bounded-stream
   "JDK request deadlines stop at response headers for InputStream bodies.
    Close stalled bodies independently so a blocked stream read also times out."
-  [input timeout-ms]
+  ([input timeout-ms] (bounded-stream input timeout-ms nil))
+  ([input timeout-ms deadline-nanos]
   (if-not (instance? InputStream input)
     input
     (let [^InputStream input input
@@ -84,13 +85,16 @@
                           (throw error))))))
           expire! (fn []
                     (when (and (not @closed?)
-                               (>= (- (System/nanoTime) (.get last-activity))
-                                   (* (long timeout-ms) 1000000)))
+                               (or (and deadline-nanos (>= (System/nanoTime) deadline-nanos))
+                                   (>= (- (System/nanoTime) (.get last-activity))
+                                       (* (long timeout-ms) 1000000))))
                       (reset! expired? true)
                       (try (close!) (catch Throwable _))))
           task (.scheduleWithFixedDelay
                 ^ScheduledThreadPoolExecutor @stream-timer
-                ^Runnable expire! (long timeout-ms)
+                ^Runnable expire! (long (if deadline-nanos
+                                         (max 1 (quot (- deadline-nanos (System/nanoTime)) 1000000))
+                                         timeout-ms))
                 (long (min timeout-ms 1000)) TimeUnit/MILLISECONDS)
           one-byte (byte-array 1)]
       (reset! scheduled task)
@@ -101,7 +105,7 @@
                 (if (neg? n) -1 (bit-and 255 (aget one-byte 0)))))
           ([target] (read! target 0 (alength ^bytes target)))
           ([target offset length] (read! target offset length)))
-        (close [] (close!))))))
+        (close [] (close!)))))))
 
 (defn- encode-body
   "Serialize body to a JSON string unless already a string or byte array
@@ -129,6 +133,22 @@
       (json/parse-string s true)
       (catch Exception _ s))))
 
+(defn buffered-request
+  "Consume and close an HTTP body within one deadline, including multipart and
+   binary operations. JDK header timeouts alone do not bound body consumption."
+  [opts]
+  (let [timeout (long (or (:timeout opts) 120000))
+        deadline (+ (System/nanoTime) (* timeout 1000000))
+        response (hc/request (assoc opts :as :stream))
+        body (bounded-stream (:body response) timeout deadline)]
+    (assoc response :body
+           (if (instance? InputStream body)
+             (with-open [body ^InputStream body]
+               (if (= :byte-array (:as opts))
+                 (.readAllBytes body)
+                 (slurp (InputStreamReader. body StandardCharsets/UTF_8))))
+             body))))
+
 (defn request
   "Make an HTTP request. Returns a map with :status, :body, :headers
    for every status code (including 4xx/5xx) — callers branch on
@@ -149,10 +169,10 @@
                (assoc opts :body (encode-body body))
                opts)
         opts (merge opts (request-options req))
-        resp (hc/request opts)]
+        resp (buffered-request opts)]
     {:status (:status resp)
      :headers (:headers resp)
-     :body (decode-body (bounded-stream (:body resp) (:timeout opts)))}))
+     :body (decode-body (:body resp))}))
 
 (defn line-seq-closeable
   "Return a lazy seq of lines and close the underlying stream at EOF

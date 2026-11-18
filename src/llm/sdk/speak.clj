@@ -10,7 +10,6 @@
 
    Providers without a speak transport throw ex-info on call."
   (:require [cheshire.core :as json]
-            [hato.client :as hc]
             [llm.sdk.http :as http]
             [llm.sdk.operation :as operation]
             [llm.sdk.pricing :as pricing]
@@ -34,7 +33,7 @@
   "Execute a buffered request whose successful body is raw audio bytes."
   [{:keys [method url headers body] :as request}]
   (let [response
-        (hc/request
+        (http/buffered-request
          (merge (http/request-options request)
                 {:method method
                  :url url
@@ -69,11 +68,12 @@
   "Send a canonical SpeakRequest and return a SpeakResponse.
 
    The response contains nonempty :audio/bytes and its content type."
-  [provider-id request & {:keys [config]}]
+  [provider-id request & {:keys [config retry]}]
   (operation/run
    {:provider-id provider-id
     :request request
     :config config
+    :retry retry
     :validate-request schema/validate-speak-request
     :explain-request schema/explain-speak-request
     :invalid-error-type :schema/invalid-speak-request

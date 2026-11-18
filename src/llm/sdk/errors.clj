@@ -297,6 +297,11 @@
          :error/message "Payload too large"
          :error/should-compress true}
 
+        (and (= status 429) (matches-any? msg billing-patterns))
+        {:error/reason :quota
+         :error/retryable false
+         :error/message "Billing/quota exhausted"}
+
         (= status 429)
         {:error/reason :rate-limit
          :error/retryable true

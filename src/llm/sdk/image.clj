@@ -73,12 +73,13 @@
 
    The canonical response includes :image/images — a vector of
    {:image/url? :image/b64? :image/revised-prompt?}."
-  [provider-id request & {:keys [config]}]
+  [provider-id request & {:keys [config retry]}]
   (let [parsed
         (operation/run
          {:provider-id provider-id
           :request request
           :config config
+    :retry retry
           :validate-request schema/validate-image-gen-request
           :explain-request schema/explain-image-gen-request
           :invalid-error-type :schema/invalid-image-request

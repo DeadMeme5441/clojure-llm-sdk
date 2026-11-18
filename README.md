@@ -182,6 +182,15 @@ Applications that manage secrets outside environment variables can pass per-call
                        :timeout-ms 60000})
 ```
 
+Synchronous chat and non-chat requests make one attempt by default. Pass
+`:retry true` for the default policy, or a policy such as
+`{:retry/max-attempts 3 :retry/budget-ms 30000}` to bound attempts and elapsed
+time. The budget includes response body reads and backoff. The SDK honors
+`Retry-After` within the budget and exposes HTTP status, request ID, parsed
+retry delay and attempt count in error data when available. Multipart retries
+require a replayable file or byte array. Streaming transports keep their
+existing recovery behavior.
+
 ## Design Guarantees
 
 - Canonical response parts preserve text, images, tool calls, citations, reasoning, safety data, and provider-native state.

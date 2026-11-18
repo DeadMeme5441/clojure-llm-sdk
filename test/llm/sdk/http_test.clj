@@ -40,6 +40,29 @@
         (.stop server 0)
         (.shutdownNow executor)))))
 
+(deftest buffered-deadlines-include-continuously-arriving-bodies
+  (doseq [as [:string :byte-array]]
+    (let [server (HttpServer/create (InetSocketAddress. "127.0.0.1" 0) 0)]
+      (.createContext server "/drip"
+                      (reify HttpHandler
+                        (handle [_ exchange]
+                          (.sendResponseHeaders exchange 200 0)
+                          (try
+                            (with-open [out (.getResponseBody exchange)]
+                              (dotimes [_ 40]
+                                (.write out (int 32))
+                                (.flush out)
+                                (Thread/sleep 25)))
+                            (catch java.io.IOException _)))))
+      (.start server)
+      (try
+        (is (thrown? HttpTimeoutException
+                     (http/buffered-request {:method :get :as as :timeout 200
+                                             :http-client (http/client)
+                                             :url (str "http://127.0.0.1:"
+                                                       (.getPort (.getAddress server)) "/drip")})))
+        (finally (.stop server 0))))))
+
 (deftest streaming-query-parameters-reach-the-server
   (let [server (HttpServer/create (InetSocketAddress. "127.0.0.1" 0) 0)]
     (.createContext server "/events"

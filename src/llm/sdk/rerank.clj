@@ -65,12 +65,13 @@
    Documents are strings or maps; individual providers may require strings.
    Optional: :rerank/top-n, :rerank/return-documents,
    :rerank/next-token, :rerank/provider-options."
-  [provider-id request & {:keys [config]}]
+  [provider-id request & {:keys [config retry]}]
   (let [parsed
         (operation/run
          {:provider-id provider-id
           :request request
           :config config
+    :retry retry
           :validate-request schema/validate-rerank-request
           :explain-request schema/explain-rerank-request
           :invalid-error-type :schema/invalid-rerank-request

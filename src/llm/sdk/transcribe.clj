@@ -5,7 +5,6 @@
    Providers without a transcribe transport throw ex-info on call so
    the missing capability surfaces at the call site."
   (:require [clojure.string :as str]
-            [hato.client :as hc]
             [llm.sdk.http :as http]
             [llm.sdk.operation :as operation]
             [llm.sdk.pricing :as pricing]
@@ -51,7 +50,7 @@
    JSON is decoded opportunistically; plain text, SRT, and VTT remain strings."
   [{:keys [method url headers multipart] :as request} response-format]
   (let [response
-        (hc/request
+        (http/buffered-request
          (merge (http/request-options request)
                 {:method method
                  :url url
@@ -87,11 +86,12 @@
    Multipart audio input is sent through the shared HTTP client resolver.
    JSON responses are decoded regardless of Content-Type spelling; text,
    SRT, and VTT response bodies are preserved verbatim."
-  [provider-id request & {:keys [config]}]
+  [provider-id request & {:keys [config retry]}]
   (operation/run
    {:provider-id provider-id
     :request request
     :config config
+    :retry retry
     :validate-request schema/validate-transcribe-request
     :explain-request schema/explain-transcribe-request
     :invalid-error-type :schema/invalid-transcribe-request
